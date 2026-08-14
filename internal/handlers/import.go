@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -14,6 +15,11 @@ import (
 )
 
 const maxImportSize = 10 * 1024 * 1024
+
+var (
+	errImportFileTooLarge      = errors.New("import file too large")
+	errImportUnsupportedFormat = errors.New("unsupported import file format")
+)
 
 type ImportHandler struct {
 	DB *gorm.DB
@@ -43,10 +49,10 @@ func openImportFile(c *fiber.Ctx) ([][]string, error) {
 		return nil, fmt.Errorf("missing file")
 	}
 	if fh.Size > maxImportSize {
-		return nil, fmt.Errorf("too large")
+		return nil, errImportFileTooLarge
 	}
 	if !strings.HasSuffix(strings.ToLower(fh.Filename), ".csv") {
-		return nil, fmt.Errorf("unsupported format")
+		return nil, errImportUnsupportedFormat
 	}
 
 	f, err := fh.Open()
@@ -67,18 +73,23 @@ func openImportFile(c *fiber.Ctx) ([][]string, error) {
 	return rows, nil
 }
 
+func respondImportFileError(c *fiber.Ctx, err error) error {
+	switch {
+	case errors.Is(err, errImportFileTooLarge):
+		return utils.ErrorResponse(c, fiber.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", "File exceeds 10MB limit")
+	case errors.Is(err, errImportUnsupportedFormat):
+		return utils.BadRequest(c, "Only CSV files are supported")
+	default:
+		return utils.BadRequest(c, "Invalid or missing file")
+	}
+}
+
 // ImportCompanies — POST /companies/import. Expects columns: name,industry,size,website.
 // Dedupes by name since Company has no email field, per FR-CRM-014.
 func (h *ImportHandler) ImportCompanies(c *fiber.Ctx) error {
 	rows, err := openImportFile(c)
 	if err != nil {
-		if err.Error() == "too large" {
-			return utils.ErrorResponse(c, fiber.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", "File exceeds 10MB limit")
-		}
-		if err.Error() == "unsupported format" {
-			return utils.BadRequest(c, "Only CSV files are supported")
-		}
-		return utils.BadRequest(c, "Invalid or missing file")
+		return respondImportFileError(c, err)
 	}
 
 	result := importResult{Errors: []importError{}}
@@ -130,13 +141,7 @@ func (h *ImportHandler) ImportCompanies(c *fiber.Ctx) error {
 func (h *ImportHandler) ImportContacts(c *fiber.Ctx) error {
 	rows, err := openImportFile(c)
 	if err != nil {
-		if err.Error() == "too large" {
-			return utils.ErrorResponse(c, fiber.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", "File exceeds 10MB limit")
-		}
-		if err.Error() == "unsupported format" {
-			return utils.BadRequest(c, "Only CSV files are supported")
-		}
-		return utils.BadRequest(c, "Invalid or missing file")
+		return respondImportFileError(c, err)
 	}
 
 	result := importResult{Errors: []importError{}}

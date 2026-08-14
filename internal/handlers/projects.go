@@ -54,6 +54,7 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 		return utils.ValidationError(c, "name is required", map[string][]string{"name": {"required"}})
 	}
 
+	actorID := middleware.CurrentUserID(c)
 	project := models.Project{
 		CompanyID: company.ID, DealID: form.DealID, Name: form.Name, Status: form.Status,
 		TargetEndDate: form.TargetEndDate, ProductionReference: form.ProductionReference, Notes: form.Notes,
@@ -66,6 +67,8 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 	if project.Status == "" {
 		project.Status = models.ProjectStatusNotStarted
 	}
+	project.CreatedBy = &actorID
+	project.UpdatedBy = &actorID
 	if err := h.DB.Create(&project).Error; err != nil {
 		return utils.Internal(c, "Failed to create project")
 	}
@@ -120,17 +123,28 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 		if form.Name != "" {
 			project.Name = form.Name
 		}
-		project.DealID = form.DealID
+		if _, ok := raw["deal_id"]; ok {
+			project.DealID = form.DealID
+		}
 		if form.Status != "" {
 			project.Status = form.Status
 		}
 		if form.StartDate != nil {
 			project.StartDate = *form.StartDate
 		}
-		project.TargetEndDate = form.TargetEndDate
-		project.ProductionReference = form.ProductionReference
-		project.Notes = form.Notes
+		if _, ok := raw["target_end_date"]; ok {
+			project.TargetEndDate = form.TargetEndDate
+		}
+		if _, ok := raw["production_reference"]; ok {
+			project.ProductionReference = form.ProductionReference
+		}
+		if _, ok := raw["notes"]; ok {
+			project.Notes = form.Notes
+		}
 	}
+
+	actorID := middleware.CurrentUserID(c)
+	project.UpdatedBy = &actorID
 
 	if err := h.DB.Save(&project).Error; err != nil {
 		return utils.Internal(c, "Failed to update project")

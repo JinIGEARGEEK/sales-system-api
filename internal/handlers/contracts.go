@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -33,9 +34,9 @@ type contractForm struct {
 
 // Create — POST /deals/:dealId/contracts.
 func (h *ContractHandler) Create(c *fiber.Ctx) error {
-	var deal models.Deal
-	if err := h.DB.First(&deal, c.Params("dealId")).Error; err != nil {
-		return utils.NotFound(c, "Deal not found")
+	deal, err := dealForSubResource(c, h.DB, c.Params("dealId"))
+	if err != nil {
+		return respondFindErr(c, err, "Deal not found")
 	}
 
 	var form contractForm
@@ -59,6 +60,9 @@ func (h *ContractHandler) Update(c *fiber.Ctx) error {
 	if err := h.DB.First(&contract, c.Params("id")).Error; err != nil {
 		return utils.NotFound(c, "Contract not found")
 	}
+	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(contract.DealID)); err != nil {
+		return respondFindErr(c, err, "Deal not found")
+	}
 
 	var form contractForm
 	if err := c.BodyParser(&form); err != nil {
@@ -81,6 +85,9 @@ func (h *ContractHandler) Upload(c *fiber.Ctx) error {
 	if err := h.DB.First(&contract, c.Params("id")).Error; err != nil {
 		return utils.NotFound(c, "Contract not found")
 	}
+	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(contract.DealID)); err != nil {
+		return respondFindErr(c, err, "Deal not found")
+	}
 
 	fh, err := c.FormFile("file")
 	if err != nil {
@@ -88,10 +95,7 @@ func (h *ContractHandler) Upload(c *fiber.Ctx) error {
 	}
 	fileURL, _, err := utils.SaveUpload(c, fh)
 	if err != nil {
-		if err.Error() == "file too large" {
-			return utils.ErrorResponse(c, fiber.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", "File exceeds 10MB limit")
-		}
-		return utils.Internal(c, "Failed to save file")
+		return utils.RespondUploadError(c, err)
 	}
 
 	now := time.Now()

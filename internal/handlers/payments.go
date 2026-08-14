@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -43,9 +44,9 @@ type paymentForm struct {
 
 // Create — POST /deals/:dealId/payments.
 func (h *PaymentHandler) Create(c *fiber.Ctx) error {
-	var deal models.Deal
-	if err := h.DB.First(&deal, c.Params("dealId")).Error; err != nil {
-		return utils.NotFound(c, "Deal not found")
+	deal, err := dealForSubResource(c, h.DB, c.Params("dealId"))
+	if err != nil {
+		return respondFindErr(c, err, "Deal not found")
 	}
 
 	var form paymentForm
@@ -73,6 +74,9 @@ func (h *PaymentHandler) Delete(c *fiber.Ctx) error {
 	var payment models.Payment
 	if err := h.DB.First(&payment, c.Params("id")).Error; err != nil {
 		return utils.NotFound(c, "Payment not found")
+	}
+	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(payment.DealID)); err != nil {
+		return respondFindErr(c, err, "Deal not found")
 	}
 	if err := h.DB.Delete(&payment).Error; err != nil {
 		return utils.Internal(c, "Failed to delete payment")

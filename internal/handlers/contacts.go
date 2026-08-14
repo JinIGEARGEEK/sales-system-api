@@ -5,6 +5,7 @@ import (
 	"github.com/lib/pq"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
@@ -70,6 +71,7 @@ func (h *ContactHandler) Create(c *fiber.Ctx) error {
 		})
 	}
 
+	actorID := middleware.CurrentUserID(c)
 	contact := models.Contact{
 		CompanyID: form.CompanyID, Name: form.Name, Email: form.Email, Phone: form.Phone,
 		RoleTitle: form.RoleTitle, Tags: pq.StringArray(form.Tags),
@@ -78,6 +80,8 @@ func (h *ContactHandler) Create(c *fiber.Ctx) error {
 	if contact.Status == "" {
 		contact.Status = models.StatusActive
 	}
+	contact.CreatedBy = &actorID
+	contact.UpdatedBy = &actorID
 	if err := h.DB.Create(&contact).Error; err != nil {
 		return utils.Internal(c, "Failed to create contact")
 	}
@@ -113,6 +117,8 @@ func (h *ContactHandler) Update(c *fiber.Ctx) error {
 	if form.Status != "" {
 		contact.Status = models.ActiveArchivedStatus(form.Status)
 	}
+	actorID := middleware.CurrentUserID(c)
+	contact.UpdatedBy = &actorID
 
 	if err := h.DB.Save(&contact).Error; err != nil {
 		return utils.Internal(c, "Failed to update contact")
@@ -128,6 +134,8 @@ func (h *ContactHandler) Delete(c *fiber.Ctx) error {
 		return utils.NotFound(c, "Contact not found")
 	}
 	contact.Status = models.StatusArchived
+	actorID := middleware.CurrentUserID(c)
+	contact.DeletedBy = &actorID
 	if err := h.DB.Save(&contact).Error; err != nil {
 		return utils.Internal(c, "Failed to archive contact")
 	}

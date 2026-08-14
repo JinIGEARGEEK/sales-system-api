@@ -4,6 +4,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
@@ -57,10 +58,13 @@ func (h *ProductHandler) Create(c *fiber.Ctx) error {
 		return utils.ValidationError(c, "name is required", map[string][]string{"name": {"required"}})
 	}
 
+	actorID := middleware.CurrentUserID(c)
 	product := models.Product{Name: form.Name, SKU: form.SKU, Category: form.Category, Description: form.Description, IsActive: true}
 	if form.IsActive != nil {
 		product.IsActive = *form.IsActive
 	}
+	product.CreatedBy = &actorID
+	product.UpdatedBy = &actorID
 	if err := h.DB.Create(&product).Error; err != nil {
 		return utils.Internal(c, "Failed to create product")
 	}
@@ -74,6 +78,8 @@ func (h *ProductHandler) Deactivate(c *fiber.Ctx) error {
 		return utils.NotFound(c, "Product not found")
 	}
 	product.IsActive = false
+	actorID := middleware.CurrentUserID(c)
+	product.UpdatedBy = &actorID
 	if err := h.DB.Save(&product).Error; err != nil {
 		return utils.Internal(c, "Failed to deactivate product")
 	}
@@ -137,12 +143,15 @@ func (h *ProductHandler) AddForCompany(c *fiber.Ctx) error {
 		return utils.ValidationError(c, "product_id is required", map[string][]string{"product_id": {"required"}})
 	}
 
+	actorID := middleware.CurrentUserID(c)
 	record := models.CustomerProduct{
 		CompanyID: company.ID, ProductID: form.ProductID, Status: form.Status, SourceDealID: form.SourceDealID,
 	}
 	if record.Status == "" {
 		record.Status = models.CustomerProductInterested
 	}
+	record.CreatedBy = &actorID
+	record.UpdatedBy = &actorID
 	if err := h.DB.Create(&record).Error; err != nil {
 		return utils.Internal(c, "Failed to create customer product")
 	}

@@ -156,6 +156,9 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 	if err := h.DB.First(&lead, c.Params("id")).Error; err != nil {
 		return utils.NotFound(c, "Lead not found")
 	}
+	if !CanWrite(c, lead.AssignedTo) {
+		return utils.Forbidden(c, "Not authorized to convert this lead")
+	}
 
 	var req convertRequest
 	if err := c.BodyParser(&req); err != nil {

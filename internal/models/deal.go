@@ -36,9 +36,9 @@ type Deal struct {
 	Stage             DealStage    `gorm:"type:varchar(32);default:'Lead';index" json:"stage"`
 	Status            DealStatus   `gorm:"type:varchar(16);default:'open';index" json:"status"`
 	ExpectedCloseDate *string      `json:"expected_close_date"`
-	AssignedTo        *uint        `json:"assigned_to"`
-	Channel           LeadSource   `gorm:"type:varchar(16)" json:"channel"`
-	BusinessUnit      *BusinessUnit `gorm:"type:varchar(16)" json:"business_unit"`
+	AssignedTo        *uint        `gorm:"index" json:"assigned_to"`
+	Channel           LeadSource   `gorm:"type:varchar(16);index" json:"channel"`
+	BusinessUnit      *BusinessUnit `gorm:"type:varchar(16);index" json:"business_unit"`
 	BusinessUnitItem  *string      `json:"business_unit_item"`
 }
 

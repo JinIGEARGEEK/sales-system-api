@@ -19,6 +19,10 @@ import (
 func main() {
 	cfg := config.Load()
 
+	if cfg.JWTSecret == "change-me-in-production" && cfg.AppEnv == "production" {
+		log.Fatal("refusing to start in production with the default JWT_SECRET — set a real secret")
+	}
+
 	db, err := database.Connect(cfg)
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
@@ -30,7 +34,9 @@ func main() {
 
 	seedAdmin(db)
 
-	app := fiber.New()
+	app := fiber.New(fiber.Config{
+		ErrorHandler: apiErrorHandler,
+	})
 	app.Use(recover.New())
 	app.Use(logger.New())
 	app.Use(cors.New())
@@ -38,6 +44,18 @@ func main() {
 	routes.Setup(app, db, cfg)
 
 	log.Fatal(app.Listen(":" + cfg.Port))
+}
+
+// apiErrorHandler guarantees every error — including a panic caught by
+// recover.New() or a handler that returns a bare error instead of routing
+// through utils.* — still gets the §1.5 JSON envelope instead of Fiber's
+// default plain-text response.
+func apiErrorHandler(c *fiber.Ctx, err error) error {
+	code := fiber.StatusInternalServerError
+	if fe, ok := err.(*fiber.Error); ok {
+		code = fe.Code
+	}
+	return utils.ErrorResponse(c, code, "INTERNAL_ERROR", err.Error())
 }
 
 // seedAdmin creates an initial Admin user if the users table is empty so
@@ -50,7 +68,7 @@ func seedAdmin(db *gorm.DB) {
 	}
 
 	const username = "admin"
-	const password = "admin123"
+	password := utils.NewTempPassword()
 
 	hash, err := utils.HashPassword(password)
 	if err != nil {

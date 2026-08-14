@@ -162,9 +162,12 @@ func (h *UserHandler) Delete(c *fiber.Ctx) error {
 	}
 
 	actorID := middleware.CurrentUserID(c)
-	user.IsActive = false
-	user.DeletedBy = &actorID
-	h.DB.Save(&user)
+	if err := h.DB.Model(&user).Updates(map[string]interface{}{
+		"is_active":  false,
+		"deleted_by": actorID,
+	}).Error; err != nil {
+		return utils.Internal(c, "Failed to deactivate user")
+	}
 	if err := h.DB.Delete(&user).Error; err != nil {
 		return utils.Internal(c, "Failed to delete user")
 	}

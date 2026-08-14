@@ -59,17 +59,22 @@ func periodStart(period string) (time.Time, bool) {
 		return now.AddDate(0, -1, 0), true
 	case "quarter":
 		return now.AddDate(0, -3, 0), true
-	case "year":
+	case "year", "last12":
 		return now.AddDate(-1, 0, 0), true
 	case "last6":
 		return now.AddDate(0, -6, 0), true
-	case "last12":
-		return now.AddDate(-1, 0, 0), true
-	case "all", "":
-		return time.Time{}, false
 	default:
 		return time.Time{}, false
 	}
+}
+
+// winRate is the won/(won+lost) formula shared by Summary, industryBreakdown,
+// and teamPerformance — kept in one place so it stays consistent everywhere.
+func winRate(won, lost int64) float64 {
+	if won+lost == 0 {
+		return 0
+	}
+	return float64(won) / float64(won+lost) * 100
 }
 
 type revenueTrendPoint struct {
@@ -115,11 +120,6 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusWon).Count(&wonCount)
 	base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusLost).Count(&lostCount)
 
-	winRate := 0.0
-	if wonCount+lostCount > 0 {
-		winRate = float64(wonCount) / float64(wonCount+lostCount) * 100
-	}
-
 	pipelineCoverageRatio := 0.0
 	if quarterlySalesTarget > 0 {
 		pipelineCoverageRatio = openPipelineValue / (quarterlySalesTarget / 4)
@@ -137,7 +137,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	return utils.OK(c, fiber.Map{
 		"open_pipeline_value":     openPipelineValue,
 		"won_value":               wonValue,
-		"win_rate":                winRate,
+		"win_rate":                winRate(wonCount, lostCount),
 		"open_deals_count":        openDealsCount,
 		"avg_deal_size":           avgDealSize,
 		"avg_sales_cycle_days":    avgSalesCycleDays,
@@ -192,11 +192,9 @@ func (h *DashboardHandler) industryBreakdown(c *fiber.Ctx) []industryBreakdownIt
 
 	result := make([]industryBreakdownItem, 0, len(rows))
 	for _, r := range rows {
-		rate := 0.0
-		if r.WonCount+r.LostCount > 0 {
-			rate = float64(r.WonCount) / float64(r.WonCount+r.LostCount) * 100
-		}
-		result = append(result, industryBreakdownItem{Industry: r.Industry, WinRate: rate, WonCount: r.WonCount})
+		result = append(result, industryBreakdownItem{
+			Industry: r.Industry, WinRate: winRate(r.WonCount, r.LostCount), WonCount: r.WonCount,
+		})
 	}
 	return result
 }
@@ -228,12 +226,9 @@ func (h *DashboardHandler) teamPerformance(c *fiber.Ctx) []teamPerformanceItem {
 
 	result := make([]teamPerformanceItem, 0, len(rows))
 	for _, r := range rows {
-		rate := 0.0
-		if r.WonCount+r.LostCount > 0 {
-			rate = float64(r.WonCount) / float64(r.WonCount+r.LostCount) * 100
-		}
 		result = append(result, teamPerformanceItem{
-			UserID: r.UserID, Name: names[r.UserID], WonCount: r.WonCount, WonValue: r.WonValue, WinRate: rate,
+			UserID: r.UserID, Name: names[r.UserID], WonCount: r.WonCount, WonValue: r.WonValue,
+			WinRate: winRate(r.WonCount, r.LostCount),
 		})
 	}
 	return result

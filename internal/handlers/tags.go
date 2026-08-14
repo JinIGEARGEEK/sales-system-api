@@ -4,6 +4,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
@@ -59,10 +60,13 @@ func (h *TagHandler) Create(c *fiber.Ctx) error {
 		return utils.ValidationError(c, "name is required", map[string][]string{"name": {"required"}})
 	}
 
+	actorID := middleware.CurrentUserID(c)
 	tag := models.Tag{Name: form.Name, Category: form.Category, Description: form.Description, Status: form.Status}
 	if tag.Status == "" {
 		tag.Status = models.TagStatusActive
 	}
+	tag.CreatedBy = &actorID
+	tag.UpdatedBy = &actorID
 	if err := h.DB.Create(&tag).Error; err != nil {
 		return utils.ValidationError(c, "Tag name already in use", map[string][]string{"name": {"Name is already in use"}})
 	}
@@ -85,6 +89,8 @@ func (h *TagHandler) Update(c *fiber.Ctx) error {
 	if form.Status != "" {
 		tag.Status = form.Status
 	}
+	actorID := middleware.CurrentUserID(c)
+	tag.UpdatedBy = &actorID
 
 	if err := h.DB.Save(&tag).Error; err != nil {
 		return utils.Internal(c, "Failed to update tag")
@@ -99,6 +105,8 @@ func (h *TagHandler) Delete(c *fiber.Ctx) error {
 		return utils.NotFound(c, "Tag not found")
 	}
 	tag.Status = models.TagStatusInactive
+	actorID := middleware.CurrentUserID(c)
+	tag.DeletedBy = &actorID
 	if err := h.DB.Save(&tag).Error; err != nil {
 		return utils.Internal(c, "Failed to deactivate tag")
 	}

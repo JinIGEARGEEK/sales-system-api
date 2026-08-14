@@ -90,6 +90,11 @@ func ApplySort(db *gorm.DB, sortParam string, allowed map[string]bool, defaultSo
 			return db
 		}
 		col = defaultSort
+		desc = false
+		if len(col) > 0 && col[0] == '-' {
+			desc = true
+			col = col[1:]
+		}
 	}
 	if desc {
 		return db.Order(col + " DESC")

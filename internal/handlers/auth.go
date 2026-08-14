@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -56,8 +57,12 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 	}
 
 	now := time.Now()
-	h.DB.Model(&user).Update("latest_login", &now)
-	user.LatestLogin = &now
+	if err := h.DB.Model(&user).Update("latest_login", &now).Error; err != nil {
+		// Best-effort: don't fail the login over a bookkeeping write.
+		log.Printf("login: failed to record latest_login for user %d: %v", user.ID, err)
+	} else {
+		user.LatestLogin = &now
+	}
 
 	return utils.OK(c, fiber.Map{
 		"access_token": token,

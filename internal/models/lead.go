@@ -27,10 +27,10 @@ type Lead struct {
 	CompanyName string     `json:"company_name"`
 	Email       string     `json:"email"`
 	Phone       string     `json:"phone"`
-	Source      LeadSource `gorm:"type:varchar(16)" json:"source"`
-	Status      LeadStatus `gorm:"type:varchar(16);default:'New'" json:"status"`
+	Source      LeadSource `gorm:"type:varchar(16);index" json:"source"`
+	Status      LeadStatus `gorm:"type:varchar(16);default:'New';index" json:"status"`
 	Notes       string     `json:"notes"`
-	AssignedTo  *uint      `json:"assigned_to"`
+	AssignedTo  *uint      `gorm:"index" json:"assigned_to"`
 }
 
 func (Lead) TableName() string { return "leads" }

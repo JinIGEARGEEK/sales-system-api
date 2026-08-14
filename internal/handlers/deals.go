@@ -131,6 +131,13 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a deal to another sales rep")
 	}
+	if form.Title == "" || form.CompanyID == 0 || form.ContactID == 0 {
+		return utils.ValidationError(c, "company_id, contact_id and title are required", map[string][]string{
+			"company_id": {"required"},
+			"contact_id": {"required"},
+			"title":      {"required"},
+		})
+	}
 
 	deal.CompanyID, deal.ContactID, deal.Title, deal.Value = form.CompanyID, form.ContactID, form.Title, form.Value
 	deal.Stage, deal.Status, deal.ExpectedCloseDate = form.Stage, form.Status, form.ExpectedCloseDate
@@ -231,8 +238,17 @@ func (h *DealHandler) Reassign(c *fiber.Ctx) error {
 		return utils.BadRequest(c, "Invalid request body")
 	}
 
+	before := models.JSONMap{"assigned_to": deal.AssignedTo}
 	deal.AssignedTo = form.AssignedTo
-	if err := h.DB.Save(&deal).Error; err != nil {
+
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&deal).Error; err != nil {
+			return err
+		}
+		after := models.JSONMap{"assigned_to": deal.AssignedTo}
+		return utils.WriteAuditLog(tx, "deal", deal.ID, "reassigned", before, after, middleware.CurrentUserID(c))
+	})
+	if err != nil {
 		return utils.Internal(c, "Failed to reassign deal")
 	}
 	return utils.OK(c, deal)

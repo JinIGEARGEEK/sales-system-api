@@ -111,6 +111,9 @@ func (h *ActivityHandler) Delete(c *fiber.Ctx) error {
 	if err := h.DB.First(&activity, c.Params("id")).Error; err != nil {
 		return utils.NotFound(c, "Activity not found")
 	}
+	if !CanWrite(c, &activity.CreatedByID) {
+		return utils.Forbidden(c, "Not authorized to delete this activity")
+	}
 	if err := h.DB.Delete(&activity).Error; err != nil {
 		return utils.Internal(c, "Failed to delete activity")
 	}

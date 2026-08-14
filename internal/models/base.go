@@ -29,6 +29,6 @@ type SimpleModel struct {
 // "soft-delete"/"archived") — Lead, Deal, Activity, Payment, Task, Quote, Contract.
 type HardDeleteModel struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
-	CreatedAt time.Time `json:"created_at"`
+	CreatedAt time.Time `gorm:"index" json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

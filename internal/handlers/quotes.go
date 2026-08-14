@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -9,6 +10,20 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
+
+// dealForSubResource loads the parent Deal for a quote/id param and enforces the same
+// CanWrite ownership check DealHandler applies directly to the deal itself —
+// otherwise a rep blocked from editing a colleague's deal could still edit its quotes.
+func dealForSubResource(c *fiber.Ctx, db *gorm.DB, dealIDParam string) (*models.Deal, error) {
+	var deal models.Deal
+	if err := db.First(&deal, dealIDParam).Error; err != nil {
+		return nil, err
+	}
+	if !CanWrite(c, deal.AssignedTo) {
+		return nil, errForbidden
+	}
+	return &deal, nil
+}
 
 type QuoteHandler struct {
 	DB *gorm.DB
@@ -35,9 +50,9 @@ type quoteForm struct {
 
 // Create — POST /deals/:dealId/quotes. A line-item quote.
 func (h *QuoteHandler) Create(c *fiber.Ctx) error {
-	var deal models.Deal
-	if err := h.DB.First(&deal, c.Params("dealId")).Error; err != nil {
-		return utils.NotFound(c, "Deal not found")
+	deal, err := dealForSubResource(c, h.DB, c.Params("dealId"))
+	if err != nil {
+		return respondFindErr(c, err, "Deal not found")
 	}
 
 	var form quoteForm
@@ -61,9 +76,9 @@ func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 // Upload — POST /deals/:dealId/quotes/upload. Uploads a PDF quote in place of
 // line items — sets file_name/file_url/file_size/uploaded_at, leaves items empty.
 func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
-	var deal models.Deal
-	if err := h.DB.First(&deal, c.Params("dealId")).Error; err != nil {
-		return utils.NotFound(c, "Deal not found")
+	deal, err := dealForSubResource(c, h.DB, c.Params("dealId"))
+	if err != nil {
+		return respondFindErr(c, err, "Deal not found")
 	}
 
 	fh, err := c.FormFile("file")
@@ -72,10 +87,7 @@ func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 	}
 	fileURL, size, err := utils.SaveUpload(c, fh)
 	if err != nil {
-		if err.Error() == "file too large" {
-			return utils.ErrorResponse(c, fiber.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", "File exceeds 10MB limit")
-		}
-		return utils.Internal(c, "Failed to save file")
+		return utils.RespondUploadError(c, err)
 	}
 
 	now := time.Now()
@@ -96,6 +108,9 @@ func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	if err := h.DB.First(&quote, c.Params("id")).Error; err != nil {
 		return utils.NotFound(c, "Quote not found")
 	}
+	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(quote.DealID)); err != nil {
+		return respondFindErr(c, err, "Deal not found")
+	}
 
 	var form quoteForm
 	if err := c.BodyParser(&form); err != nil {
@@ -105,7 +120,9 @@ func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	if form.Items != nil {
 		quote.Items = models.JSONItems(form.Items)
 	}
-	quote.ValidityDate = form.ValidityDate
+	if form.ValidityDate != nil {
+		quote.ValidityDate = form.ValidityDate
+	}
 	if form.Status != "" {
 		quote.Status = form.Status
 	}
@@ -121,6 +138,9 @@ func (h *QuoteHandler) Delete(c *fiber.Ctx) error {
 	var quote models.Quote
 	if err := h.DB.First(&quote, c.Params("id")).Error; err != nil {
 		return utils.NotFound(c, "Quote not found")
+	}
+	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(quote.DealID)); err != nil {
+		return respondFindErr(c, err, "Deal not found")
 	}
 	if err := h.DB.Delete(&quote).Error; err != nil {
 		return utils.Internal(c, "Failed to delete quote")

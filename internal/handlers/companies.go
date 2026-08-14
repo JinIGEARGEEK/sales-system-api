@@ -5,6 +5,7 @@ import (
 	"github.com/lib/pq"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
@@ -66,6 +67,7 @@ func (h *CompanyHandler) Create(c *fiber.Ctx) error {
 		return utils.ValidationError(c, "name is required", map[string][]string{"name": {"required"}})
 	}
 
+	actorID := middleware.CurrentUserID(c)
 	company := models.Company{
 		Name: form.Name, Industry: form.Industry, Size: form.Size, Website: form.Website,
 		Tags: pq.StringArray(form.Tags), Notes: form.Notes,
@@ -74,6 +76,8 @@ func (h *CompanyHandler) Create(c *fiber.Ctx) error {
 	if company.Status == "" {
 		company.Status = models.StatusActive
 	}
+	company.CreatedBy = &actorID
+	company.UpdatedBy = &actorID
 	if err := h.DB.Create(&company).Error; err != nil {
 		return utils.Internal(c, "Failed to create company")
 	}
@@ -107,6 +111,8 @@ func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 	if form.Status != "" {
 		company.Status = models.ActiveArchivedStatus(form.Status)
 	}
+	actorID := middleware.CurrentUserID(c)
+	company.UpdatedBy = &actorID
 
 	if err := h.DB.Save(&company).Error; err != nil {
 		return utils.Internal(c, "Failed to update company")
@@ -122,6 +128,8 @@ func (h *CompanyHandler) Delete(c *fiber.Ctx) error {
 		return utils.NotFound(c, "Company not found")
 	}
 	company.Status = models.StatusArchived
+	actorID := middleware.CurrentUserID(c)
+	company.DeletedBy = &actorID
 	if err := h.DB.Save(&company).Error; err != nil {
 		return utils.Internal(c, "Failed to archive company")
 	}
