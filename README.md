@@ -82,6 +82,21 @@ Resources: Auth & Users, Leads, Companies, Contacts, Deals, Activities, Tags, Qu
 
 RBAC is enforced server-side on every route — never rely on the frontend hiding a button (NFR-001).
 
+## Deploying to Railway
+
+The repo builds via the included `Dockerfile` and `railway.toml` (health check at `GET /health`, restart-on-failure). Steps:
+
+1. **Create the Railway project** and add a **PostgreSQL** plugin — Railway injects `DATABASE_URL` automatically, which `internal/config`/`internal/database` prefer over the discrete `DB_*` vars, so no extra DB wiring is needed.
+2. **Connect the repo.** Railway's native git auto-deploy only supports GitHub — this repo lives on Bitbucket, so either:
+   - Mirror the repo to GitHub and connect that, or
+   - Deploy via the [Railway CLI](https://docs.railway.app/guides/cli) (`railway login && railway link && railway up`) run locally or from a Bitbucket Pipeline (`railway up --service <name>` using a `RAILWAY_TOKEN` repo variable) on every push to `main`.
+3. **Set environment variables** on the service (Railway dashboard → Variables): `JWT_SECRET` (required — a real secret, not the default), `JWT_EXPIRY_HOURS`, `APP_ENV=production`. Leave `PORT` unset — Railway injects it and `config.Load()` already reads it.
+4. **File uploads**: `./uploads` (Quote PDFs, signed Contracts) is local-disk storage, which does **not** persist across redeploys or scale across replicas on Railway's ephemeral filesystem. Either:
+   - Add a [Railway Volume](https://docs.railway.app/reference/volumes) mounted at `/app/uploads` as a quick fix (fine for a single instance), or
+   - Move to S3-compatible object storage (the real fix, needed before this handles production traffic at any scale) — not implemented yet.
+5. **First deploy**: the app auto-runs `AutoMigrate` and seeds an initial Admin account on boot if `users` is empty — check the deploy logs for the generated username/password.
+6. **Frontend**: the `sales-system` Nuxt app builds to a static SPA (`ssr: false`) — Railway can serve it too (small Dockerfile + static file server, or Nixpacks auto-detection), but S3+CloudFront/Vercel/Netlify are typically simpler/cheaper for a pure static build. Whichever host you pick, set its `API_URL` build-time env var to this service's Railway-issued domain (or custom domain once attached).
+
 ## Notes for contributors
 
 - The frontend's `AdminUser.role` type was originally `Admin | Editor | Viewer`, which conflicted with the roles actually enforced here. This has been reconciled: both frontend and backend now use `Admin | Sales Rep | Sales Manager | Production`.

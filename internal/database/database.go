@@ -12,10 +12,16 @@ import (
 )
 
 func Connect(cfg *config.Config) (*gorm.DB, error) {
-	dsn := fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
-		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName, cfg.DBSSLMode,
-	)
+	// Railway/Heroku/Render-style platforms inject a single DATABASE_URL for their
+	// managed Postgres add-on rather than discrete DB_HOST/DB_PORT/etc — prefer it
+	// when present instead of requiring the platform's env vars to be remapped.
+	dsn := cfg.DatabaseURL
+	if dsn == "" {
+		dsn = fmt.Sprintf(
+			"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+			cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName, cfg.DBSSLMode,
+		)
+	}
 
 	logLevel := logger.Silent
 	if cfg.AppEnv == "development" {

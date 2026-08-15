@@ -39,7 +39,15 @@ func main() {
 	})
 	app.Use(recover.New())
 	app.Use(logger.New())
-	app.Use(cors.New())
+	app.Use(cors.New(cors.Config{
+		AllowOrigins: cfg.CORSOrigins,
+	}))
+
+	// Unauthenticated — used by the hosting platform's health check (e.g.
+	// Railway) to decide whether a deploy is ready to receive traffic.
+	app.Get("/health", func(c *fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
 
 	routes.Setup(app, db, cfg)
 
@@ -52,10 +60,20 @@ func main() {
 // default plain-text response.
 func apiErrorHandler(c *fiber.Ctx, err error) error {
 	code := fiber.StatusInternalServerError
+	message := err.Error()
 	if fe, ok := err.(*fiber.Error); ok {
 		code = fe.Code
+		message = fe.Message
 	}
-	return utils.ErrorResponse(c, code, "INTERNAL_ERROR", err.Error())
+	// 5xx messages can carry raw Go/GORM/driver error text (internal details
+	// that shouldn't reach a client) — log the real error server-side and
+	// return a generic message instead. 4xx messages (e.g. Fiber's own
+	// "Cannot GET /x") are safe to pass through as-is.
+	if code >= fiber.StatusInternalServerError {
+		log.Printf("unhandled error on %s %s: %v", c.Method(), c.Path(), err)
+		message = "Internal server error"
+	}
+	return utils.ErrorResponse(c, code, "INTERNAL_ERROR", message)
 }
 
 // seedAdmin creates an initial Admin user if the users table is empty so

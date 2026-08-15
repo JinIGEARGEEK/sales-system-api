@@ -1,0 +1,9 @@
+.git
+.claude
+.env
+/uploads
+/tmp
+*.log
+.DS_Store
+biz_spec
+README.md
