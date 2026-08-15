@@ -60,7 +60,7 @@ These apply to every endpoint below unless a section says otherwise.
 
 | Method | Path | Auth | Status | Description |
 |---|---|---|---|---|
-| `POST` | `/auth/login` | none | 🟢 | Body: `{ username: string, password: string }` (frontend field names, see `pages/login.vue`). Returns `{ access_token: string, user: User }`. |
+| `POST` | `/auth/login` | none | 🟢 | Body: `{ email: string, password: string }` (frontend field names, see `pages/login.vue`). Returns `{ access_token: string, user: User }`. |
 | `POST` | `/auth/logout` | Bearer | 🟢 | Invalidates the token server-side if using a blocklist; frontend clears `localStorage` regardless (`useAuth().removeAccessToken()`). |
 | `GET` | `/auth/me` | Bearer | 🟢 | Returns the current `User` (§2.1). Used to hydrate `stores/user.ts` on load instead of trusting client state alone. |
 
@@ -112,7 +112,7 @@ Resource-specific filter params (status, stage, date range, etc.) are listed per
   "error": {
     "code": "VALIDATION_ERROR",
     "message": "Human-readable summary",
-    "fields": { "email": ["Email is already in use"] }
+    "fields": { "email": ["Email already in use"] }
   }
 }
 ```
@@ -154,9 +154,8 @@ interface User {
   id: number
   first_name: string
   last_name: string
-  username: string
   tel: string
-  email: string
+  email: string   // login identifier; must be unique and on the @igeargeek.com domain
   accepted_consent_id: number | null
   is_active: boolean
   latest_login: string | null   // ISO 8601
@@ -180,9 +179,9 @@ interface AdminUser extends User {
 | Method | Path | Auth | Status | Description |
 |---|---|---|---|---|
 | `GET` | `/users` | Admin | 🟢 | List staff accounts. Filters: `role`, `status` (`active`/`inactive` derived from `is_active`), `search` (name/email). Backs `pages/admin/users/index.vue`. |
-| `POST` | `/users` | Admin | 🟢 | Create a staff account. Body per `AdminUserForm` fields: `first_name, last_name, email, tel, role, status, notes`. |
+| `POST` | `/users` | Admin | 🟢 | Create a staff account. Body per `AdminUserForm` fields: `first_name, last_name, email, tel, role, status, notes`. `email` doubles as the login identifier and must be a valid address on the company domain (`@igeargeek.com`) — enforced server-side, not just a frontend hint. |
 | `GET` | `/users/:id` | Admin | 🟢 | Single staff record — `pages/admin/users/[id].vue`. |
-| `PUT` | `/users/:id` | Admin | 🟢 | Full update. |
+| `PUT` | `/users/:id` | Admin | 🟢 | Full update. `email` is required and re-validated against the same `@igeargeek.com` rule as create. |
 | `DELETE` | `/users/:id` | Admin | 🟢 | Soft-delete (deactivate), not a hard delete — see §1.6. |
 | `GET` | `/team-members` | any authenticated | 🟢 | Lightweight `{ id, name, email }[]` list (`TeamMember` in `interfaces/crm.d.ts`) for assignee dropdowns (`CrmTeamMemberSelect`) — do not require Admin role for this one, every Sales role needs it to assign Leads/Deals/Tasks. |
 

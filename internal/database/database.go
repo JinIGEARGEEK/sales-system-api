@@ -41,6 +41,15 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 // AutoMigrate creates/updates every table this API owns. Kept as a single explicit
 // list (rather than reflection over a registry) so adding a resource is a one-line diff.
 func AutoMigrate(db *gorm.DB) error {
+	// GORM's AutoMigrate never drops columns (by design, to avoid accidental data
+	// loss), so the retired `username` column — NOT NULL on existing databases —
+	// has to be dropped explicitly or every insert against models.User fails.
+	if db.Migrator().HasColumn(&models.User{}, "username") {
+		if err := db.Migrator().DropColumn(&models.User{}, "username"); err != nil {
+			return fmt.Errorf("drop legacy username column: %w", err)
+		}
+	}
+
 	return db.AutoMigrate(
 		&models.User{},
 		&models.Lead{},

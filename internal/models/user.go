@@ -20,7 +20,6 @@ type User struct {
 	AuditedModel
 	FirstName         string     `gorm:"not null" json:"first_name"`
 	LastName          string     `gorm:"not null" json:"last_name"`
-	Username          string     `gorm:"uniqueIndex;not null" json:"username"`
 	Tel               string     `json:"tel"`
 	Email             string     `gorm:"uniqueIndex;not null" json:"email"`
 	PasswordHash      string     `gorm:"not null" json:"-"`

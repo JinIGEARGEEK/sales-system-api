@@ -45,12 +45,21 @@ func (h *UserHandler) List(c *fiber.Ctx) error {
 	return utils.List(c, users, page, perPage, total)
 }
 
+// validateCompanyEmail returns a 422 ValidationError if email isn't a valid
+// address on utils.AllowedEmailDomain, nil otherwise.
+func validateCompanyEmail(c *fiber.Ctx, email string) error {
+	if utils.IsValidCompanyEmail(email) {
+		return nil
+	}
+	msg := "email must be a valid @" + utils.AllowedEmailDomain + " address"
+	return utils.ValidationError(c, msg, map[string][]string{"email": {msg}})
+}
+
 type userForm struct {
 	FirstName string      `json:"first_name"`
 	LastName  string      `json:"last_name"`
 	Email     string      `json:"email"`
 	Tel       string      `json:"tel"`
-	Username  string      `json:"username"`
 	Password  string      `json:"password"`
 	Role      models.Role `json:"role"`
 	Status    string      `json:"status"`
@@ -70,15 +79,10 @@ func (h *UserHandler) Create(c *fiber.Ctx) error {
 			"email":      {"required"},
 		})
 	}
+	if err := validateCompanyEmail(c, form.Email); err != nil {
+		return err
+	}
 
-	username := form.Username
-	if username == "" {
-		username = form.Email
-	}
-	if !utils.IsValidUsername(username) {
-		msg := "username must be a valid @" + utils.AllowedUsernameDomain + " email address"
-		return utils.ValidationError(c, msg, map[string][]string{"username": {msg}})
-	}
 	password := form.Password
 	if password == "" {
 		password = utils.NewTempPassword()
@@ -94,7 +98,6 @@ func (h *UserHandler) Create(c *fiber.Ctx) error {
 		LastName:     form.LastName,
 		Email:        form.Email,
 		Tel:          form.Tel,
-		Username:     username,
 		PasswordHash: hash,
 		Role:         form.Role,
 		Notes:        form.Notes,
@@ -104,8 +107,8 @@ func (h *UserHandler) Create(c *fiber.Ctx) error {
 	user.UpdatedBy = &actorID
 
 	if err := h.DB.Create(&user).Error; err != nil {
-		return utils.ValidationError(c, "Email or username already in use", map[string][]string{
-			"email": {"Email is already in use"},
+		return utils.ValidationError(c, "Email already in use", map[string][]string{
+			"email": {"Email already in use"},
 		})
 	}
 	return utils.Created(c, user)
@@ -130,6 +133,12 @@ func (h *UserHandler) Update(c *fiber.Ctx) error {
 	var form userForm
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
+	}
+	if form.Email == "" {
+		return utils.ValidationError(c, "email is required", map[string][]string{"email": {"required"}})
+	}
+	if err := validateCompanyEmail(c, form.Email); err != nil {
+		return err
 	}
 
 	actorID := middleware.CurrentUserID(c)

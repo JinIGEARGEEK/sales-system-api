@@ -23,7 +23,7 @@ func NewAuthHandler(db *gorm.DB, cfg *config.Config) *AuthHandler {
 }
 
 type loginRequest struct {
-	Username string `json:"username"`
+	Email    string `json:"email"`
 	Password string `json:"password"`
 }
 
@@ -33,22 +33,22 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
-	if req.Username == "" || req.Password == "" {
-		return utils.ValidationError(c, "username and password are required", map[string][]string{
-			"username": {"required"},
+	if req.Email == "" || req.Password == "" {
+		return utils.ValidationError(c, "email and password are required", map[string][]string{
+			"email":    {"required"},
 			"password": {"required"},
 		})
 	}
 
 	var user models.User
-	if err := h.DB.Where("username = ?", req.Username).First(&user).Error; err != nil {
-		return utils.Unauthorized(c, "Invalid username or password")
+	if err := h.DB.Where("email = ?", req.Email).First(&user).Error; err != nil {
+		return utils.Unauthorized(c, "Invalid email or password")
 	}
 	if !user.IsActive {
 		return utils.Unauthorized(c, "Account is inactive")
 	}
 	if !utils.CheckPassword(user.PasswordHash, req.Password) {
-		return utils.Unauthorized(c, "Invalid username or password")
+		return utils.Unauthorized(c, "Invalid email or password")
 	}
 
 	token, err := utils.GenerateToken(h.Cfg.JWTSecret, h.Cfg.JWTExpiryHr, user.ID, user.Role)

@@ -181,8 +181,8 @@ func hashedTestPassword(t *testing.T) string {
 }
 
 // CreateUser inserts a user with role `role` and password TestPassword,
-// returning the persisted row. Username/email are unique per call so tests
-// can run repeatedly against the truncated-between-tests shared DB without
+// returning the persisted row. Email is unique per call so tests can run
+// repeatedly against the truncated-between-tests shared DB without
 // unique-constraint collisions.
 func CreateUser(t *testing.T, db *gorm.DB, role models.Role) *models.User {
 	t.Helper()
@@ -194,8 +194,7 @@ func CreateUser(t *testing.T, db *gorm.DB, role models.Role) *models.User {
 	u := &models.User{
 		FirstName:    "Test",
 		LastName:     "User" + tag,
-		Username:     "user_" + tag,
-		Email:        "user_" + tag + "@example.com",
+		Email:        "user_" + tag + "@igeargeek.com",
 		PasswordHash: hash,
 		Role:         role,
 		IsActive:     true,

@@ -85,7 +85,7 @@ func seedAdmin(db *gorm.DB) {
 		return
 	}
 
-	const username = "admin"
+	const email = "admin@igeargeek.com"
 	password := utils.NewTempPassword()
 
 	hash, err := utils.HashPassword(password)
@@ -96,8 +96,7 @@ func seedAdmin(db *gorm.DB) {
 	admin := models.User{
 		FirstName:    "System",
 		LastName:     "Admin",
-		Username:     username,
-		Email:        "admin@example.com",
+		Email:        email,
 		PasswordHash: hash,
 		Role:         models.RoleAdmin,
 		IsActive:     true,
@@ -106,5 +105,5 @@ func seedAdmin(db *gorm.DB) {
 		log.Fatalf("failed to seed admin user: %v", err)
 	}
 
-	log.Printf("Seeded initial admin user — username: %s, password: %s (change this immediately)", username, password)
+	log.Printf("Seeded initial admin user — email: %s, password: %s (change this immediately)", email, password)
 }

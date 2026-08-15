@@ -5,19 +5,19 @@ import (
 	"strings"
 )
 
-// AllowedUsernameDomain restricts staff usernames to the company email domain.
-const AllowedUsernameDomain = "igeargeek.com"
+// AllowedEmailDomain restricts staff login emails to the company domain.
+const AllowedEmailDomain = "igeargeek.com"
 
-// IsValidUsername reports whether username is a syntactically valid email
-// address on AllowedUsernameDomain.
-func IsValidUsername(username string) bool {
-	addr, err := mail.ParseAddress(username)
-	if err != nil || addr.Address != username {
+// IsValidCompanyEmail reports whether email is a syntactically valid address
+// on AllowedEmailDomain.
+func IsValidCompanyEmail(email string) bool {
+	addr, err := mail.ParseAddress(email)
+	if err != nil || addr.Address != email {
 		return false
 	}
-	at := strings.LastIndex(username, "@")
+	at := strings.LastIndex(email, "@")
 	if at < 0 {
 		return false
 	}
-	return strings.EqualFold(username[at+1:], AllowedUsernameDomain)
+	return strings.EqualFold(email[at+1:], AllowedEmailDomain)
 }

@@ -18,7 +18,7 @@ func TestLogin_Success(t *testing.T) {
 	user := testutil.CreateUser(t, db, models.RoleAdmin)
 
 	req := testutil.NewRequest(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
-		"username": user.Username,
+		"email":    user.Email,
 		"password": testutil.TestPassword,
 	}, "")
 
@@ -39,7 +39,7 @@ func TestLogin_WrongPassword(t *testing.T) {
 	user := testutil.CreateUser(t, db, models.RoleAdmin)
 
 	req := testutil.NewRequest(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
-		"username": user.Username,
+		"email":    user.Email,
 		"password": "not-the-password",
 	}, "")
 
@@ -51,7 +51,7 @@ func TestLogin_UnknownUser(t *testing.T) {
 	app, _ := testutil.App(t)
 
 	req := testutil.NewRequest(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
-		"username": "does-not-exist",
+		"email":    "does-not-exist@igeargeek.com",
 		"password": "whatever",
 	}, "")
 

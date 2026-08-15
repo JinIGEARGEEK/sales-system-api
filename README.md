@@ -42,7 +42,7 @@ cp .env.example .env      # adjust DB_* / JWT_SECRET as needed
 go run ./cmd/api
 ```
 
-On first run, if the `users` table is empty, the server seeds an Admin account and logs its generated username/password to stdout — use that to log in and start creating data.
+On first run, if the `users` table is empty, the server seeds an Admin account and logs its generated email/password to stdout — use that to log in and start creating data.
 
 Migrations run automatically on boot via `database.AutoMigrate` — no separate migration step needed for local dev.
 
@@ -94,7 +94,7 @@ The repo builds via the included `Dockerfile` and `railway.toml` (health check a
 4. **File uploads**: `./uploads` (Quote PDFs, signed Contracts) is local-disk storage, which does **not** persist across redeploys or scale across replicas on Railway's ephemeral filesystem. Either:
    - Add a [Railway Volume](https://docs.railway.app/reference/volumes) mounted at `/app/uploads` as a quick fix (fine for a single instance), or
    - Move to S3-compatible object storage (the real fix, needed before this handles production traffic at any scale) — not implemented yet.
-5. **First deploy**: the app auto-runs `AutoMigrate` and seeds an initial Admin account on boot if `users` is empty — check the deploy logs for the generated username/password.
+5. **First deploy**: the app auto-runs `AutoMigrate` and seeds an initial Admin account on boot if `users` is empty — check the deploy logs for the generated email/password.
 6. **Frontend**: the `sales-system` Nuxt app builds to a static SPA (`ssr: false`) — Railway can serve it too (small Dockerfile + static file server, or Nixpacks auto-detection), but S3+CloudFront/Vercel/Netlify are typically simpler/cheaper for a pure static build. Whichever host you pick, set its `API_URL` build-time env var to this service's Railway-issued domain (or custom domain once attached).
 
 ## Notes for contributors
