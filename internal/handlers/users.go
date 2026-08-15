@@ -75,6 +75,10 @@ func (h *UserHandler) Create(c *fiber.Ctx) error {
 	if username == "" {
 		username = form.Email
 	}
+	if !utils.IsValidUsername(username) {
+		msg := "username must be a valid @" + utils.AllowedUsernameDomain + " email address"
+		return utils.ValidationError(c, msg, map[string][]string{"username": {msg}})
+	}
 	password := form.Password
 	if password == "" {
 		password = utils.NewTempPassword()
