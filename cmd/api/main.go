@@ -94,12 +94,13 @@ func seedAdmin(db *gorm.DB) {
 	}
 
 	admin := models.User{
-		FirstName:    "System",
-		LastName:     "Admin",
-		Email:        email,
-		PasswordHash: hash,
-		Role:         models.RoleAdmin,
-		IsActive:     true,
+		FirstName:          "System",
+		LastName:           "Admin",
+		Email:              email,
+		PasswordHash:       hash,
+		Role:               models.RoleAdmin,
+		IsActive:           true,
+		MustChangePassword: true,
 	}
 	if err := db.Create(&admin).Error; err != nil {
 		log.Fatalf("failed to seed admin user: %v", err)

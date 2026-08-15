@@ -18,16 +18,20 @@ const (
 // User is the staff account model — api-system-spec.md §2.1.
 type User struct {
 	AuditedModel
-	FirstName         string     `gorm:"not null" json:"first_name"`
-	LastName          string     `gorm:"not null" json:"last_name"`
-	Tel               string     `json:"tel"`
-	Email             string     `gorm:"uniqueIndex;not null" json:"email"`
-	PasswordHash      string     `gorm:"not null" json:"-"`
-	Role              Role       `gorm:"type:varchar(32);not null" json:"role"`
-	Notes             string     `json:"notes"`
-	AcceptedConsentID *uint      `json:"accepted_consent_id"`
-	IsActive          bool       `gorm:"default:true" json:"is_active"`
-	LatestLogin       *time.Time `json:"latest_login"`
+	FirstName         string `gorm:"not null" json:"first_name"`
+	LastName          string `gorm:"not null" json:"last_name"`
+	Tel               string `json:"tel"`
+	Email             string `gorm:"uniqueIndex;not null" json:"email"`
+	PasswordHash      string `gorm:"not null" json:"-"`
+	Role              Role   `gorm:"type:varchar(32);not null" json:"role"`
+	Notes             string `json:"notes"`
+	AcceptedConsentID *uint  `json:"accepted_consent_id"`
+	IsActive          bool   `gorm:"default:true" json:"is_active"`
+	// MustChangePassword is set whenever an Admin assigns this account's password
+	// (creation or reset) and cleared once the holder sets their own via
+	// POST /auth/change-password — see middleware.RequirePasswordChanged.
+	MustChangePassword bool       `gorm:"default:false;not null" json:"must_change_password"`
+	LatestLogin        *time.Time `json:"latest_login"`
 }
 
 func (User) TableName() string { return "users" }

@@ -73,11 +73,11 @@ func (h *UserHandler) Create(c *fiber.Ctx) error {
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
-	if form.FirstName == "" || form.Email == "" {
-		return utils.ValidationError(c, "first_name and email are required", map[string][]string{
-			"first_name": {"required"},
-			"email":      {"required"},
-		})
+	if err := utils.RequireFields(c,
+		utils.Field{Name: "first_name", Value: form.FirstName},
+		utils.Field{Name: "email", Value: form.Email},
+	); err != nil {
+		return err
 	}
 	if err := validateCompanyEmail(c, form.Email); err != nil {
 		return err
@@ -94,14 +94,15 @@ func (h *UserHandler) Create(c *fiber.Ctx) error {
 
 	actorID := middleware.CurrentUserID(c)
 	user := models.User{
-		FirstName:    form.FirstName,
-		LastName:     form.LastName,
-		Email:        form.Email,
-		Tel:          form.Tel,
-		PasswordHash: hash,
-		Role:         form.Role,
-		Notes:        form.Notes,
-		IsActive:     form.Status != "inactive",
+		FirstName:          form.FirstName,
+		LastName:           form.LastName,
+		Email:              form.Email,
+		Tel:                form.Tel,
+		PasswordHash:       hash,
+		Role:               form.Role,
+		Notes:              form.Notes,
+		IsActive:           form.Status != "inactive",
+		MustChangePassword: true,
 	}
 	user.CreatedBy = &actorID
 	user.UpdatedBy = &actorID
@@ -134,8 +135,8 @@ func (h *UserHandler) Update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
-	if form.Email == "" {
-		return utils.ValidationError(c, "email is required", map[string][]string{"email": {"required"}})
+	if err := utils.RequireFields(c, utils.Field{Name: "email", Value: form.Email}); err != nil {
+		return err
 	}
 	if err := validateCompanyEmail(c, form.Email); err != nil {
 		return err
@@ -159,6 +160,7 @@ func (h *UserHandler) Update(c *fiber.Ctx) error {
 			return utils.Internal(c, "Failed to hash password")
 		}
 		user.PasswordHash = hash
+		user.MustChangePassword = true
 	}
 
 	if err := h.DB.Save(&user).Error; err != nil {

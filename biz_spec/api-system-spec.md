@@ -54,6 +54,8 @@ These apply to every endpoint below unless a section says otherwise.
 | `403` | Redirects to `/` | Authenticated but not authorized for this resource/action |
 | `404` | Redirects to `/error404` | Resource not found |
 
+> **Forced password change is a special `403`.** Every route except `/auth/me`, `/auth/logout`, and `/auth/change-password` returns `403` with `error.code: "PASSWORD_CHANGE_REQUIRED"` for an account whose `must_change_password` is still `true` (§2.1) — set whenever an Admin creates the account or resets its password (§2.2), cleared only by a successful `POST /auth/change-password`. The frontend's blanket "`403` → redirect to `/`" rule (row above) needs a carve-out for this code — otherwise the account bounces to `/`, which immediately 403s again on its own API calls. Check `error.code` in the axios response interceptor and route to a dedicated "set your password" page instead when it's `PASSWORD_CHANGE_REQUIRED`.
+
 - No refresh-token flow exists in the frontend today. Recommend a long-lived access token (or add refresh in the API without requiring a frontend change for v1 — `useAuth` would need a follow-up change to consume it).
 
 #### Endpoints
@@ -63,6 +65,7 @@ These apply to every endpoint below unless a section says otherwise.
 | `POST` | `/auth/login` | none | 🟢 | Body: `{ email: string, password: string }` (frontend field names, see `pages/login.vue`). Returns `{ access_token: string, user: User }`. |
 | `POST` | `/auth/logout` | Bearer | 🟢 | Invalidates the token server-side if using a blocklist; frontend clears `localStorage` regardless (`useAuth().removeAccessToken()`). |
 | `GET` | `/auth/me` | Bearer | 🟢 | Returns the current `User` (§2.1). Used to hydrate `stores/user.ts` on load instead of trusting client state alone. |
+| `POST` | `/auth/change-password` | Bearer | 🟢 | Body: `{ current_password: string, new_password: string, confirm_password: string }`. Verifies `current_password`, requires `new_password === confirm_password` and at least 8 characters and different from the current password, then clears `must_change_password`. Returns the updated `User`. This is the only way to satisfy a `PASSWORD_CHANGE_REQUIRED` block (see the note above the status table), so it stays reachable even while that block is active. |
 
 ### 1.3 Response envelope
 
@@ -158,6 +161,7 @@ interface User {
   email: string   // login identifier; must be unique and on the @igeargeek.com domain
   accepted_consent_id: number | null
   is_active: boolean
+  must_change_password: boolean   // true until the holder sets their own password via POST /auth/change-password
   latest_login: string | null   // ISO 8601
   created_at: string | null
   updated_at: string | null
@@ -179,9 +183,9 @@ interface AdminUser extends User {
 | Method | Path | Auth | Status | Description |
 |---|---|---|---|---|
 | `GET` | `/users` | Admin | 🟢 | List staff accounts. Filters: `role`, `status` (`active`/`inactive` derived from `is_active`), `search` (name/email). Backs `pages/admin/users/index.vue`. |
-| `POST` | `/users` | Admin | 🟢 | Create a staff account. Body per `AdminUserForm` fields: `first_name, last_name, email, tel, role, status, notes`. `email` doubles as the login identifier and must be a valid address on the company domain (`@igeargeek.com`) — enforced server-side, not just a frontend hint. |
+| `POST` | `/users` | Admin | 🟢 | Create a staff account. Body per `AdminUserForm` fields: `first_name, last_name, email, tel, role, status, notes` (and optionally `password` — a random one is generated if omitted). `email` doubles as the login identifier and must be a valid address on the company domain (`@igeargeek.com`) — enforced server-side, not just a frontend hint. `must_change_password` is always set `true` on the created row — not a client-settable field — so every new account is forced through `POST /auth/change-password` on first use. |
 | `GET` | `/users/:id` | Admin | 🟢 | Single staff record — `pages/admin/users/[id].vue`. |
-| `PUT` | `/users/:id` | Admin | 🟢 | Full update. `email` is required and re-validated against the same `@igeargeek.com` rule as create. |
+| `PUT` | `/users/:id` | Admin | 🟢 | Full update. `email` is required and re-validated against the same `@igeargeek.com` rule as create. Supplying a non-empty `password` resets it and re-sets `must_change_password: true`, same as a fresh create. |
 | `DELETE` | `/users/:id` | Admin | 🟢 | Soft-delete (deactivate), not a hard delete — see §1.6. |
 | `GET` | `/team-members` | any authenticated | 🟢 | Lightweight `{ id, name, email }[]` list (`TeamMember` in `interfaces/crm.d.ts`) for assignee dropdowns (`CrmTeamMemberSelect`) — do not require Admin role for this one, every Sales role needs it to assign Leads/Deals/Tasks. |
 

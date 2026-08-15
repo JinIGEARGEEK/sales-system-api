@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"log"
 	"time"
 
@@ -33,11 +34,11 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
-	if req.Email == "" || req.Password == "" {
-		return utils.ValidationError(c, "email and password are required", map[string][]string{
-			"email":    {"required"},
-			"password": {"required"},
-		})
+	if err := utils.RequireFields(c,
+		utils.Field{Name: "email", Value: req.Email},
+		utils.Field{Name: "password", Value: req.Password},
+	); err != nil {
+		return err
 	}
 
 	var user models.User
@@ -81,6 +82,65 @@ func (h *AuthHandler) Me(c *fiber.Ctx) error {
 	var user models.User
 	if err := h.DB.First(&user, middleware.CurrentUserID(c)).Error; err != nil {
 		return utils.NotFound(c, "User not found")
+	}
+	return utils.OK(c, user)
+}
+
+const minPasswordLength = 8
+
+type changePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+	ConfirmPassword string `json:"confirm_password"`
+}
+
+// ChangePassword — POST /auth/change-password. Any authenticated user calls this
+// to set their own password, clearing MustChangePassword — the one route
+// middleware.RequirePasswordChanged always lets through so a forced-change
+// account isn't locked out of the only way to satisfy the requirement.
+func (h *AuthHandler) ChangePassword(c *fiber.Ctx) error {
+	var req changePasswordRequest
+	if err := c.BodyParser(&req); err != nil {
+		return utils.BadRequest(c, "Invalid request body")
+	}
+	if err := utils.RequireFields(c,
+		utils.Field{Name: "current_password", Value: req.CurrentPassword},
+		utils.Field{Name: "new_password", Value: req.NewPassword},
+		utils.Field{Name: "confirm_password", Value: req.ConfirmPassword},
+	); err != nil {
+		return err
+	}
+	if req.NewPassword != req.ConfirmPassword {
+		return utils.ValidationError(c, "new_password and confirm_password must match", map[string][]string{
+			"confirm_password": {"must match new_password"},
+		})
+	}
+	if len(req.NewPassword) < minPasswordLength {
+		msg := fmt.Sprintf("new_password must be at least %d characters", minPasswordLength)
+		return utils.ValidationError(c, msg, map[string][]string{"new_password": {msg}})
+	}
+
+	var user models.User
+	if err := h.DB.First(&user, middleware.CurrentUserID(c)).Error; err != nil {
+		return utils.NotFound(c, "User not found")
+	}
+	if !utils.CheckPassword(user.PasswordHash, req.CurrentPassword) {
+		return utils.Unauthorized(c, "Current password is incorrect")
+	}
+	if req.NewPassword == req.CurrentPassword {
+		return utils.ValidationError(c, "new_password must be different from current password", map[string][]string{
+			"new_password": {"must be different from current password"},
+		})
+	}
+
+	hash, err := utils.HashPassword(req.NewPassword)
+	if err != nil {
+		return utils.Internal(c, "Failed to hash password")
+	}
+	user.PasswordHash = hash
+	user.MustChangePassword = false
+	if err := h.DB.Save(&user).Error; err != nil {
+		return utils.Internal(c, "Failed to update password")
 	}
 	return utils.OK(c, user)
 }

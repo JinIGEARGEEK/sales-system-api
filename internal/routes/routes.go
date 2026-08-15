@@ -37,10 +37,11 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	auth := api.Group("/auth")
 	auth.Post("/login", authH.Login)
 
-	authed := api.Group("", middleware.RequireAuth(cfg))
+	authed := api.Group("", middleware.RequireAuth(cfg), middleware.RequirePasswordChanged(db))
 
 	authed.Post("/auth/logout", authH.Logout)
 	authed.Get("/auth/me", authH.Me)
+	authed.Post("/auth/change-password", authH.ChangePassword)
 
 	// Users — Admin only, except /team-members.
 	adminOnly := middleware.RequireRoles(models.RoleAdmin)

@@ -80,6 +80,75 @@ func TestMe_WithoutToken(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
+func TestChangePassword_Success(t *testing.T) {
+	app, db := testutil.App(t)
+	user := testutil.CreateUser(t, db, models.RoleAdmin)
+	require.NoError(t, db.Model(user).Update("must_change_password", true).Error)
+
+	req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/auth/change-password", map[string]string{
+		"current_password": testutil.TestPassword,
+		"new_password":     "a-new-password1",
+		"confirm_password": "a-new-password1",
+	}, user.ID, user.Role)
+	resp := doJSON(t, app, req, nil)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var reloaded models.User
+	require.NoError(t, db.First(&reloaded, user.ID).Error)
+	assert.False(t, reloaded.MustChangePassword)
+
+	loginReq := testutil.NewRequest(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email":    user.Email,
+		"password": "a-new-password1",
+	}, "")
+	loginResp := doJSON(t, app, loginReq, nil)
+	assert.Equal(t, http.StatusOK, loginResp.StatusCode, "must be able to log in with the new password")
+}
+
+func TestChangePassword_WrongCurrentPassword(t *testing.T) {
+	app, db := testutil.App(t)
+	user := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/auth/change-password", map[string]string{
+		"current_password": "not-the-password",
+		"new_password":     "a-new-password1",
+		"confirm_password": "a-new-password1",
+	}, user.ID, user.Role)
+	resp := doJSON(t, app, req, nil)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestChangePassword_ConfirmMismatch(t *testing.T) {
+	app, db := testutil.App(t)
+	user := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/auth/change-password", map[string]string{
+		"current_password": testutil.TestPassword,
+		"new_password":     "a-new-password1",
+		"confirm_password": "does-not-match",
+	}, user.ID, user.Role)
+	resp := doJSON(t, app, req, nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+}
+
+// TestRequirePasswordChanged_BlocksOtherRoutes proves the forced-change gate is
+// enforced server-side: an account still on an Admin-assigned password can
+// reach only /auth/me, /auth/logout, and /auth/change-password — every other
+// authenticated route (here, /team-members) is blocked until it changes.
+func TestRequirePasswordChanged_BlocksOtherRoutes(t *testing.T) {
+	app, db := testutil.App(t)
+	user := testutil.CreateUser(t, db, models.RoleAdmin)
+	require.NoError(t, db.Model(user).Update("must_change_password", true).Error)
+
+	blocked := testutil.AuthRequest(t, http.MethodGet, "/api/v1/team-members", nil, user.ID, user.Role)
+	blockedResp := doJSON(t, app, blocked, nil)
+	assert.Equal(t, http.StatusForbidden, blockedResp.StatusCode)
+
+	me := testutil.AuthRequest(t, http.MethodGet, "/api/v1/auth/me", nil, user.ID, user.Role)
+	meResp := doJSON(t, app, me, nil)
+	assert.Equal(t, http.StatusOK, meResp.StatusCode, "/auth/me must stay reachable so the frontend can detect the forced-change state")
+}
+
 // TestMe_RejectsNonHS256Alg proves the JWT algorithm-pinning fix: a token
 // forged with HS384 using the *same* secret bytes must still be rejected,
 // because utils.ParseToken pins jwt.WithValidMethods to HS256 only.

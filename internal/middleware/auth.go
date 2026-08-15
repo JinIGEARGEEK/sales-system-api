@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
 
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/models"
@@ -33,6 +34,35 @@ func RequireAuth(cfg *config.Config) fiber.Handler {
 
 		c.Locals(LocalUserID, claims.UserID)
 		c.Locals(LocalRole, claims.Role)
+		return c.Next()
+	}
+}
+
+// passwordChangeExemptPaths lists the only routes a MustChangePassword account
+// may reach — enough to view its own profile, change its password, and log out.
+var passwordChangeExemptPaths = map[string]bool{
+	"/api/v1/auth/logout":          true,
+	"/api/v1/auth/me":              true,
+	"/api/v1/auth/change-password": true,
+}
+
+// RequirePasswordChanged blocks every route except passwordChangeExemptPaths
+// for an account still on an Admin-assigned password, so "must change on first
+// login" is an actual server-side gate rather than a frontend redirect the
+// caller could just skip by hitting the API directly.
+func RequirePasswordChanged(db *gorm.DB) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if passwordChangeExemptPaths[c.Path()] {
+			return c.Next()
+		}
+
+		var mustChange bool
+		if err := db.Model(&models.User{}).Where("id = ?", CurrentUserID(c)).Pluck("must_change_password", &mustChange).Error; err != nil {
+			return utils.Unauthorized(c, "Invalid or expired token")
+		}
+		if mustChange {
+			return utils.ErrorResponse(c, fiber.StatusForbidden, "PASSWORD_CHANGE_REQUIRED", "You must change your password before continuing")
+		}
 		return c.Next()
 	}
 }
