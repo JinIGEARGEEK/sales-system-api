@@ -276,7 +276,7 @@ interface Contact {
 
 | Method | Path | Status | Description |
 |---|---|---|---|
-| `GET` | `/contacts` | 🟢 | Filters: `company_id`, `status`, `tag`, `search` (name/email). Backs `pages/crm/contacts/index.vue` and the Company detail page's contact list. |
+| `GET` | `/contacts` | 🟢 | Filters: `company_id`, `status`, `tag`, `search` (name/email). Backs `pages/crm/contacts/index.vue` and the Company detail page's contact list. Also the source of truth for `pages/crm/deals/create.vue`'s "Primary Contact" field, which must only offer contacts belonging to the Deal's selected Company — done client-side today via `contactsStore.byCompany(company_id)` (a thin wrapper over this same `company_id` relationship) since the store already holds every contact from one unfiltered fetch; a backend serving this at scale should either keep that filter server-side per request or ensure the frontend switches to `?company_id=` here instead of fetching everything. |
 | `POST` | `/contacts` | 🟢 | Create. |
 | `GET` | `/contacts/:id` | 🟢 | Single contact — `pages/crm/contacts/[id].vue`. |
 | `PUT` | `/contacts/:id` | 🟢 | Update. |
