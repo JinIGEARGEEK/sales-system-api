@@ -30,6 +30,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	reportH := handlers.NewReportHandler(db)
 	auditLogH := handlers.NewAuditLogHandler(db)
 	dashboardH := handlers.NewDashboardHandler(db)
+	attachmentH := handlers.NewAttachmentHandler(db)
 
 	api := app.Group("/api/v1")
 
@@ -73,7 +74,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	companies.Get("/:companyId/products", productH.ListForCompany)
 	companies.Post("/:companyId/products", productH.AddForCompany)
 	companies.Get("/:companyId/projects", projectH.ListForCompany)
-	companies.Post("/:companyId/projects", projectH.Create, middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager))
+	companies.Post("/:companyId/projects", middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager), projectH.Create)
 
 	// Contacts
 	contacts := authed.Group("/contacts")
@@ -106,6 +107,14 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	activities.Get("/", activityH.List)
 	activities.Post("/", activityH.Create)
 	activities.Delete("/:id", activityH.Delete)
+
+	// Attachments — Sales/Admin can upload (not Production), any authenticated
+	// role can list; Delete's own-uploader-or-manager check is field-level
+	// inside the handler (mirrors Activity's CanWrite pattern).
+	attachments := authed.Group("/attachments")
+	attachments.Get("/", attachmentH.List)
+	attachments.Post("/", middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager), attachmentH.Create)
+	attachments.Delete("/:id", attachmentH.Delete)
 
 	// Tags
 	tags := authed.Group("/tags")

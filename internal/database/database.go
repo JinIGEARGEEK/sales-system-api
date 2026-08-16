@@ -71,5 +71,6 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.CustomerProduct{},
 		&models.Project{},
 		&models.AuditLogEntry{},
+		&models.Attachment{},
 	)
 }

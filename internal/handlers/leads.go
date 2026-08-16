@@ -34,6 +34,9 @@ func (h *LeadHandler) List(c *fiber.Ctx) error {
 		like := "%" + v + "%"
 		query = query.Where("name ILIKE ? OR company_name ILIKE ? OR email ILIKE ?", like, like, like)
 	}
+	if c.Query("exclude_converted") == "true" {
+		query = query.Where("converted_deal_id IS NULL")
+	}
 
 	var total int64
 	query.Count(&total)
@@ -47,14 +50,14 @@ func (h *LeadHandler) List(c *fiber.Ctx) error {
 }
 
 type leadForm struct {
-	Name        string             `json:"name"`
-	CompanyName string             `json:"company_name"`
-	Email       string             `json:"email"`
-	Phone       string             `json:"phone"`
-	Source      models.LeadSource  `json:"source"`
-	Status      models.LeadStatus  `json:"status"`
-	Notes       string             `json:"notes"`
-	AssignedTo  *uint              `json:"assigned_to"`
+	Name        string            `json:"name"`
+	CompanyName string            `json:"company_name"`
+	Email       string            `json:"email"`
+	Phone       string            `json:"phone"`
+	Source      models.LeadSource `json:"source"`
+	Status      models.LeadStatus `json:"status"`
+	Notes       string            `json:"notes"`
+	AssignedTo  *uint             `json:"assigned_to"`
 }
 
 // Create — POST /leads.
@@ -138,14 +141,14 @@ type convertRequest struct {
 	CompanyID *uint `json:"company_id"`
 	ContactID *uint `json:"contact_id"`
 	Deal      struct {
-		Title             string             `json:"title"`
-		Value             float64            `json:"value"`
-		Stage             models.DealStage   `json:"stage"`
-		ExpectedCloseDate *string            `json:"expected_close_date"`
-		AssignedTo        *uint              `json:"assigned_to"`
-		Channel           models.LeadSource  `json:"channel"`
+		Title             string               `json:"title"`
+		Value             float64              `json:"value"`
+		Stage             models.DealStage     `json:"stage"`
+		ExpectedCloseDate *string              `json:"expected_close_date"`
+		AssignedTo        *uint                `json:"assigned_to"`
+		Channel           models.LeadSource    `json:"channel"`
 		BusinessUnit      *models.BusinessUnit `json:"business_unit"`
-		BusinessUnitItem  *string            `json:"business_unit_item"`
+		BusinessUnitItem  *string              `json:"business_unit_item"`
 	} `json:"deal"`
 }
 
@@ -158,6 +161,9 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 	}
 	if !CanWrite(c, lead.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to convert this lead")
+	}
+	if lead.ConvertedDealID != nil {
+		return utils.Conflict(c, "Lead has already been converted")
 	}
 
 	var req convertRequest
@@ -201,6 +207,7 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 			Status: models.DealStatusOpen, ExpectedCloseDate: req.Deal.ExpectedCloseDate,
 			AssignedTo: req.Deal.AssignedTo, Channel: req.Deal.Channel,
 			BusinessUnit: req.Deal.BusinessUnit, BusinessUnitItem: req.Deal.BusinessUnitItem,
+			LeadID: &lead.ID,
 		}
 		if deal.Title == "" {
 			deal.Title = lead.Name
@@ -212,7 +219,17 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 			return err
 		}
 
+		// FR-CRM-090: carry any Lead attachments over to the new Deal rather
+		// than leaving them stranded on a Lead that no longer appears in any
+		// list view once converted.
+		if err := tx.Model(&models.Attachment{}).
+			Where("related_type = ? AND related_id = ?", models.AttachmentRelatedLead, lead.ID).
+			Updates(map[string]interface{}{"related_type": models.AttachmentRelatedDeal, "related_id": deal.ID}).Error; err != nil {
+			return err
+		}
+
 		lead.Status = models.LeadStatusQualified
+		lead.ConvertedDealID = &deal.ID
 		return tx.Save(&lead).Error
 	})
 	if err != nil {

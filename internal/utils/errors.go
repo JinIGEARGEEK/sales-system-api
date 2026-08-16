@@ -43,3 +43,7 @@ func BadRequest(c *fiber.Ctx, message string) error {
 func Internal(c *fiber.Ctx, message string) error {
 	return ErrorResponse(c, fiber.StatusInternalServerError, "INTERNAL_ERROR", message)
 }
+
+func Conflict(c *fiber.Ctx, message string) error {
+	return ErrorResponse(c, fiber.StatusConflict, "CONFLICT", message)
+}

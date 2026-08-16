@@ -31,6 +31,9 @@ type Lead struct {
 	Status      LeadStatus `gorm:"type:varchar(16);default:'New';index" json:"status"`
 	Notes       string     `json:"notes"`
 	AssignedTo  *uint      `gorm:"index" json:"assigned_to"`
+	// ConvertedDealID is set once this Lead has been converted into a Deal
+	// (nil = not yet converted). Prevents double-conversion.
+	ConvertedDealID *uint `gorm:"index" json:"converted_deal_id"`
 }
 
 func (Lead) TableName() string { return "leads" }

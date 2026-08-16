@@ -41,6 +41,7 @@ const TestPassword = "password123!"
 // tables lists every table AutoMigrate creates (internal/database/database.go),
 // in FK-safe order doesn't matter because of CASCADE, but kept aligned for clarity.
 var tables = []string{
+	"attachments",
 	"audit_log_entries",
 	"projects",
 	"customer_products",
