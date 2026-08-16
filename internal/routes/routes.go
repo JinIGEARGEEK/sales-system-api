@@ -142,6 +142,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	products := authed.Group("/products")
 	products.Get("/", productH.List)
 	products.Post("/", productH.Create)
+	products.Patch("/:id", productH.Update)
 	products.Patch("/:id/deactivate", productH.Deactivate)
 
 	// Customer-Product link — any authenticated (mirrors AddForCompany's access level).

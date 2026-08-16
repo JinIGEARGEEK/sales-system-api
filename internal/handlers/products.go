@@ -73,6 +73,37 @@ func (h *ProductHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, product)
 }
 
+// Update — PATCH /products/:id (any authenticated role). Full edit of the
+// catalog entry's own fields — distinct from Deactivate, which only ever
+// flips is_active off and is left as the dedicated "remove from catalog" action.
+func (h *ProductHandler) Update(c *fiber.Ctx) error {
+	var product models.Product
+	if err := h.DB.First(&product, c.Params("id")).Error; err != nil {
+		return utils.NotFound(c, "Product not found")
+	}
+
+	var form productForm
+	if err := c.BodyParser(&form); err != nil {
+		return utils.BadRequest(c, "Invalid request body")
+	}
+	if form.Name == "" {
+		return utils.ValidationError(c, "name is required", map[string][]string{"name": {"required"}})
+	}
+
+	product.Name = form.Name
+	product.Category = form.Category
+	product.Description = form.Description
+	if form.IsActive != nil {
+		product.IsActive = *form.IsActive
+	}
+	actorID := middleware.CurrentUserID(c)
+	product.UpdatedBy = &actorID
+	if err := h.DB.Save(&product).Error; err != nil {
+		return utils.Internal(c, "Failed to update product")
+	}
+	return utils.OK(c, product)
+}
+
 // Deactivate — PATCH /products/:id/deactivate (any authenticated role). Sets is_active: false.
 func (h *ProductHandler) Deactivate(c *fiber.Ctx) error {
 	var product models.Product
