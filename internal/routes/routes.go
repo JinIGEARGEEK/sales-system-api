@@ -55,13 +55,20 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	authed.Get("/team-members", userH.TeamMembers)
 
 	// Leads
+	bulkRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesManager)
 	leads := authed.Group("/leads")
 	leads.Get("/", leadH.List)
 	leads.Post("/", leadH.Create)
+	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
+	leads.Get("/trash", bulkRoles, leadH.Trash)
+	leads.Patch("/bulk-reassign", bulkRoles, leadH.BulkReassign)
+	leads.Patch("/bulk-tag", bulkRoles, leadH.BulkTag)
+	leads.Patch("/bulk-archive", bulkRoles, leadH.BulkArchive)
 	leads.Get("/:id", leadH.Get)
 	leads.Put("/:id", leadH.Update)
 	leads.Delete("/:id", leadH.Delete)
 	leads.Post("/:id/convert", leadH.Convert)
+	leads.Post("/:id/restore", bulkRoles, leadH.Restore)
 
 	// Companies
 	companies := authed.Group("/companies")
@@ -89,11 +96,17 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	deals := authed.Group("/deals")
 	deals.Get("/", dealH.List)
 	deals.Post("/", dealH.Create)
+	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
+	deals.Get("/trash", bulkRoles, dealH.Trash)
+	deals.Patch("/bulk-reassign", bulkRoles, dealH.BulkReassign)
+	deals.Patch("/bulk-tag", bulkRoles, dealH.BulkTag)
+	deals.Patch("/bulk-archive", bulkRoles, dealH.BulkArchive)
 	deals.Get("/:id", dealH.Get)
 	deals.Put("/:id", dealH.Update)
 	deals.Delete("/:id", dealH.Delete)
 	deals.Patch("/:id/stage", dealH.UpdateStage)
 	deals.Patch("/:id/reassign", middleware.RequireRoles(models.RoleAdmin, models.RoleSalesManager), dealH.Reassign)
+	deals.Post("/:id/restore", bulkRoles, dealH.Restore)
 	deals.Get("/:dealId/quotes", quoteH.List)
 	deals.Post("/:dealId/quotes", quoteH.Create)
 	deals.Post("/:dealId/quotes/upload", quoteH.Upload)
@@ -130,6 +143,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	authed.Delete("/payments/:id", paymentH.Delete)
 	authed.Put("/contracts/:id", contractH.Update)
 	authed.Post("/contracts/:id/upload", contractH.Upload)
+	authed.Get("/contracts/:id/export-pdf", contractH.ExportPDF)
 
 	// Tasks
 	tasks := authed.Group("/tasks")

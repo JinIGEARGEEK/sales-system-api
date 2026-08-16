@@ -4,6 +4,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
@@ -122,7 +123,8 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, lead)
 }
 
-// Delete — DELETE /leads/:id.
+// Delete — DELETE /leads/:id. Soft-delete (AuditedModel) — recoverable via
+// Restore/Trash below.
 func (h *LeadHandler) Delete(c *fiber.Ctx) error {
 	var lead models.Lead
 	if err := h.DB.First(&lead, c.Params("id")).Error; err != nil {
@@ -131,8 +133,100 @@ func (h *LeadHandler) Delete(c *fiber.Ctx) error {
 	if !CanWrite(c, lead.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to delete this lead")
 	}
+	actorID := middleware.CurrentUserID(c)
+	if err := h.DB.Model(&lead).Update("deleted_by", actorID).Error; err != nil {
+		return utils.Internal(c, "Failed to delete lead")
+	}
 	if err := h.DB.Delete(&lead).Error; err != nil {
 		return utils.Internal(c, "Failed to delete lead")
+	}
+	return utils.NoContent(c)
+}
+
+// Trash — GET /leads/trash. Sales-Manager/Admin only (route-gated).
+func (h *LeadHandler) Trash(c *fiber.Ctx) error {
+	return utils.GenericTrash[models.Lead](c, h.DB, "Failed to list deleted leads")
+}
+
+// Restore — POST /leads/:id/restore. Sales-Manager/Admin only (route-gated).
+func (h *LeadHandler) Restore(c *fiber.Ctx) error {
+	return utils.GenericRestore[models.Lead](c, h.DB, "Deleted lead not found", "Failed to restore lead")
+}
+
+// BulkReassign — PATCH /leads/bulk-reassign. Sales-Manager/Admin only (route-gated).
+func (h *LeadHandler) BulkReassign(c *fiber.Ctx) error {
+	var form bulkReassignForm
+	if err := c.BodyParser(&form); err != nil {
+		return utils.BadRequest(c, "Invalid request body")
+	}
+	if len(form.IDs) == 0 {
+		return utils.ValidationError(c, "ids is required", map[string][]string{"ids": {"required"}})
+	}
+
+	actorID := middleware.CurrentUserID(c)
+	err := utils.BulkUpdate(h.DB, form.IDs, "lead", "bulk_reassigned", actorID,
+		func(tx *gorm.DB, lead *models.Lead) (models.JSONMap, models.JSONMap, error) {
+			before := models.JSONMap{"assigned_to": lead.AssignedTo}
+			lead.AssignedTo = form.AssignedTo
+			after := models.JSONMap{"assigned_to": lead.AssignedTo}
+			return before, after, tx.Save(lead).Error
+		})
+	if err != nil {
+		return utils.Internal(c, "Failed to bulk reassign leads")
+	}
+	return utils.NoContent(c)
+}
+
+// BulkTag — PATCH /leads/bulk-tag. Sales-Manager/Admin only (route-gated).
+func (h *LeadHandler) BulkTag(c *fiber.Ctx) error {
+	var form bulkTagForm
+	if err := c.BodyParser(&form); err != nil {
+		return utils.BadRequest(c, "Invalid request body")
+	}
+	if len(form.IDs) == 0 {
+		return utils.ValidationError(c, "ids is required", map[string][]string{"ids": {"required"}})
+	}
+
+	actorID := middleware.CurrentUserID(c)
+	err := utils.BulkUpdate(h.DB, form.IDs, "lead", "bulk_tagged", actorID,
+		func(tx *gorm.DB, lead *models.Lead) (models.JSONMap, models.JSONMap, error) {
+			before := models.JSONMap{"tags": []string(lead.Tags)}
+			if form.Mode == "set" {
+				lead.Tags = form.Tags
+			} else {
+				lead.Tags = mergeTags(lead.Tags, form.Tags)
+			}
+			after := models.JSONMap{"tags": []string(lead.Tags)}
+			return before, after, tx.Save(lead).Error
+		})
+	if err != nil {
+		return utils.Internal(c, "Failed to bulk tag leads")
+	}
+	return utils.NoContent(c)
+}
+
+// BulkArchive — PATCH /leads/bulk-archive. Sales-Manager/Admin only (route-gated).
+// Soft-deletes each lead (same as Delete), in one transaction.
+func (h *LeadHandler) BulkArchive(c *fiber.Ctx) error {
+	var form bulkIDsForm
+	if err := c.BodyParser(&form); err != nil {
+		return utils.BadRequest(c, "Invalid request body")
+	}
+	if len(form.IDs) == 0 {
+		return utils.ValidationError(c, "ids is required", map[string][]string{"ids": {"required"}})
+	}
+
+	actorID := middleware.CurrentUserID(c)
+	err := utils.BulkUpdate(h.DB, form.IDs, "lead", "bulk_archived", actorID,
+		func(tx *gorm.DB, lead *models.Lead) (models.JSONMap, models.JSONMap, error) {
+			if err := tx.Model(lead).Update("deleted_by", actorID).Error; err != nil {
+				return nil, nil, err
+			}
+			err := tx.Delete(lead).Error
+			return models.JSONMap{"deleted_at": nil}, models.JSONMap{"deleted_by": actorID}, err
+		})
+	if err != nil {
+		return utils.Internal(c, "Failed to bulk archive leads")
 	}
 	return utils.NoContent(c)
 }

@@ -23,15 +23,28 @@ type leadSourceConversion struct {
 	ConversionRate float64           `json:"conversion_rate"`
 }
 
-// LeadSourceConversion — GET /reports/lead-source-conversion (Sales
-// Manager/Admin, route-gated). FR-CRM-054.
+// LeadSourceConversion — GET /reports/lead-source-conversion?assigned_to=&date_from=&date_to=
+// (Sales Manager/Admin, route-gated). FR-CRM-054, FR-CRM-055 (rep filter). Lead
+// has no Company FK (only a free-text company_name), so there's no company_tag
+// filter here — that only applies to Deal-based reports.
 func (h *ReportHandler) LeadSourceConversion(c *fiber.Ctx) error {
+	query := h.DB.Model(&models.Lead{})
+	if v := c.Query("assigned_to"); v != "" {
+		query = query.Where("assigned_to = ?", v)
+	}
+	if v := c.Query("date_from"); v != "" {
+		query = query.Where("created_at >= ?", v)
+	}
+	if v := c.Query("date_to"); v != "" {
+		query = query.Where("created_at <= ?", v)
+	}
+
 	var rows []struct {
 		Source    models.LeadSource
 		Total     int64
 		Qualified int64
 	}
-	err := h.DB.Model(&models.Lead{}).
+	err := query.
 		Select("source, count(*) as total, count(*) FILTER (WHERE status = 'Qualified') as qualified").
 		Group("source").
 		Scan(&rows).Error
@@ -58,8 +71,8 @@ type customerByProductStatus struct {
 	StartDate   string                       `json:"start_date"`
 }
 
-// CustomersByProductStatus — GET /reports/customers-by-product-status?product_id=&status=
-// (Sales Manager/Admin, route-gated). FR-CRM-056.
+// CustomersByProductStatus — GET /reports/customers-by-product-status?product_id=&status=&company_tag=
+// (Sales Manager/Admin, route-gated). FR-CRM-056, FR-CRM-055 (company-tag filter).
 func (h *ReportHandler) CustomersByProductStatus(c *fiber.Ctx) error {
 	query := h.DB.Model(&models.CustomerProduct{}).
 		Select("customer_products.company_id, companies.name as company_name, customer_products.product_id, customer_products.status, customer_products.start_date").
@@ -70,6 +83,9 @@ func (h *ReportHandler) CustomersByProductStatus(c *fiber.Ctx) error {
 	}
 	if v := c.Query("status"); v != "" {
 		query = query.Where("customer_products.status = ?", v)
+	}
+	if v := c.Query("company_tag"); v != "" {
+		query = query.Where("companies.tags && ARRAY[?]::text[]", v)
 	}
 
 	var rows []customerByProductStatus

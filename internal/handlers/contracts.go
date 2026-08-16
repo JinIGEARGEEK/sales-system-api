@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"bytes"
 	"fmt"
 	"time"
 
+	"github.com/go-pdf/fpdf"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
@@ -29,7 +31,8 @@ func (h *ContractHandler) List(c *fiber.Ctx) error {
 }
 
 type contractForm struct {
-	Status models.ContractStatus `json:"status"`
+	Status  models.ContractStatus `json:"status"`
+	QuoteID *uint                 `json:"quote_id"`
 }
 
 // Create — POST /deals/:dealId/contracts.
@@ -44,7 +47,7 @@ func (h *ContractHandler) Create(c *fiber.Ctx) error {
 		return utils.BadRequest(c, "Invalid request body")
 	}
 
-	contract := models.Contract{DealID: deal.ID, Status: form.Status}
+	contract := models.Contract{DealID: deal.ID, Status: form.Status, QuoteID: form.QuoteID}
 	if contract.Status == "" {
 		contract.Status = models.ContractStatusDraft
 	}
@@ -70,6 +73,9 @@ func (h *ContractHandler) Update(c *fiber.Ctx) error {
 	}
 	if form.Status != "" {
 		contract.Status = form.Status
+	}
+	if form.QuoteID != nil {
+		contract.QuoteID = form.QuoteID
 	}
 
 	if err := h.DB.Save(&contract).Error; err != nil {
@@ -106,4 +112,97 @@ func (h *ContractHandler) Upload(c *fiber.Ctx) error {
 		return utils.Internal(c, "Failed to update contract")
 	}
 	return utils.OK(c, contract)
+}
+
+// ExportPDF — GET /contracts/:id/export-pdf. Renders a plain (unbranded, same
+// style as QuoteHandler.ExportPDF) PDF: party details (Company legal
+// name/address/tax ID, Contact name/role), Deal info, the linked Quote's line
+// items/total (if quote_id is set), status, and a signature-line placeholder.
+// Read-only, same access level as List (no CanWrite check).
+func (h *ContractHandler) ExportPDF(c *fiber.Ctx) error {
+	var contract models.Contract
+	if err := h.DB.First(&contract, c.Params("id")).Error; err != nil {
+		return utils.NotFound(c, "Contract not found")
+	}
+	var deal models.Deal
+	if err := h.DB.First(&deal, contract.DealID).Error; err != nil {
+		return utils.NotFound(c, "Deal not found")
+	}
+	var company models.Company
+	h.DB.First(&company, deal.CompanyID)
+	var contact models.Contact
+	h.DB.First(&contact, deal.ContactID)
+
+	var quote *models.Quote
+	if contract.QuoteID != nil {
+		var q models.Quote
+		if err := h.DB.First(&q, *contract.QuoteID).Error; err == nil {
+			quote = &q
+		}
+	}
+
+	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf.AddPage()
+
+	pdf.SetFont("Arial", "B", 16)
+	pdf.Cell(0, 10, "Contract")
+	pdf.Ln(12)
+
+	pdf.SetFont("Arial", "", 11)
+	pdf.Cell(0, 6, fmt.Sprintf("Deal: %s", deal.Title))
+	pdf.Ln(6)
+	pdf.Cell(0, 6, fmt.Sprintf("Party: %s", strOrDefault(company.LegalName, company.Name)))
+	pdf.Ln(6)
+	if company.Address != nil && *company.Address != "" {
+		pdf.Cell(0, 6, fmt.Sprintf("Address: %s", *company.Address))
+		pdf.Ln(6)
+	}
+	if company.TaxID != nil && *company.TaxID != "" {
+		pdf.Cell(0, 6, fmt.Sprintf("Tax ID: %s", *company.TaxID))
+		pdf.Ln(6)
+	}
+	pdf.Cell(0, 6, fmt.Sprintf("Contact: %s (%s)", contact.Name, contact.RoleTitle))
+	pdf.Ln(6)
+	pdf.Cell(0, 6, fmt.Sprintf("Status: %s", contract.Status))
+	pdf.Ln(6)
+	if contract.SignedDate != nil {
+		pdf.Cell(0, 6, fmt.Sprintf("Signed Date: %s", contract.SignedDate.Format("2006-01-02")))
+		pdf.Ln(6)
+	}
+	pdf.Ln(4)
+
+	if quote != nil {
+		utils.RenderLineItemsTable(pdf, quote.Items)
+		pdf.Ln(16)
+	} else {
+		pdf.SetFont("Arial", "I", 10)
+		pdf.Cell(0, 6, "No linked quote — pricing not included.")
+		pdf.Ln(16)
+	}
+
+	pdf.SetFont("Arial", "", 10)
+	pdf.Cell(85, 6, "___________________________")
+	pdf.Cell(10, 6, "")
+	pdf.Cell(85, 6, "___________________________")
+	pdf.Ln(6)
+	pdf.Cell(85, 6, "Company Signature")
+	pdf.Cell(10, 6, "")
+	pdf.Cell(85, 6, "Customer Signature")
+
+	var buf bytes.Buffer
+	if err := pdf.Output(&buf); err != nil {
+		return utils.Internal(c, "Failed to generate PDF")
+	}
+
+	c.Set("Content-Type", "application/pdf")
+	c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="contract-%d.pdf"`, contract.ID))
+	return c.Send(buf.Bytes())
+}
+
+// strOrDefault returns *s if non-nil and non-empty, else def.
+func strOrDefault(s *string, def string) string {
+	if s != nil && *s != "" {
+		return *s
+	}
+	return def
 }

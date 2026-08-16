@@ -21,7 +21,8 @@ func NewDashboardHandler(db *gorm.DB) *DashboardHandler {
 }
 
 // baseFilter applies the shared date_from/date_to (or period), business_unit,
-// business_unit_item, channel query params — api-system-spec.md §9.
+// business_unit_item, channel, assigned_to (Sales Rep), and company_tag query
+// params — api-system-spec.md §9, FR-CRM-055.
 func (h *DashboardHandler) baseFilter(c *fiber.Ctx) *gorm.DB {
 	query := h.DB.Model(&models.Deal{})
 
@@ -48,6 +49,13 @@ func (h *DashboardHandler) baseFilter(c *fiber.Ctx) *gorm.DB {
 	}
 	if v := c.Query("channel"); v != "" {
 		query = query.Where("channel = ?", v)
+	}
+	if v := c.Query("assigned_to"); v != "" {
+		query = query.Where("assigned_to = ?", v)
+	}
+	if v := c.Query("company_tag"); v != "" {
+		query = query.Joins("JOIN companies ON companies.id = deals.company_id").
+			Where("companies.tags && ARRAY[?]::text[]", v)
 	}
 	return query
 }
@@ -185,9 +193,12 @@ func (h *DashboardHandler) industryBreakdown(c *fiber.Ctx) []industryBreakdownIt
 		WonCount  int64
 		LostCount int64
 	}
-	h.baseFilter(c).Session(&gorm.Session{}).
-		Joins("JOIN companies ON companies.id = deals.company_id").
-		Select("companies.industry as industry, count(*) FILTER (WHERE deals.status = 'won') as won_count, count(*) FILTER (WHERE deals.status = 'lost') as lost_count").
+	// baseFilter already joins companies when ?company_tag= is set — don't join twice.
+	query := h.baseFilter(c).Session(&gorm.Session{})
+	if c.Query("company_tag") == "" {
+		query = query.Joins("JOIN companies ON companies.id = deals.company_id")
+	}
+	query.Select("companies.industry as industry, count(*) FILTER (WHERE deals.status = 'won') as won_count, count(*) FILTER (WHERE deals.status = 'lost') as lost_count").
 		Group("companies.industry").Scan(&rows)
 
 	result := make([]industryBreakdownItem, 0, len(rows))

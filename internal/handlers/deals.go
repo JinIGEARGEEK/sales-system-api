@@ -150,7 +150,8 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, deal)
 }
 
-// Delete — DELETE /deals/:id (hard delete, HardDeleteModel).
+// Delete — DELETE /deals/:id. Soft-delete (AuditedModel) — recoverable via
+// Restore/Trash below.
 func (h *DealHandler) Delete(c *fiber.Ctx) error {
 	var deal models.Deal
 	if err := h.DB.First(&deal, c.Params("id")).Error; err != nil {
@@ -159,10 +160,133 @@ func (h *DealHandler) Delete(c *fiber.Ctx) error {
 	if !CanWrite(c, deal.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to delete this deal")
 	}
+	actorID := middleware.CurrentUserID(c)
+	if err := h.DB.Model(&deal).Update("deleted_by", actorID).Error; err != nil {
+		return utils.Internal(c, "Failed to delete deal")
+	}
 	if err := h.DB.Delete(&deal).Error; err != nil {
 		return utils.Internal(c, "Failed to delete deal")
 	}
 	return utils.NoContent(c)
+}
+
+// Trash — GET /deals/trash. Sales-Manager/Admin only (route-gated).
+func (h *DealHandler) Trash(c *fiber.Ctx) error {
+	return utils.GenericTrash[models.Deal](c, h.DB, "Failed to list deleted deals")
+}
+
+// Restore — POST /deals/:id/restore. Sales-Manager/Admin only (route-gated).
+func (h *DealHandler) Restore(c *fiber.Ctx) error {
+	return utils.GenericRestore[models.Deal](c, h.DB, "Deleted deal not found", "Failed to restore deal")
+}
+
+type bulkIDsForm struct {
+	IDs []uint `json:"ids"`
+}
+
+type bulkReassignForm struct {
+	IDs        []uint `json:"ids"`
+	AssignedTo *uint  `json:"assigned_to"`
+}
+
+type bulkTagForm struct {
+	IDs  []uint   `json:"ids"`
+	Tags []string `json:"tags"`
+	Mode string   `json:"mode"` // "add" (default) or "set"
+}
+
+// BulkReassign — PATCH /deals/bulk-reassign. Sales-Manager/Admin only (route-gated).
+func (h *DealHandler) BulkReassign(c *fiber.Ctx) error {
+	var form bulkReassignForm
+	if err := c.BodyParser(&form); err != nil {
+		return utils.BadRequest(c, "Invalid request body")
+	}
+	if len(form.IDs) == 0 {
+		return utils.ValidationError(c, "ids is required", map[string][]string{"ids": {"required"}})
+	}
+
+	actorID := middleware.CurrentUserID(c)
+	err := utils.BulkUpdate(h.DB, form.IDs, "deal", "bulk_reassigned", actorID,
+		func(tx *gorm.DB, deal *models.Deal) (models.JSONMap, models.JSONMap, error) {
+			before := models.JSONMap{"assigned_to": deal.AssignedTo}
+			deal.AssignedTo = form.AssignedTo
+			after := models.JSONMap{"assigned_to": deal.AssignedTo}
+			return before, after, tx.Save(deal).Error
+		})
+	if err != nil {
+		return utils.Internal(c, "Failed to bulk reassign deals")
+	}
+	return utils.NoContent(c)
+}
+
+// BulkTag — PATCH /deals/bulk-tag. Sales-Manager/Admin only (route-gated).
+func (h *DealHandler) BulkTag(c *fiber.Ctx) error {
+	var form bulkTagForm
+	if err := c.BodyParser(&form); err != nil {
+		return utils.BadRequest(c, "Invalid request body")
+	}
+	if len(form.IDs) == 0 {
+		return utils.ValidationError(c, "ids is required", map[string][]string{"ids": {"required"}})
+	}
+
+	actorID := middleware.CurrentUserID(c)
+	err := utils.BulkUpdate(h.DB, form.IDs, "deal", "bulk_tagged", actorID,
+		func(tx *gorm.DB, deal *models.Deal) (models.JSONMap, models.JSONMap, error) {
+			before := models.JSONMap{"tags": []string(deal.Tags)}
+			if form.Mode == "set" {
+				deal.Tags = form.Tags
+			} else {
+				deal.Tags = mergeTags(deal.Tags, form.Tags)
+			}
+			after := models.JSONMap{"tags": []string(deal.Tags)}
+			return before, after, tx.Save(deal).Error
+		})
+	if err != nil {
+		return utils.Internal(c, "Failed to bulk tag deals")
+	}
+	return utils.NoContent(c)
+}
+
+// BulkArchive — PATCH /deals/bulk-archive. Sales-Manager/Admin only (route-gated).
+// Soft-deletes each deal (same as Delete), in one transaction.
+func (h *DealHandler) BulkArchive(c *fiber.Ctx) error {
+	var form bulkIDsForm
+	if err := c.BodyParser(&form); err != nil {
+		return utils.BadRequest(c, "Invalid request body")
+	}
+	if len(form.IDs) == 0 {
+		return utils.ValidationError(c, "ids is required", map[string][]string{"ids": {"required"}})
+	}
+
+	actorID := middleware.CurrentUserID(c)
+	err := utils.BulkUpdate(h.DB, form.IDs, "deal", "bulk_archived", actorID,
+		func(tx *gorm.DB, deal *models.Deal) (models.JSONMap, models.JSONMap, error) {
+			if err := tx.Model(deal).Update("deleted_by", actorID).Error; err != nil {
+				return nil, nil, err
+			}
+			err := tx.Delete(deal).Error
+			return models.JSONMap{"deleted_at": nil}, models.JSONMap{"deleted_by": actorID}, err
+		})
+	if err != nil {
+		return utils.Internal(c, "Failed to bulk archive deals")
+	}
+	return utils.NoContent(c)
+}
+
+// mergeTags appends tags not already present, case-sensitively, preserving order.
+func mergeTags(existing []string, add []string) []string {
+	seen := make(map[string]bool, len(existing))
+	for _, t := range existing {
+		seen[t] = true
+	}
+	merged := append([]string{}, existing...)
+	for _, t := range add {
+		if !seen[t] {
+			merged = append(merged, t)
+			seen[t] = true
+		}
+	}
+	return merged
 }
 
 type dealStageForm struct {

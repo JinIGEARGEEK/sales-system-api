@@ -48,13 +48,16 @@ func (h *CompanyHandler) List(c *fiber.Ctx) error {
 }
 
 type companyForm struct {
-	Name     string   `json:"name"`
-	Industry string   `json:"industry"`
-	Size     string   `json:"size"`
-	Website  string   `json:"website"`
-	Tags     []string `json:"tags"`
-	Notes    string   `json:"notes"`
-	Status   string   `json:"status"`
+	Name      string   `json:"name"`
+	Industry  string   `json:"industry"`
+	Size      string   `json:"size"`
+	Website   string   `json:"website"`
+	Tags      []string `json:"tags"`
+	Notes     string   `json:"notes"`
+	Status    string   `json:"status"`
+	LegalName *string  `json:"legal_name"`
+	Address   *string  `json:"address"`
+	TaxID     *string  `json:"tax_id"`
 }
 
 // Create — POST /companies.
@@ -71,7 +74,8 @@ func (h *CompanyHandler) Create(c *fiber.Ctx) error {
 	company := models.Company{
 		Name: form.Name, Industry: form.Industry, Size: form.Size, Website: form.Website,
 		Tags: pq.StringArray(form.Tags), Notes: form.Notes,
-		Status: models.ActiveArchivedStatus(form.Status),
+		Status:    models.ActiveArchivedStatus(form.Status),
+		LegalName: form.LegalName, Address: form.Address, TaxID: form.TaxID,
 	}
 	if company.Status == "" {
 		company.Status = models.StatusActive
@@ -108,6 +112,7 @@ func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 	company.Name, company.Industry, company.Size, company.Website = form.Name, form.Industry, form.Size, form.Website
 	company.Tags = pq.StringArray(form.Tags)
 	company.Notes = form.Notes
+	company.LegalName, company.Address, company.TaxID = form.LegalName, form.Address, form.TaxID
 	if form.Status != "" {
 		company.Status = models.ActiveArchivedStatus(form.Status)
 	}
