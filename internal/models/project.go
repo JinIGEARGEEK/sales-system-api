@@ -12,7 +12,7 @@ const (
 	ProjectStatusCancelled  ProjectStatus = "Cancelled"
 )
 
-// Project — api-system-spec.md §8.3. 🔜 Planned. A summary record only — no
+// Project — api-system-spec.md §8.3. A summary record only — no
 // sub-resources for tasks/sprints/milestones per FR-CRM-071.
 type Project struct {
 	AuditedModel

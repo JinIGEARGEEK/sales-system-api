@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"bytes"
 	"fmt"
 	"time"
 
+	"github.com/go-pdf/fpdf"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
@@ -148,8 +150,69 @@ func (h *QuoteHandler) Delete(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
-// ExportPDF — GET /quotes/:id/export-pdf. Placeholder: real PDF generation is
-// out of scope for this first pass.
+// ExportPDF — GET /quotes/:id/export-pdf. Renders the quote's line items as a
+// simple PDF — read-only, same access level as List (no CanWrite check).
 func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
-	return utils.ErrorResponse(c, fiber.StatusNotImplemented, "NOT_IMPLEMENTED", "PDF export not yet implemented")
+	var quote models.Quote
+	if err := h.DB.First(&quote, c.Params("id")).Error; err != nil {
+		return utils.NotFound(c, "Quote not found")
+	}
+	var deal models.Deal
+	if err := h.DB.First(&deal, quote.DealID).Error; err != nil {
+		return utils.NotFound(c, "Deal not found")
+	}
+	var company models.Company
+	h.DB.First(&company, deal.CompanyID)
+	var contact models.Contact
+	h.DB.First(&contact, deal.ContactID)
+
+	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf.AddPage()
+
+	pdf.SetFont("Arial", "B", 16)
+	pdf.Cell(0, 10, "Quotation")
+	pdf.Ln(12)
+
+	pdf.SetFont("Arial", "", 11)
+	pdf.Cell(0, 6, fmt.Sprintf("Deal: %s", deal.Title))
+	pdf.Ln(6)
+	pdf.Cell(0, 6, fmt.Sprintf("Company: %s", company.Name))
+	pdf.Ln(6)
+	pdf.Cell(0, 6, fmt.Sprintf("Contact: %s", contact.Name))
+	pdf.Ln(6)
+	if quote.ValidityDate != nil {
+		pdf.Cell(0, 6, fmt.Sprintf("Valid Until: %s", *quote.ValidityDate))
+		pdf.Ln(6)
+	}
+	pdf.Cell(0, 6, fmt.Sprintf("Status: %s", quote.Status))
+	pdf.Ln(10)
+
+	pdf.SetFont("Arial", "B", 10)
+	pdf.CellFormat(90, 8, "Description", "1", 0, "L", false, 0, "")
+	pdf.CellFormat(25, 8, "Qty", "1", 0, "R", false, 0, "")
+	pdf.CellFormat(35, 8, "Unit Price", "1", 0, "R", false, 0, "")
+	pdf.CellFormat(35, 8, "Total", "1", 1, "R", false, 0, "")
+
+	pdf.SetFont("Arial", "", 10)
+	var grandTotal float64
+	for _, item := range quote.Items {
+		lineTotal := item.Qty * item.Price
+		grandTotal += lineTotal
+		pdf.CellFormat(90, 8, item.Description, "1", 0, "L", false, 0, "")
+		pdf.CellFormat(25, 8, fmt.Sprintf("%.0f", item.Qty), "1", 0, "R", false, 0, "")
+		pdf.CellFormat(35, 8, fmt.Sprintf("%.2f", item.Price), "1", 0, "R", false, 0, "")
+		pdf.CellFormat(35, 8, fmt.Sprintf("%.2f", lineTotal), "1", 1, "R", false, 0, "")
+	}
+	pdf.SetFont("Arial", "B", 10)
+	pdf.CellFormat(150, 8, "Grand Total", "1", 0, "R", false, 0, "")
+	pdf.CellFormat(35, 8, fmt.Sprintf("%.2f", grandTotal), "1", 1, "R", false, 0, "")
+
+	var buf bytes.Buffer
+	if err := pdf.Output(&buf); err != nil {
+		return utils.Internal(c, "Failed to generate PDF")
+	}
+
+	c.Set("Content-Type", "application/pdf")
+	c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="quote-%d.pdf"`, quote.ID))
+	return c.Send(buf.Bytes())
 }

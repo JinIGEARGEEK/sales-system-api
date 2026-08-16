@@ -18,8 +18,7 @@ type QuoteItem struct {
 	Price       float64 `json:"price"`
 }
 
-// Quote — api-system-spec.md §7.4. 🔜 Planned — no dedicated CRUD exists in the
-// frontend yet; modeled here so the backend can be built ahead of it.
+// Quote — api-system-spec.md §7.4.
 type Quote struct {
 	HardDeleteModel
 	DealID       uint        `gorm:"not null;index" json:"deal_id"`

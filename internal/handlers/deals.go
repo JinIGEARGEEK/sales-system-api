@@ -206,16 +206,9 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 		}
 	}
 
-	err := h.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Save(&deal).Error; err != nil {
-			return err
-		}
-		if oldStage != deal.Stage {
-			after := models.JSONMap{"stage": deal.Stage, "status": deal.Status}
-			return utils.WriteAuditLog(tx, "deal", deal.ID, "stage_changed", before, after, middleware.CurrentUserID(c))
-		}
-		return nil
-	})
+	after := models.JSONMap{"stage": deal.Stage, "status": deal.Status}
+	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error { return tx.Save(&deal).Error },
+		oldStage != deal.Stage, "deal", deal.ID, "stage_changed", before, after, middleware.CurrentUserID(c))
 	if err != nil {
 		return utils.Internal(c, "Failed to update deal stage")
 	}
@@ -240,14 +233,10 @@ func (h *DealHandler) Reassign(c *fiber.Ctx) error {
 
 	before := models.JSONMap{"assigned_to": deal.AssignedTo}
 	deal.AssignedTo = form.AssignedTo
+	after := models.JSONMap{"assigned_to": deal.AssignedTo}
 
-	err := h.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Save(&deal).Error; err != nil {
-			return err
-		}
-		after := models.JSONMap{"assigned_to": deal.AssignedTo}
-		return utils.WriteAuditLog(tx, "deal", deal.ID, "reassigned", before, after, middleware.CurrentUserID(c))
-	})
+	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error { return tx.Save(&deal).Error },
+		true, "deal", deal.ID, "reassigned", before, after, middleware.CurrentUserID(c))
 	if err != nil {
 		return utils.Internal(c, "Failed to reassign deal")
 	}

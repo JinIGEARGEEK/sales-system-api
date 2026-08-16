@@ -1,6 +1,9 @@
 package handlers
 
 import (
+	"encoding/json"
+	"time"
+
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
@@ -26,7 +29,7 @@ func (h *ProductHandler) List(c *fiber.Ctx) error {
 		query = query.Where("category = ?", v)
 	}
 	if v := c.Query("search"); v != "" {
-		query = query.Where("name ILIKE ? OR sku ILIKE ?", "%"+v+"%", "%"+v+"%")
+		query = query.Where("name ILIKE ?", "%"+v+"%")
 	}
 
 	var total int64
@@ -42,7 +45,6 @@ func (h *ProductHandler) List(c *fiber.Ctx) error {
 
 type productForm struct {
 	Name        string `json:"name"`
-	SKU         string `json:"sku"`
 	Category    string `json:"category"`
 	Description string `json:"description"`
 	IsActive    *bool  `json:"is_active"`
@@ -59,7 +61,7 @@ func (h *ProductHandler) Create(c *fiber.Ctx) error {
 	}
 
 	actorID := middleware.CurrentUserID(c)
-	product := models.Product{Name: form.Name, SKU: form.SKU, Category: form.Category, Description: form.Description, IsActive: true}
+	product := models.Product{Name: form.Name, Category: form.Category, Description: form.Description, IsActive: true}
 	if form.IsActive != nil {
 		product.IsActive = *form.IsActive
 	}
@@ -156,4 +158,51 @@ func (h *ProductHandler) AddForCompany(c *fiber.Ctx) error {
 		return utils.Internal(c, "Failed to create customer product")
 	}
 	return utils.Created(c, record)
+}
+
+type customerProductUpdateForm struct {
+	Status  models.CustomerProductStatus `json:"status"`
+	EndDate *string                      `json:"end_date"`
+}
+
+// UpdateCustomerProduct — PATCH /customer-products/:id (any authenticated).
+// company_id/product_id are immutable after creation — only the relationship's
+// own status (and end_date, e.g. when moving to Churned) can change.
+func (h *ProductHandler) UpdateCustomerProduct(c *fiber.Ctx) error {
+	var record models.CustomerProduct
+	if err := h.DB.First(&record, c.Params("id")).Error; err != nil {
+		return utils.NotFound(c, "Customer product not found")
+	}
+	oldStatus := record.Status
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(c.Body(), &raw); err != nil {
+		return utils.BadRequest(c, "Invalid request body")
+	}
+	var form customerProductUpdateForm
+	if err := c.BodyParser(&form); err != nil {
+		return utils.BadRequest(c, "Invalid request body")
+	}
+
+	if form.Status != "" {
+		record.Status = form.Status
+	}
+	if _, ok := raw["end_date"]; ok {
+		if form.EndDate == nil {
+			record.EndDate = nil
+		} else if parsed, err := time.Parse(time.RFC3339, *form.EndDate); err == nil {
+			record.EndDate = &parsed
+		}
+	}
+
+	actorID := middleware.CurrentUserID(c)
+	record.UpdatedBy = &actorID
+
+	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error { return tx.Save(&record).Error },
+		oldStatus != record.Status, "customer_product", record.ID, "status_changed",
+		models.JSONMap{"status": oldStatus}, models.JSONMap{"status": record.Status}, actorID)
+	if err != nil {
+		return utils.Internal(c, "Failed to update customer product")
+	}
+	return utils.OK(c, record)
 }

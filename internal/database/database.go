@@ -49,6 +49,11 @@ func AutoMigrate(db *gorm.DB) error {
 			return fmt.Errorf("drop legacy username column: %w", err)
 		}
 	}
+	if db.Migrator().HasColumn(&models.Product{}, "sku") {
+		if err := db.Migrator().DropColumn(&models.Product{}, "sku"); err != nil {
+			return fmt.Errorf("drop legacy sku column: %w", err)
+		}
+	}
 
 	return db.AutoMigrate(
 		&models.User{},

@@ -33,7 +33,7 @@ func (m *JSONMap) Scan(value interface{}) error {
 	return json.Unmarshal(bytes, m)
 }
 
-// AuditLogEntry — api-system-spec.md §8.5. 🔜 Planned. Append-only: no
+// AuditLogEntry — api-system-spec.md §8.5. Append-only: no
 // update/delete route should exist for this resource at all (NFR-007).
 type AuditLogEntry struct {
 	ID         uint    `gorm:"primaryKey" json:"id"`

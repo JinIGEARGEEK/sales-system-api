@@ -29,6 +29,54 @@ func (h *ProjectHandler) ListForCompany(c *fiber.Ctx) error {
 	return utils.OK(c, projects)
 }
 
+type projectWithCompany struct {
+	models.Project
+	CompanyName string `json:"company_name"`
+}
+
+// List — GET /projects (any authenticated). The cross-company view
+// ListForCompany can't provide — merges the Company name in the same way
+// ProductHandler.ListForCompany merges Product into CustomerProduct.
+func (h *ProjectHandler) List(c *fiber.Ctx) error {
+	page, perPage, offset := utils.Pagination(c)
+	query := h.DB.Model(&models.Project{})
+
+	if v := c.Query("status"); v != "" {
+		query = query.Where("status = ?", v)
+	}
+	if v := c.Query("company_id"); v != "" {
+		query = query.Where("company_id = ?", v)
+	}
+
+	var total int64
+	query.Count(&total)
+
+	var projects []models.Project
+	query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true, "target_end_date": true}, "-created_at")
+	if err := query.Limit(perPage).Offset(offset).Find(&projects).Error; err != nil {
+		return utils.Internal(c, "Failed to list projects")
+	}
+
+	companyIDs := make([]uint, 0, len(projects))
+	for _, p := range projects {
+		companyIDs = append(companyIDs, p.CompanyID)
+	}
+	var companies []models.Company
+	if len(companyIDs) > 0 {
+		h.DB.Where("id IN ?", companyIDs).Find(&companies)
+	}
+	companyNameByID := make(map[uint]string, len(companies))
+	for _, co := range companies {
+		companyNameByID[co.ID] = co.Name
+	}
+
+	result := make([]projectWithCompany, 0, len(projects))
+	for _, p := range projects {
+		result = append(result, projectWithCompany{Project: p, CompanyName: companyNameByID[p.CompanyID]})
+	}
+	return utils.List(c, result, page, perPage, total)
+}
+
 type projectForm struct {
 	DealID              *uint                `json:"deal_id"`
 	Name                string               `json:"name"`
@@ -92,6 +140,7 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	if err := h.DB.First(&project, c.Params("id")).Error; err != nil {
 		return utils.NotFound(c, "Project not found")
 	}
+	oldStatus := project.Status
 
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(c.Body(), &raw); err != nil {
@@ -146,7 +195,10 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	actorID := middleware.CurrentUserID(c)
 	project.UpdatedBy = &actorID
 
-	if err := h.DB.Save(&project).Error; err != nil {
+	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error { return tx.Save(&project).Error },
+		oldStatus != project.Status, "project", project.ID, "status_changed",
+		models.JSONMap{"status": oldStatus}, models.JSONMap{"status": project.Status}, actorID)
+	if err != nil {
 		return utils.Internal(c, "Failed to update project")
 	}
 	return utils.OK(c, project)

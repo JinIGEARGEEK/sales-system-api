@@ -2,11 +2,10 @@ package models
 
 import "time"
 
-// Product — api-system-spec.md §8.2. 🔜 Planned.
+// Product — api-system-spec.md §8.2.
 type Product struct {
 	AuditedModel
 	Name        string `gorm:"not null" json:"name"`
-	SKU         string `gorm:"uniqueIndex" json:"sku"`
 	Category    string `json:"category"`
 	Description string `json:"description"`
 	IsActive    bool   `gorm:"default:true" json:"is_active"`
@@ -23,14 +22,14 @@ const (
 	CustomerProductChurned    CustomerProductStatus = "Churned"
 )
 
-// CustomerProduct — api-system-spec.md §8.2. 🔜 Planned.
+// CustomerProduct — api-system-spec.md §8.2.
 type CustomerProduct struct {
 	AuditedModel
-	CompanyID   uint                   `gorm:"not null;index" json:"company_id"`
-	ProductID   uint                   `gorm:"not null;index" json:"product_id"`
-	Status      CustomerProductStatus  `gorm:"type:varchar(16);default:'Interested'" json:"status"`
-	StartDate   time.Time              `json:"start_date"`
-	EndDate     *time.Time             `json:"end_date"`
+	CompanyID    uint                  `gorm:"not null;index" json:"company_id"`
+	ProductID    uint                  `gorm:"not null;index" json:"product_id"`
+	Status       CustomerProductStatus `gorm:"type:varchar(16);default:'Interested'" json:"status"`
+	StartDate    time.Time             `json:"start_date"`
+	EndDate      *time.Time            `json:"end_date"`
 	SourceDealID *uint                 `json:"source_deal_id"`
 }
 
