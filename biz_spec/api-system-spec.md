@@ -556,7 +556,7 @@ interface Project {
 | `GET` | `/companies/:companyId/projects` | any | List — Company profile's "Projects" section (`FR-CRM-070`). |
 | `POST` | `/companies/:companyId/projects` | Sales/Admin | Create manually, or prompted when a Deal is marked Won (`FR-CRM-068`). |
 | `GET` | `/projects` | any | Cross-company list — a global Projects view, since `/companies/:companyId/projects` can only show one company at a time. Supports `status`, `company_id` filters; each row's `company_name` is merged in the same way `/companies/:companyId/products` merges Product into CustomerProduct. |
-| `PATCH` | `/projects/:id` | Sales/Admin **or** Production (§1.7) | Production's role is scoped to `status` and `production_reference` only — enforce field-level, not just endpoint-level, authorization here. Writes a `project`/`status_changed` audit entry (§8.5) when `status` actually changes, same as `PATCH /customer-products/:id`. |
+| `PATCH` | `/projects/:id` | Sales/Admin **or** Production (§1.7) | Production's role is scoped to `status` and `production_reference` only — enforce field-level, not just endpoint-level, authorization here: reject the request if the body contains any other key, don't just silently drop them. Writes a `project`/`status_changed` audit entry (§8.5) when `status` actually changes, same as `PATCH /customer-products/:id`. `components/Crm/AddProjectModal.vue` mirrors this client-side — a Production caller only ever sees/submits `status`/`production_reference`, since submitting the full field set would 403 against this same restriction. |
 
 Do **not** add sub-resources for tasks/sprints/milestones under `/projects/:id` — `FR-CRM-071` explicitly rules this out; a Project here is a summary record, never a delivery-management tool.
 

@@ -20,7 +20,7 @@ func NewProductHandler(db *gorm.DB) *ProductHandler {
 	return &ProductHandler{DB: db}
 }
 
-// List — GET /products (Admin only, route-gated).
+// List — GET /products (any authenticated role, route-gated).
 func (h *ProductHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := h.DB.Model(&models.Product{})
@@ -50,7 +50,7 @@ type productForm struct {
 	IsActive    *bool  `json:"is_active"`
 }
 
-// Create — POST /products (Admin only).
+// Create — POST /products (any authenticated role).
 func (h *ProductHandler) Create(c *fiber.Ctx) error {
 	var form productForm
 	if err := c.BodyParser(&form); err != nil {
@@ -73,7 +73,7 @@ func (h *ProductHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, product)
 }
 
-// Deactivate — PATCH /products/:id/deactivate (Admin only). Sets is_active: false.
+// Deactivate — PATCH /products/:id/deactivate (any authenticated role). Sets is_active: false.
 func (h *ProductHandler) Deactivate(c *fiber.Ctx) error {
 	var product models.Product
 	if err := h.DB.First(&product, c.Params("id")).Error; err != nil {

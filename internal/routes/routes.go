@@ -129,8 +129,8 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	tasks.Patch("/:id/toggle", taskH.Toggle)
 	tasks.Delete("/:id", taskH.Delete)
 
-	// Products — Admin only.
-	products := authed.Group("/products", adminOnly)
+	// Products — any authenticated role manages the shared catalog.
+	products := authed.Group("/products")
 	products.Get("/", productH.List)
 	products.Post("/", productH.Create)
 	products.Patch("/:id/deactivate", productH.Deactivate)
