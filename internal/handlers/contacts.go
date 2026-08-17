@@ -126,18 +126,30 @@ func (h *ContactHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, contact)
 }
 
-// Delete — DELETE /contacts/:id. Soft-delete (status: 'archived'), never a hard
-// delete, since Deal/Activity/Task records reference contact_id.
+// Delete — DELETE /contacts/:id. Soft-delete (AuditedModel) — recoverable via
+// Restore/Trash below. Never a hard delete, since Deal/Activity/Task records
+// reference contact_id.
 func (h *ContactHandler) Delete(c *fiber.Ctx) error {
 	var contact models.Contact
 	if err := h.DB.First(&contact, c.Params("id")).Error; err != nil {
 		return utils.NotFound(c, "Contact not found")
 	}
-	contact.Status = models.StatusArchived
 	actorID := middleware.CurrentUserID(c)
-	contact.DeletedBy = &actorID
-	if err := h.DB.Save(&contact).Error; err != nil {
-		return utils.Internal(c, "Failed to archive contact")
+	if err := h.DB.Model(&contact).Update("deleted_by", actorID).Error; err != nil {
+		return utils.Internal(c, "Failed to delete contact")
+	}
+	if err := h.DB.Delete(&contact).Error; err != nil {
+		return utils.Internal(c, "Failed to delete contact")
 	}
 	return utils.NoContent(c)
+}
+
+// Trash — GET /contacts/trash. Sales-Manager/Admin only (route-gated).
+func (h *ContactHandler) Trash(c *fiber.Ctx) error {
+	return utils.GenericTrash[models.Contact](c, h.DB, "Failed to list deleted contacts")
+}
+
+// Restore — POST /contacts/:id/restore. Sales-Manager/Admin only (route-gated).
+func (h *ContactHandler) Restore(c *fiber.Ctx) error {
+	return utils.GenericRestore[models.Contact](c, h.DB, "Deleted contact not found", "Failed to restore contact")
 }

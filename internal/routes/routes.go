@@ -75,9 +75,12 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	companies.Get("/", companyH.List)
 	companies.Post("/", companyH.Create)
 	companies.Post("/import", importH.ImportCompanies)
+	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
+	companies.Get("/trash", bulkRoles, companyH.Trash)
 	companies.Get("/:id", companyH.Get)
 	companies.Put("/:id", companyH.Update)
 	companies.Delete("/:id", companyH.Delete)
+	companies.Post("/:id/restore", bulkRoles, companyH.Restore)
 	companies.Get("/:companyId/products", productH.ListForCompany)
 	companies.Post("/:companyId/products", productH.AddForCompany)
 	companies.Get("/:companyId/projects", projectH.ListForCompany)
@@ -88,9 +91,12 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	contacts.Get("/", contactH.List)
 	contacts.Post("/", contactH.Create)
 	contacts.Post("/import", importH.ImportContacts)
+	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
+	contacts.Get("/trash", bulkRoles, contactH.Trash)
 	contacts.Get("/:id", contactH.Get)
 	contacts.Put("/:id", contactH.Update)
 	contacts.Delete("/:id", contactH.Delete)
+	contacts.Post("/:id/restore", bulkRoles, contactH.Restore)
 
 	// Deals
 	deals := authed.Group("/deals")

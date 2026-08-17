@@ -125,18 +125,30 @@ func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, company)
 }
 
-// Delete — DELETE /companies/:id. Sets status: 'archived' (soft delete, §1.6) —
-// never a hard delete, since Deals/Contacts/Payments reference company_id.
+// Delete — DELETE /companies/:id. Soft-delete (AuditedModel) — recoverable via
+// Restore/Trash below. Never a hard delete, since Deals/Contacts/Payments
+// reference company_id.
 func (h *CompanyHandler) Delete(c *fiber.Ctx) error {
 	var company models.Company
 	if err := h.DB.First(&company, c.Params("id")).Error; err != nil {
 		return utils.NotFound(c, "Company not found")
 	}
-	company.Status = models.StatusArchived
 	actorID := middleware.CurrentUserID(c)
-	company.DeletedBy = &actorID
-	if err := h.DB.Save(&company).Error; err != nil {
-		return utils.Internal(c, "Failed to archive company")
+	if err := h.DB.Model(&company).Update("deleted_by", actorID).Error; err != nil {
+		return utils.Internal(c, "Failed to delete company")
+	}
+	if err := h.DB.Delete(&company).Error; err != nil {
+		return utils.Internal(c, "Failed to delete company")
 	}
 	return utils.NoContent(c)
+}
+
+// Trash — GET /companies/trash. Sales-Manager/Admin only (route-gated).
+func (h *CompanyHandler) Trash(c *fiber.Ctx) error {
+	return utils.GenericTrash[models.Company](c, h.DB, "Failed to list deleted companies")
+}
+
+// Restore — POST /companies/:id/restore. Sales-Manager/Admin only (route-gated).
+func (h *CompanyHandler) Restore(c *fiber.Ctx) error {
+	return utils.GenericRestore[models.Company](c, h.DB, "Deleted company not found", "Failed to restore company")
 }
