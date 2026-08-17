@@ -74,5 +74,6 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.Attachment{},
 		&models.PipelineStage{},
 		&models.LeadSourceOption{},
+		&models.AppSettings{},
 	)
 }

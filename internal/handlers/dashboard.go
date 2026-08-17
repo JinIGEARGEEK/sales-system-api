@@ -10,8 +10,6 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
-const quarterlySalesTarget = 3000000 // FR-CRM-058 will make this Admin-configurable
-
 type DashboardHandler struct {
 	DB *gorm.DB
 }
@@ -76,6 +74,17 @@ func periodStart(period string) (time.Time, bool) {
 	}
 }
 
+// quarterlySalesTarget resolves the Admin-configurable quota (FR-CRM-058)
+// from the AppSettings singleton row, falling back to the original hardcoded
+// default if the row is somehow missing (e.g. seed hasn't run yet).
+func (h *DashboardHandler) quarterlySalesTarget() int64 {
+	var settings models.AppSettings
+	if err := h.DB.First(&settings, 1).Error; err != nil {
+		return models.DefaultAppSettings.QuarterlySalesTarget
+	}
+	return settings.QuarterlySalesTarget
+}
+
 // winRate is the won/(won+lost) formula shared by Summary, industryBreakdown,
 // and teamPerformance — kept in one place so it stays consistent everywhere.
 func winRate(won, lost int64) float64 {
@@ -135,9 +144,10 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusWon).Count(&wonCount)
 	base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusLost).Count(&lostCount)
 
+	quarterlySalesTarget := h.quarterlySalesTarget()
 	pipelineCoverageRatio := 0.0
 	if quarterlySalesTarget > 0 {
-		pipelineCoverageRatio = openPipelineValue / (quarterlySalesTarget / 4)
+		pipelineCoverageRatio = openPipelineValue / (float64(quarterlySalesTarget) / 4)
 	}
 
 	// avg_sales_cycle_days: no stage-transition timestamps are tracked yet, so

@@ -12,10 +12,17 @@ const (
 )
 
 // QuoteItem is stored as a JSON array on Quote.Items (api-system-spec.md §7.4).
+// ProductID is optional: when set on incoming create/update requests, the
+// handler snapshots that Product's current Name/Price into Description/Price
+// at save time — later Product edits never retroactively change a saved
+// quote. Left nil/omitted, the item behaves as pure free text, unchanged
+// from before this field existed. Being part of a jsonb blob, it's not a
+// real FK column — GORM won't enforce referential integrity on it.
 type QuoteItem struct {
 	Description string  `json:"description"`
 	Qty         float64 `json:"qty"`
 	Price       float64 `json:"price"`
+	ProductID   *uint   `json:"product_id,omitempty"`
 }
 
 // Quote — api-system-spec.md §7.4.

@@ -44,10 +44,11 @@ func (h *ProductHandler) List(c *fiber.Ctx) error {
 }
 
 type productForm struct {
-	Name        string `json:"name"`
-	Category    string `json:"category"`
-	Description string `json:"description"`
-	IsActive    *bool  `json:"is_active"`
+	Name        string  `json:"name"`
+	Category    string  `json:"category"`
+	Description string  `json:"description"`
+	Price       float64 `json:"price"`
+	IsActive    *bool   `json:"is_active"`
 }
 
 // Create — POST /products (any authenticated role).
@@ -61,7 +62,7 @@ func (h *ProductHandler) Create(c *fiber.Ctx) error {
 	}
 
 	actorID := middleware.CurrentUserID(c)
-	product := models.Product{Name: form.Name, Category: form.Category, Description: form.Description, IsActive: true}
+	product := models.Product{Name: form.Name, Category: form.Category, Description: form.Description, Price: form.Price, IsActive: true}
 	if form.IsActive != nil {
 		product.IsActive = *form.IsActive
 	}
@@ -93,6 +94,7 @@ func (h *ProductHandler) Update(c *fiber.Ctx) error {
 	product.Name = form.Name
 	product.Category = form.Category
 	product.Description = form.Description
+	product.Price = form.Price
 	if form.IsActive != nil {
 		product.IsActive = *form.IsActive
 	}

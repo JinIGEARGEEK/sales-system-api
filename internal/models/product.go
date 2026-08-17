@@ -5,10 +5,11 @@ import "time"
 // Product — api-system-spec.md §8.2.
 type Product struct {
 	AuditedModel
-	Name        string `gorm:"not null" json:"name"`
-	Category    string `json:"category"`
-	Description string `json:"description"`
-	IsActive    bool   `gorm:"default:true" json:"is_active"`
+	Name        string  `gorm:"not null" json:"name"`
+	Category    string  `json:"category"`
+	Description string  `json:"description"`
+	Price       float64 `gorm:"default:0" json:"price"`
+	IsActive    bool    `gorm:"default:true" json:"is_active"`
 }
 
 func (Product) TableName() string { return "products" }

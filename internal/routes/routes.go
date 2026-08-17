@@ -34,6 +34,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	attachmentH := handlers.NewAttachmentHandler(db)
 	pipelineStageH := handlers.NewPipelineStageHandler(db)
 	leadSourceH := handlers.NewLeadSourceHandler(db)
+	settingsH := handlers.NewSettingsHandler(db)
 
 	api := app.Group("/api/v1")
 
@@ -204,6 +205,12 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	leadSources.Post("/", leadSourceH.Create)
 	leadSources.Patch("/:id", leadSourceH.Update)
 	leadSources.Delete("/:id", leadSourceH.Delete)
+
+	// App settings (e.g. quarterly sales quota) — Admin-only config,
+	// FR-CRM-058.
+	settings := authed.Group("/admin/settings", adminOnly)
+	settings.Get("/", settingsH.Get)
+	settings.Patch("/", settingsH.Update)
 
 	// Dashboard
 	authed.Get("/dashboard/summary", dashboardH.Summary)

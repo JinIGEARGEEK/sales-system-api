@@ -50,6 +50,27 @@ type quoteForm struct {
 	Status       models.QuoteStatus `json:"status"`
 }
 
+// snapshotQuoteItems fills Description/Price from the referenced Product for
+// any line item that carries a ProductID — a one-time snapshot taken at
+// save time, not a live reference. Later edits to the Product's price/name
+// never retroactively change a quote that already saved a snapshot. The
+// ProductID itself is kept on the item for traceability/reporting. Items
+// without a ProductID are left exactly as submitted (pure free text).
+func snapshotQuoteItems(db *gorm.DB, items []models.QuoteItem) []models.QuoteItem {
+	for i, item := range items {
+		if item.ProductID == nil || *item.ProductID == 0 {
+			continue
+		}
+		var product models.Product
+		if err := db.First(&product, *item.ProductID).Error; err != nil {
+			continue
+		}
+		items[i].Description = product.Name
+		items[i].Price = product.Price
+	}
+	return items
+}
+
 // Create — POST /deals/:dealId/quotes. A line-item quote.
 func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 	deal, err := dealForSubResource(c, h.DB, c.Params("dealId"))
@@ -63,7 +84,7 @@ func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 	}
 
 	quote := models.Quote{
-		DealID: deal.ID, Items: models.JSONItems(form.Items),
+		DealID: deal.ID, Items: models.JSONItems(snapshotQuoteItems(h.DB, form.Items)),
 		ValidityDate: form.ValidityDate, Status: form.Status,
 	}
 	if quote.Status == "" {
@@ -120,7 +141,7 @@ func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	}
 
 	if form.Items != nil {
-		quote.Items = models.JSONItems(form.Items)
+		quote.Items = models.JSONItems(snapshotQuoteItems(h.DB, form.Items))
 	}
 	if form.ValidityDate != nil {
 		quote.ValidityDate = form.ValidityDate

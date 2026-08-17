@@ -35,6 +35,7 @@ func main() {
 
 	seedAdmin(db)
 	seedPipelineConfig(db)
+	seedAppSettings(db)
 
 	app := fiber.New(fiber.Config{
 		ErrorHandler: apiErrorHandler,
@@ -138,4 +139,18 @@ func seedPipelineConfig(db *gorm.DB) {
 		}
 		log.Printf("Seeded %d default lead sources", len(models.DefaultLeadSourceOptions))
 	}
+}
+
+// seedAppSettings inserts the singleton AppSettings row (ID=1) if the table
+// is empty, same first-run-only idiom as seedAdmin/seedPipelineConfig above.
+func seedAppSettings(db *gorm.DB) {
+	var count int64
+	db.Model(&models.AppSettings{}).Count(&count)
+	if count > 0 {
+		return
+	}
+	if err := db.Create(&models.DefaultAppSettings).Error; err != nil {
+		log.Fatalf("failed to seed app settings: %v", err)
+	}
+	log.Printf("Seeded default app settings (quarterly_sales_target=%d)", models.DefaultAppSettings.QuarterlySalesTarget)
 }

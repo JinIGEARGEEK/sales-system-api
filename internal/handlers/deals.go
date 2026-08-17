@@ -143,20 +143,14 @@ func validateProbabilityAndLostReason(c *fiber.Ctx, db *gorm.DB, form dealForm) 
 	return nil
 }
 
-// defaultProbabilityFor resolves the win-probability default for a stage,
-// preferring the configured PipelineStage row's IsWonStage/IsLostStage flags
-// (100/0) so a custom-named Won/Lost stage still gets a sensible default,
-// same as models.StageDefaultProbability does for the hardcoded stage names;
-// falls back to models.StageDefaultProbability for interim stages.
+// defaultProbabilityFor resolves the win-probability default for a stage via
+// utils.StageDefaultProbability, which prefers the configured PipelineStage
+// row (Won/Lost flags -> 100/0, in-between stages -> interpolated by
+// sort_order) over the hardcoded models.StageDefaultProbability switch, so a
+// custom Admin-added stage — or a renamed Won/Lost stage — still gets a
+// sensible default instead of a flat 10.
 func (h *DealHandler) defaultProbabilityFor(stage models.DealStage) int {
-	switch {
-	case utils.IsWonStage(h.DB, stage):
-		return 100
-	case utils.IsLostStage(h.DB, stage):
-		return 0
-	default:
-		return models.StageDefaultProbability(stage)
-	}
+	return utils.StageDefaultProbability(h.DB, stage)
 }
 
 // syncStatusWithStageFlags forces deal.Status to won/lost whenever the
