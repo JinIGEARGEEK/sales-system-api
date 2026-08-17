@@ -41,7 +41,28 @@ func (h *QuoteHandler) List(c *fiber.Ctx) error {
 	if err := h.DB.Where("deal_id = ?", c.Params("dealId")).Order("created_at DESC").Find(&quotes).Error; err != nil {
 		return utils.Internal(c, "Failed to list quotes")
 	}
-	return utils.OK(c, quotes)
+	return utils.OK(c, withEffectiveStatuses(quotes))
+}
+
+// withEffectiveStatuses overrides each Quote's Status field with its
+// EffectiveStatus() before serialization — so a Sent quote past its
+// ValidityDate reports "expired" to callers — without mutating anything in
+// the database. Operates on a copy of the slice/values so the caller's
+// original in-memory quotes (e.g. ones about to be reused) are unaffected.
+func withEffectiveStatuses(quotes []models.Quote) []models.Quote {
+	out := make([]models.Quote, len(quotes))
+	for i, q := range quotes {
+		q.Status = q.EffectiveStatus()
+		out[i] = q
+	}
+	return out
+}
+
+// withEffectiveStatus is the single-Quote counterpart of withEffectiveStatuses,
+// for Create/Update/Upload responses.
+func withEffectiveStatus(q models.Quote) models.Quote {
+	q.Status = q.EffectiveStatus()
+	return q
 }
 
 type quoteForm struct {
@@ -82,6 +103,11 @@ func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
+	if form.Status != "" && !models.IsValidQuoteStatus(form.Status) {
+		return utils.ValidationError(c, "status is invalid", map[string][]string{
+			"status": {"invalid"},
+		})
+	}
 
 	quote := models.Quote{
 		DealID: deal.ID, Items: models.JSONItems(snapshotQuoteItems(h.DB, form.Items)),
@@ -93,7 +119,7 @@ func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 	if err := h.DB.Create(&quote).Error; err != nil {
 		return utils.Internal(c, "Failed to create quote")
 	}
-	return utils.Created(c, quote)
+	return utils.Created(c, withEffectiveStatus(quote))
 }
 
 // Upload — POST /deals/:dealId/quotes/upload. Uploads a PDF quote in place of
@@ -122,7 +148,7 @@ func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 	if err := h.DB.Create(&quote).Error; err != nil {
 		return utils.Internal(c, "Failed to create quote")
 	}
-	return utils.Created(c, quote)
+	return utils.Created(c, withEffectiveStatus(quote))
 }
 
 // Update — PUT /quotes/:id. Update status/items/validity_date.
@@ -139,6 +165,11 @@ func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
+	if form.Status != "" && !models.IsValidQuoteStatus(form.Status) {
+		return utils.ValidationError(c, "status is invalid", map[string][]string{
+			"status": {"invalid"},
+		})
+	}
 
 	if form.Items != nil {
 		quote.Items = models.JSONItems(snapshotQuoteItems(h.DB, form.Items))
@@ -153,7 +184,7 @@ func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	if err := h.DB.Save(&quote).Error; err != nil {
 		return utils.Internal(c, "Failed to update quote")
 	}
-	return utils.OK(c, quote)
+	return utils.OK(c, withEffectiveStatus(quote))
 }
 
 // Delete — DELETE /quotes/:id (hard delete).
@@ -205,7 +236,7 @@ func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 		pdf.Cell(0, 6, fmt.Sprintf("Valid Until: %s", *quote.ValidityDate))
 		pdf.Ln(6)
 	}
-	pdf.Cell(0, 6, fmt.Sprintf("Status: %s", quote.Status))
+	pdf.Cell(0, 6, fmt.Sprintf("Status: %s", quote.EffectiveStatus()))
 	pdf.Ln(10)
 
 	utils.RenderLineItemsTable(pdf, quote.Items)

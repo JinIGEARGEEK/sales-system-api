@@ -155,6 +155,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	avgSalesCycleDays := 0
 
 	revenueTrend := h.revenueTrend(c)
+	forecastTrend := h.forecastTrend(c)
 	stageBreakdown := h.stageBreakdown(c)
 	industryBreakdown := h.industryBreakdown(c)
 	teamPerformance := h.teamPerformance(c)
@@ -170,6 +171,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 		"pipeline_coverage_ratio": pipelineCoverageRatio,
 		"quarterly_sales_target":  float64(quarterlySalesTarget),
 		"revenue_trend":           revenueTrend,
+		"forecast_trend":          forecastTrend,
 		"stage_breakdown":         stageBreakdown,
 		"industry_breakdown":      industryBreakdown,
 		"team_performance":        teamPerformance,
@@ -191,6 +193,45 @@ func (h *DashboardHandler) revenueTrend(c *fiber.Ctx) []revenueTrendPoint {
 		h.DB.Model(&models.Deal{}).
 			Where("status = ? AND created_at >= ? AND created_at < ?", models.DealStatusWon, start, end).
 			Select("COALESCE(SUM(value), 0)").Scan(&value)
+
+		points = append(points, revenueTrendPoint{Label: start.Format("Jan"), Value: value})
+	}
+	return points
+}
+
+// forecastTrend is the forward-looking counterpart to revenueTrend: instead of
+// bucketing past Won revenue by created_at month, it buckets open deals'
+// probability-weighted value by ExpectedCloseDate month for the next 6 months
+// (this month + 5 forward), mirroring revenueTrend's exact date-window shape.
+//
+// ExpectedCloseDate is a nullable *string (not required at Create), so deals
+// without one cannot be placed in a month bucket here and are excluded from
+// every point below. They are NOT excluded from the headline forecasted_revenue
+// stat card above, which sums all open deals regardless of date — so this
+// trend's points may sum to less than that headline total. The frontend must
+// not present this breakdown as the complete forecast.
+func (h *DashboardHandler) forecastTrend(c *fiber.Ctx) []revenueTrendPoint {
+	points := make([]revenueTrendPoint, 0, 6)
+	now := time.Now()
+	for i := 0; i <= 5; i++ {
+		month := now.AddDate(0, i, 0)
+		start := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, month.Location())
+		end := start.AddDate(0, 1, 0)
+
+		// expected_close_date is stored as text (no explicit gorm type on the
+		// nullable *string field), holding either a plain "2006-01-02" date or
+		// a full ISO datetime (the frontend submits Date objects, which
+		// JSON-serialize to e.g. "2026-08-17T00:00:00.000Z"). Comparing against
+		// plain YYYY-MM-DD bounds still buckets correctly either way: it's a
+		// lexicographic string comparison, and since both forms share the same
+		// zero-padded date prefix, "<bound>" sorts before any same-day
+		// timestamp string and after the prior day's, so month windows land
+		// on the right boundary regardless of which format is stored.
+		var value float64
+		h.DB.Model(&models.Deal{}).
+			Where("status = ? AND expected_close_date >= ? AND expected_close_date < ?",
+				models.DealStatusOpen, start.Format("2006-01-02"), end.Format("2006-01-02")).
+			Select("COALESCE(SUM(value * COALESCE(probability, 0) / 100.0), 0)").Scan(&value)
 
 		points = append(points, revenueTrendPoint{Label: start.Format("Jan"), Value: value})
 	}

@@ -9,7 +9,28 @@ const (
 	QuoteStatusSent     QuoteStatus = "sent"
 	QuoteStatusAccepted QuoteStatus = "accepted"
 	QuoteStatusRejected QuoteStatus = "rejected"
+	// QuoteStatusExpired is a read-derived state only (see Quote.EffectiveStatus) —
+	// it is never a value a caller may set directly via Create/Update, so it is
+	// intentionally excluded from ValidQuoteStatuses/IsValidQuoteStatus below.
+	QuoteStatusExpired QuoteStatus = "expired"
 )
+
+// ValidQuoteStatuses lists every value a caller may directly SET on a Quote's
+// Status field via Create/Update — mirrors models.ValidLostReasons's role for
+// Deal.LostReason. QuoteStatusExpired is deliberately omitted: it's a derived
+// display/filter value computed by EffectiveStatus, never a stored/settable one.
+var ValidQuoteStatuses = []QuoteStatus{
+	QuoteStatusDraft, QuoteStatusSent, QuoteStatusAccepted, QuoteStatusRejected,
+}
+
+func IsValidQuoteStatus(s QuoteStatus) bool {
+	for _, v := range ValidQuoteStatuses {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
 
 // QuoteItem is stored as a JSON array on Quote.Items (api-system-spec.md §7.4).
 // ProductID is optional: when set on incoming create/update requests, the
@@ -39,3 +60,29 @@ type Quote struct {
 }
 
 func (Quote) TableName() string { return "quotes" }
+
+// EffectiveStatus returns QuoteStatusExpired when this Quote is Sent and its
+// ValidityDate has passed, otherwise it returns the stored Status unchanged.
+// This is a read-derived value only — it never mutates q.Status or the
+// underlying stored row. Only a Sent quote can be considered expired: a
+// Draft past its validity date is still a Draft (never sent, nothing to
+// expire), and Accepted/Rejected are terminal states that Expired shouldn't
+// override. ValidityDate is parsed permissively (RFC3339 timestamp — how the
+// frontend serializes it — falling back to a bare date) so a malformed or
+// missing value simply leaves the stored Status as-is rather than erroring.
+func (q *Quote) EffectiveStatus() QuoteStatus {
+	if q.Status != QuoteStatusSent || q.ValidityDate == nil || *q.ValidityDate == "" {
+		return q.Status
+	}
+	validUntil, err := time.Parse(time.RFC3339, *q.ValidityDate)
+	if err != nil {
+		validUntil, err = time.Parse("2006-01-02", *q.ValidityDate)
+		if err != nil {
+			return q.Status
+		}
+	}
+	if time.Now().After(validUntil) {
+		return QuoteStatusExpired
+	}
+	return q.Status
+}
