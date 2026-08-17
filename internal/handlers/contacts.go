@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"strings"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/lib/pq"
 	"gorm.io/gorm"
@@ -41,7 +43,20 @@ func (h *ContactHandler) List(c *fiber.Ctx) error {
 	query.Count(&total)
 
 	var contacts []models.Contact
-	query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true}, "-created_at")
+	// "company_name" is a special case (Contact has no such column — it's the
+	// related Company's name), handled by a join below since it can't go
+	// through ApplySort's plain-column allow-list.
+	if sortField := strings.TrimPrefix(c.Query("sort"), "-"); sortField == "company_name" {
+		dir := "ASC"
+		if strings.HasPrefix(c.Query("sort"), "-") {
+			dir = "DESC"
+		}
+		query = query.Joins("JOIN companies ON companies.id = contacts.company_id").
+			Order("companies.name " + dir).
+			Select("contacts.*")
+	} else {
+		query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true, "email": true}, "-created_at")
+	}
 	if err := query.Limit(perPage).Offset(offset).Find(&contacts).Error; err != nil {
 		return utils.Internal(c, "Failed to list contacts")
 	}

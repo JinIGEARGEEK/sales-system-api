@@ -27,10 +27,13 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	contractH := handlers.NewContractHandler(db)
 	productH := handlers.NewProductHandler(db)
 	projectH := handlers.NewProjectHandler(db)
+	exportH := handlers.NewExportHandler(db)
 	reportH := handlers.NewReportHandler(db)
 	auditLogH := handlers.NewAuditLogHandler(db)
 	dashboardH := handlers.NewDashboardHandler(db)
 	attachmentH := handlers.NewAttachmentHandler(db)
+	pipelineStageH := handlers.NewPipelineStageHandler(db)
+	leadSourceH := handlers.NewLeadSourceHandler(db)
 
 	api := app.Group("/api/v1")
 
@@ -49,9 +52,12 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	users := authed.Group("/users", adminOnly)
 	users.Get("/", userH.List)
 	users.Post("/", userH.Create)
+	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
+	users.Get("/trash", userH.Trash)
 	users.Get("/:id", userH.Get)
 	users.Put("/:id", userH.Update)
 	users.Delete("/:id", userH.Delete)
+	users.Post("/:id/restore", userH.Restore)
 	authed.Get("/team-members", userH.TeamMembers)
 
 	// Leads
@@ -77,6 +83,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	companies.Post("/import", importH.ImportCompanies)
 	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
 	companies.Get("/trash", bulkRoles, companyH.Trash)
+	companies.Get("/export", bulkRoles, exportH.Companies)
 	companies.Get("/:id", companyH.Get)
 	companies.Put("/:id", companyH.Update)
 	companies.Delete("/:id", companyH.Delete)
@@ -93,6 +100,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	contacts.Post("/import", importH.ImportContacts)
 	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
 	contacts.Get("/trash", bulkRoles, contactH.Trash)
+	contacts.Get("/export", bulkRoles, exportH.Contacts)
 	contacts.Get("/:id", contactH.Get)
 	contacts.Put("/:id", contactH.Update)
 	contacts.Delete("/:id", contactH.Delete)
@@ -107,6 +115,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	deals.Patch("/bulk-reassign", bulkRoles, dealH.BulkReassign)
 	deals.Patch("/bulk-tag", bulkRoles, dealH.BulkTag)
 	deals.Patch("/bulk-archive", bulkRoles, dealH.BulkArchive)
+	deals.Get("/export", bulkRoles, exportH.Deals)
 	deals.Get("/:id", dealH.Get)
 	deals.Put("/:id", dealH.Update)
 	deals.Delete("/:id", dealH.Delete)
@@ -162,6 +171,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	products := authed.Group("/products")
 	products.Get("/", productH.List)
 	products.Post("/", productH.Create)
+	products.Get("/export", bulkRoles, exportH.Products)
 	products.Patch("/:id", productH.Update)
 	products.Patch("/:id/deactivate", productH.Deactivate)
 
@@ -170,6 +180,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 
 	// Projects — field-level RBAC enforced inside the handler.
 	authed.Get("/projects", projectH.List)
+	authed.Get("/projects/export", bulkRoles, exportH.Projects)
 	authed.Patch("/projects/:id", projectH.Update)
 
 	// Reports — Sales Manager/Admin only.
@@ -179,6 +190,20 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 
 	// Audit log — Admin only, read-only (NFR-007).
 	authed.Get("/audit-log", auditLogH.List, adminOnly)
+
+	// Pipeline stages / lead sources — Admin-only config, replacing the
+	// previously hardcoded DealStage/LeadSource enums as the source of truth.
+	pipelineStages := authed.Group("/admin/pipeline-stages", adminOnly)
+	pipelineStages.Get("/", pipelineStageH.List)
+	pipelineStages.Post("/", pipelineStageH.Create)
+	pipelineStages.Patch("/:id", pipelineStageH.Update)
+	pipelineStages.Delete("/:id", pipelineStageH.Delete)
+
+	leadSources := authed.Group("/admin/lead-sources", adminOnly)
+	leadSources.Get("/", leadSourceH.List)
+	leadSources.Post("/", leadSourceH.Create)
+	leadSources.Patch("/:id", leadSourceH.Update)
+	leadSources.Delete("/:id", leadSourceH.Delete)
 
 	// Dashboard
 	authed.Get("/dashboard/summary", dashboardH.Summary)

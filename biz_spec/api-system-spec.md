@@ -186,7 +186,9 @@ interface AdminUser extends User {
 | `POST` | `/users` | Admin | 🟢 | Create a staff account. Body per `AdminUserForm` fields: `first_name, last_name, email, tel, role, status, notes` (and optionally `password` — a random one is generated if omitted). `email` doubles as the login identifier and must be a valid address on the company domain (`@igeargeek.com`) — enforced server-side, not just a frontend hint. `must_change_password` is always set `true` on the created row — not a client-settable field — so every new account is forced through `POST /auth/change-password` on first use. |
 | `GET` | `/users/:id` | Admin | 🟢 | Single staff record — `pages/admin/users/[id].vue`. |
 | `PUT` | `/users/:id` | Admin | 🟢 | Full update. `email` is required and re-validated against the same `@igeargeek.com` rule as create. Supplying a non-empty `password` resets it and re-sets `must_change_password: true`, same as a fresh create. |
-| `DELETE` | `/users/:id` | Admin | 🟢 | Soft-delete (deactivate), not a hard delete — see §1.6. |
+| `DELETE` | `/users/:id` | Admin | 🟢 | Soft-delete (`deleted_at` + `is_active: false`), not a hard delete — see §1.6. Recoverable via Trash/Restore below, same as Company/Contact/Deal/Lead. |
+| `GET` | `/users/trash` | Admin | 🟢 | List soft-deleted accounts, paginated like `GET /users`. |
+| `POST` | `/users/:id/restore` | Admin | 🟢 | Clears `deleted_at`/`deleted_by`. Does not re-set `is_active: true` — an Admin reactivates separately via `PUT /users/:id`, same as the account's other fields aren't re-derived on restore. |
 | `GET` | `/team-members` | any authenticated | 🟢 | Lightweight `{ id, name, email }[]` list (`TeamMember` in `interfaces/crm.d.ts`) for assignee dropdowns (`CrmTeamMemberSelect`) — do not require Admin role for this one, every Sales role needs it to assign Leads/Deals/Tasks. |
 
 ---

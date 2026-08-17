@@ -33,14 +33,15 @@ func (h *CompanyHandler) List(c *fiber.Ctx) error {
 		query = query.Where("? = ANY(tags)", v)
 	}
 	if v := c.Query("search"); v != "" {
-		query = query.Where("name ILIKE ?", "%"+v+"%")
+		like := "%" + v + "%"
+		query = query.Where("name ILIKE ? OR website ILIKE ?", like, like)
 	}
 
 	var total int64
 	query.Count(&total)
 
 	var companies []models.Company
-	query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true}, "-created_at")
+	query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true, "industry": true}, "-created_at")
 	if err := query.Limit(perPage).Offset(offset).Find(&companies).Error; err != nil {
 		return utils.Internal(c, "Failed to list companies")
 	}

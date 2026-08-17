@@ -189,6 +189,17 @@ func (h *UserHandler) Delete(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
+// Trash — GET /users/trash (Admin).
+func (h *UserHandler) Trash(c *fiber.Ctx) error {
+	return utils.GenericTrash[models.User](c, h.DB, "Failed to list deleted users")
+}
+
+// Restore — POST /users/:id/restore (Admin). Leaves is_active false — an
+// Admin re-activates separately via Update.
+func (h *UserHandler) Restore(c *fiber.Ctx) error {
+	return utils.GenericRestore[models.User](c, h.DB, "Deleted user not found", "Failed to restore user")
+}
+
 type teamMember struct {
 	ID    uint   `json:"id"`
 	Name  string `json:"name"`

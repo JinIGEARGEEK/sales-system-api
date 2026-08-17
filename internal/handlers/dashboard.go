@@ -124,6 +124,13 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	var openDealsCount int64
 	base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusOpen).Count(&openDealsCount)
 
+	// forecastedRevenue — sum of (open Deal value × probability/100). Probability
+	// defaults per-stage at write time (see StageDefaultProbability) so every open
+	// Deal has one, but COALESCE guards any pre-existing row a migration missed.
+	var forecastedRevenue float64
+	base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusOpen).
+		Select("COALESCE(SUM(value * COALESCE(probability, 0) / 100.0), 0)").Scan(&forecastedRevenue)
+
 	var wonCount, lostCount int64
 	base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusWon).Count(&wonCount)
 	base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusLost).Count(&lostCount)
@@ -147,6 +154,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 		"won_value":               wonValue,
 		"win_rate":                winRate(wonCount, lostCount),
 		"open_deals_count":        openDealsCount,
+		"forecasted_revenue":      forecastedRevenue,
 		"avg_deal_size":           avgDealSize,
 		"avg_sales_cycle_days":    avgSalesCycleDays,
 		"pipeline_coverage_ratio": pipelineCoverageRatio,

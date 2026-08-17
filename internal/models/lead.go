@@ -30,7 +30,7 @@ type Lead struct {
 	CompanyName string         `json:"company_name"`
 	Email       string         `json:"email"`
 	Phone       string         `json:"phone"`
-	Source      LeadSource     `gorm:"type:varchar(16);index" json:"source"`
+	Source      LeadSource     `gorm:"type:varchar(64);index" json:"source"`
 	Status      LeadStatus     `gorm:"type:varchar(16);default:'New';index" json:"status"`
 	Notes       string         `json:"notes"`
 	AssignedTo  *uint          `gorm:"index" json:"assigned_to"`

@@ -128,7 +128,33 @@ func setup() {
 	if err := database.AutoMigrate(db); err != nil {
 		panic(fmt.Sprintf("testutil: automigrate: %v", err))
 	}
+	seedPipelineConfig(db)
 	testDB = db
+}
+
+// seedPipelineConfig mirrors cmd/api/main.go's seedPipelineConfig — the test
+// DB needs the same default PipelineStage/LeadSourceOption rows production
+// gets on first run, since DealHandler/LeadHandler now validate stage/channel/
+// source against these tables instead of a hardcoded Go enum. Deliberately
+// NOT part of TruncateAll's `tables` list (see below) so it only runs once
+// per test binary via the same sync.Once as AutoMigrate, instead of being
+// wiped and needing to be redone between every test.
+func seedPipelineConfig(db *gorm.DB) {
+	var stageCount int64
+	db.Model(&models.PipelineStage{}).Count(&stageCount)
+	if stageCount == 0 {
+		if err := db.Create(&models.DefaultPipelineStages).Error; err != nil {
+			panic(fmt.Sprintf("testutil: seed pipeline stages: %v", err))
+		}
+	}
+
+	var sourceCount int64
+	db.Model(&models.LeadSourceOption{}).Count(&sourceCount)
+	if sourceCount == 0 {
+		if err := db.Create(&models.DefaultLeadSourceOptions).Error; err != nil {
+			panic(fmt.Sprintf("testutil: seed lead sources: %v", err))
+		}
+	}
 }
 
 // TruncateAll wipes every table between tests, restarting identity sequences

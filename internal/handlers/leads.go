@@ -28,7 +28,9 @@ func (h *LeadHandler) List(c *fiber.Ctx) error {
 	if v := c.Query("source"); v != "" {
 		query = query.Where("source = ?", v)
 	}
-	if v := c.Query("assigned_to"); v != "" {
+	if v := c.Query("assigned_to"); v == "unassigned" {
+		query = query.Where("assigned_to IS NULL")
+	} else if v != "" {
 		query = query.Where("assigned_to = ?", v)
 	}
 	if v := c.Query("search"); v != "" {
@@ -43,7 +45,7 @@ func (h *LeadHandler) List(c *fiber.Ctx) error {
 	query.Count(&total)
 
 	var leads []models.Lead
-	query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true}, "-created_at")
+	query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true, "company_name": true}, "-created_at")
 	if err := query.Limit(perPage).Offset(offset).Find(&leads).Error; err != nil {
 		return utils.Internal(c, "Failed to list leads")
 	}
@@ -73,6 +75,23 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a lead to another sales rep")
 	}
+	if !utils.IsActiveLeadSource(h.DB, string(form.Source)) {
+		return utils.ValidationError(c, "source is not a valid active lead source", map[string][]string{"source": {"invalid"}})
+	}
+
+	// Auto-assignment: only kicks in when the caller didn't specify an owner
+	// (e.g. a brand-new Lead created without picking someone explicitly).
+	// Explicit-assignee paths — Update, BulkReassign, Kanban drag, Convert —
+	// never hit this because they always pass a concrete AssignedTo (or
+	// intentionally leave it nil, which the same logic would fill in — but
+	// today only Create is reachable with a nil AssignedTo from those flows).
+	if form.AssignedTo == nil {
+		if autoID, err := h.pickAutoAssignee(); err != nil {
+			return utils.Internal(c, "Failed to auto-assign lead")
+		} else if autoID != nil {
+			form.AssignedTo = autoID
+		}
+	}
 
 	lead := models.Lead{
 		Name: form.Name, CompanyName: form.CompanyName, Email: form.Email, Phone: form.Phone,
@@ -85,6 +104,71 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 		return utils.Internal(c, "Failed to create lead")
 	}
 	return utils.Created(c, lead)
+}
+
+// pickAutoAssignee implements round-robin lead assignment via a stateless
+// least-open-load strategy: among active Sales Reps, pick whoever currently
+// owns the fewest open (non-closed) Leads+Deals. This is equivalent in
+// steady-state to strict round robin (every assignment goes to whoever is
+// "next up" by load) but needs no new cursor/counter table — it's derived
+// live from existing assignment data, which also makes it self-healing if
+// leads are reassigned/deleted/bulk-reassigned outside the rotation.
+// Returns (nil, nil) if there are no active Sales Reps to assign to.
+func (h *LeadHandler) pickAutoAssignee() (*uint, error) {
+	var reps []models.User
+	if err := h.DB.Where("role = ? AND is_active = ?", models.RoleSalesRep, true).
+		Order("id").Find(&reps).Error; err != nil {
+		return nil, err
+	}
+	if len(reps) == 0 {
+		return nil, nil
+	}
+
+	type loadRow struct {
+		UserID uint
+		Cnt    int64
+	}
+	load := make(map[uint]int64, len(reps))
+	for _, r := range reps {
+		load[r.ID] = 0
+	}
+
+	var leadLoads []loadRow
+	if err := h.DB.Model(&models.Lead{}).
+		Select("assigned_to as user_id, count(*) as cnt").
+		Where("assigned_to IS NOT NULL AND status NOT IN ?",
+			[]models.LeadStatus{models.LeadStatusQualified, models.LeadStatusDisqualified}).
+		Group("assigned_to").Scan(&leadLoads).Error; err != nil {
+		return nil, err
+	}
+	for _, lr := range leadLoads {
+		if _, ok := load[lr.UserID]; ok {
+			load[lr.UserID] += lr.Cnt
+		}
+	}
+
+	var dealLoads []loadRow
+	if err := h.DB.Model(&models.Deal{}).
+		Select("assigned_to as user_id, count(*) as cnt").
+		Where("assigned_to IS NOT NULL AND status = ?", models.DealStatusOpen).
+		Group("assigned_to").Scan(&dealLoads).Error; err != nil {
+		return nil, err
+	}
+	for _, dr := range dealLoads {
+		if _, ok := load[dr.UserID]; ok {
+			load[dr.UserID] += dr.Cnt
+		}
+	}
+
+	best := reps[0]
+	bestLoad := load[best.ID]
+	for _, r := range reps[1:] {
+		if load[r.ID] < bestLoad {
+			best, bestLoad = r, load[r.ID]
+		}
+	}
+	id := best.ID
+	return &id, nil
 }
 
 // Get — GET /leads/:id.
@@ -112,6 +196,9 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	}
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a lead to another sales rep")
+	}
+	if !utils.IsActiveLeadSource(h.DB, string(form.Source)) {
+		return utils.ValidationError(c, "source is not a valid active lead source", map[string][]string{"source": {"invalid"}})
 	}
 
 	lead.Name, lead.CompanyName, lead.Email, lead.Phone = form.Name, form.CompanyName, form.Email, form.Phone
@@ -264,6 +351,12 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
+	if !utils.IsActivePipelineStage(h.DB, string(req.Deal.Stage)) {
+		return utils.ValidationError(c, "stage is not a valid active pipeline stage", map[string][]string{"stage": {"invalid"}})
+	}
+	if !utils.IsActiveLeadSource(h.DB, string(req.Deal.Channel)) {
+		return utils.ValidationError(c, "channel is not a valid active lead source", map[string][]string{"channel": {"invalid"}})
+	}
 
 	var company models.Company
 	var contact models.Contact
@@ -309,6 +402,8 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 		if deal.Stage == "" {
 			deal.Stage = models.DealStageQualified
 		}
+		def := models.StageDefaultProbability(deal.Stage)
+		deal.Probability = &def
 		if err := tx.Create(&deal).Error; err != nil {
 			return err
 		}

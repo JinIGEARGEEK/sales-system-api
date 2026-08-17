@@ -12,6 +12,7 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/database"
 	"github.com/igeargeek/sales-system-api/internal/models"
+	"github.com/igeargeek/sales-system-api/internal/notifier"
 	"github.com/igeargeek/sales-system-api/internal/routes"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
@@ -33,6 +34,7 @@ func main() {
 	}
 
 	seedAdmin(db)
+	seedPipelineConfig(db)
 
 	app := fiber.New(fiber.Config{
 		ErrorHandler: apiErrorHandler,
@@ -50,6 +52,10 @@ func main() {
 	})
 
 	routes.Setup(app, db, cfg)
+
+	// Background job: emails a Task's assignee once its due date has passed.
+	// Safe to run even without SMTP configured — see internal/utils/mailer.go.
+	notifier.StartTaskDueReminders(db, cfg)
 
 	log.Fatal(app.Listen(":" + cfg.Port))
 }
@@ -107,4 +113,29 @@ func seedAdmin(db *gorm.DB) {
 	}
 
 	log.Printf("Seeded initial admin user — email: %s, password: %s (change this immediately)", email, password)
+}
+
+// seedPipelineConfig inserts the default PipelineStage/LeadSourceOption rows
+// (the values that used to be hardcoded Go enums) if their tables are empty,
+// same first-run-only idiom as seedAdmin above. Existing Deals/Leads keep
+// validating fine post-migration because these are the exact strings already
+// stored on those rows.
+func seedPipelineConfig(db *gorm.DB) {
+	var stageCount int64
+	db.Model(&models.PipelineStage{}).Count(&stageCount)
+	if stageCount == 0 {
+		if err := db.Create(&models.DefaultPipelineStages).Error; err != nil {
+			log.Fatalf("failed to seed default pipeline stages: %v", err)
+		}
+		log.Printf("Seeded %d default pipeline stages", len(models.DefaultPipelineStages))
+	}
+
+	var sourceCount int64
+	db.Model(&models.LeadSourceOption{}).Count(&sourceCount)
+	if sourceCount == 0 {
+		if err := db.Create(&models.DefaultLeadSourceOptions).Error; err != nil {
+			log.Fatalf("failed to seed default lead sources: %v", err)
+		}
+		log.Printf("Seeded %d default lead sources", len(models.DefaultLeadSourceOptions))
+	}
 }

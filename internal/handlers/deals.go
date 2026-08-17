@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"strings"
+
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
@@ -32,7 +34,9 @@ func (h *DealHandler) List(c *fiber.Ctx) error {
 	if v := c.Query("company_id"); v != "" {
 		query = query.Where("company_id = ?", v)
 	}
-	if v := c.Query("assigned_to"); v != "" {
+	if v := c.Query("assigned_to"); v == "unassigned" {
+		query = query.Where("assigned_to IS NULL")
+	} else if v != "" {
 		query = query.Where("assigned_to = ?", v)
 	}
 	if v := c.Query("business_unit"); v != "" {
@@ -49,7 +53,20 @@ func (h *DealHandler) List(c *fiber.Ctx) error {
 	query.Count(&total)
 
 	var deals []models.Deal
-	query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "title": true, "value": true}, "-created_at")
+	// "company_name" is a special case (Deal has no such column — it's the
+	// related Company's name), handled by a join below since it can't go
+	// through ApplySort's plain-column allow-list.
+	if sortField := strings.TrimPrefix(c.Query("sort"), "-"); sortField == "company_name" {
+		dir := "ASC"
+		if strings.HasPrefix(c.Query("sort"), "-") {
+			dir = "DESC"
+		}
+		query = query.Joins("JOIN companies ON companies.id = deals.company_id").
+			Order("companies.name " + dir).
+			Select("deals.*")
+	} else {
+		query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "title": true, "value": true}, "-created_at")
+	}
 	if err := query.Limit(perPage).Offset(offset).Find(&deals).Error; err != nil {
 		return utils.Internal(c, "Failed to list deals")
 	}
@@ -68,6 +85,94 @@ type dealForm struct {
 	Channel           models.LeadSource    `json:"channel"`
 	BusinessUnit      *models.BusinessUnit `json:"business_unit"`
 	BusinessUnitItem  *string              `json:"business_unit_item"`
+	Probability       *int                 `json:"probability"`
+	LostReason        *models.LostReason   `json:"lost_reason"`
+}
+
+// validateStageAndChannel checks Stage/Channel against the active
+// PipelineStage/LeadSourceOption rows — the DB-backed replacement for the
+// previously hardcoded DealStage/LeadSource enum whitelist. An empty value is
+// allowed through (defaulted downstream), and a value already stored on an
+// existing row (e.g. the seeded hardcoded stage names) always validates fine.
+func (h *DealHandler) validateStageAndChannel(c *fiber.Ctx, form dealForm) error {
+	if !utils.IsActivePipelineStage(h.DB, string(form.Stage)) {
+		return utils.ValidationError(c, "stage is not a valid active pipeline stage", map[string][]string{
+			"stage": {"invalid"},
+		})
+	}
+	if !utils.IsActiveLeadSource(h.DB, string(form.Channel)) {
+		return utils.ValidationError(c, "channel is not a valid active lead source", map[string][]string{
+			"channel": {"invalid"},
+		})
+	}
+	return nil
+}
+
+// isLosingForm reports whether the submitted form is setting this Deal to
+// Lost (by stage or by status directly) — the trigger for requiring
+// lost_reason. Prefers the configured PipelineStage row's IsLostStage flag
+// (via utils.IsLostStage) so an admin-renamed/custom Lost stage is still
+// recognized, the same resolution DealHandler.UpdateStage already uses.
+func isLosingForm(db *gorm.DB, form dealForm) bool {
+	return utils.IsLostStage(db, form.Stage) || form.Status == models.DealStatusLost
+}
+
+// validateProbabilityAndLostReason mirrors the conditional-required pattern
+// already used elsewhere in this codebase (e.g. lost_reason is only required
+// once Stage/Status moves to Lost, the same way Contract-signed-before-Won-style
+// gates only fire once their triggering condition is met). Returns a non-nil
+// error response already written to c, or nil if valid.
+func validateProbabilityAndLostReason(c *fiber.Ctx, db *gorm.DB, form dealForm) error {
+	if form.Probability != nil && (*form.Probability < 0 || *form.Probability > 100) {
+		return utils.ValidationError(c, "probability must be between 0 and 100", map[string][]string{
+			"probability": {"must be between 0 and 100"},
+		})
+	}
+	if isLosingForm(db, form) {
+		if form.LostReason == nil || *form.LostReason == "" {
+			return utils.ValidationError(c, "lost_reason is required when marking a deal Lost", map[string][]string{
+				"lost_reason": {"required"},
+			})
+		}
+		if !models.IsValidLostReason(*form.LostReason) {
+			return utils.ValidationError(c, "lost_reason is invalid", map[string][]string{
+				"lost_reason": {"invalid"},
+			})
+		}
+	}
+	return nil
+}
+
+// defaultProbabilityFor resolves the win-probability default for a stage,
+// preferring the configured PipelineStage row's IsWonStage/IsLostStage flags
+// (100/0) so a custom-named Won/Lost stage still gets a sensible default,
+// same as models.StageDefaultProbability does for the hardcoded stage names;
+// falls back to models.StageDefaultProbability for interim stages.
+func (h *DealHandler) defaultProbabilityFor(stage models.DealStage) int {
+	switch {
+	case utils.IsWonStage(h.DB, stage):
+		return 100
+	case utils.IsLostStage(h.DB, stage):
+		return 0
+	default:
+		return models.StageDefaultProbability(stage)
+	}
+}
+
+// syncStatusWithStageFlags forces deal.Status to won/lost whenever the
+// deal's current Stage resolves (via utils.IsWonStage/IsLostStage) to a
+// won/lost stage, regardless of what Status the request body supplied.
+// Mirrors UpdateStage's isWon/isLost handling so Create/Update (the full
+// form) can't drift out of sync with the Kanban quick-move endpoint — e.g. a
+// client submitting stage=<custom Lost stage> with status="open" would
+// otherwise be miscounted as open in forecast/report aggregates.
+func (h *DealHandler) syncStatusWithStageFlags(deal *models.Deal) {
+	switch {
+	case utils.IsWonStage(h.DB, deal.Stage):
+		deal.Status = models.DealStatusWon
+	case utils.IsLostStage(h.DB, deal.Stage):
+		deal.Status = models.DealStatusLost
+	}
 }
 
 // Create — POST /deals.
@@ -86,18 +191,34 @@ func (h *DealHandler) Create(c *fiber.Ctx) error {
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a deal to another sales rep")
 	}
+	if err := validateProbabilityAndLostReason(c, h.DB, form); err != nil {
+		return err
+	}
+	if err := h.validateStageAndChannel(c, form); err != nil {
+		return err
+	}
 
 	deal := models.Deal{
 		CompanyID: form.CompanyID, ContactID: form.ContactID, Title: form.Title, Value: form.Value,
 		Stage: form.Stage, Status: form.Status, ExpectedCloseDate: form.ExpectedCloseDate,
 		AssignedTo: form.AssignedTo, Channel: form.Channel,
 		BusinessUnit: form.BusinessUnit, BusinessUnitItem: form.BusinessUnitItem,
+		Probability: form.Probability, LostReason: form.LostReason,
 	}
 	if deal.Stage == "" {
 		deal.Stage = models.DealStageLead
 	}
 	if deal.Status == "" {
 		deal.Status = models.DealStatusOpen
+	}
+	// Keep Status in sync with the resolved stage flags — otherwise a client
+	// could submit a custom Lost/Won stage alongside status "open" and the
+	// deal would be excluded from won/lost dashboards (forecast revenue,
+	// reports) despite sitting in a terminal stage.
+	h.syncStatusWithStageFlags(&deal)
+	if deal.Probability == nil {
+		def := h.defaultProbabilityFor(deal.Stage)
+		deal.Probability = &def
 	}
 	if err := h.DB.Create(&deal).Error; err != nil {
 		return utils.Internal(c, "Failed to create deal")
@@ -138,11 +259,31 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 			"title":      {"required"},
 		})
 	}
+	if err := validateProbabilityAndLostReason(c, h.DB, form); err != nil {
+		return err
+	}
+	if err := h.validateStageAndChannel(c, form); err != nil {
+		return err
+	}
 
 	deal.CompanyID, deal.ContactID, deal.Title, deal.Value = form.CompanyID, form.ContactID, form.Title, form.Value
 	deal.Stage, deal.Status, deal.ExpectedCloseDate = form.Stage, form.Status, form.ExpectedCloseDate
 	deal.AssignedTo, deal.Channel = form.AssignedTo, form.Channel
 	deal.BusinessUnit, deal.BusinessUnitItem = form.BusinessUnit, form.BusinessUnitItem
+	deal.Probability, deal.LostReason = form.Probability, form.LostReason
+	// Keep Status in sync with the resolved stage flags — see Create's comment.
+	h.syncStatusWithStageFlags(&deal)
+	if deal.Probability == nil {
+		def := h.defaultProbabilityFor(deal.Stage)
+		deal.Probability = &def
+	}
+	// LostReason only makes sense while the deal is actually Lost — clear a
+	// stale reason left over from a previous Lost stint once it moves elsewhere.
+	// Uses the same PipelineStage-flag-aware resolution as isLosingForm/UpdateStage
+	// so a renamed/custom Lost stage doesn't silently lose its lost_reason.
+	if !utils.IsLostStage(h.DB, deal.Stage) && deal.Status != models.DealStatusLost {
+		deal.LostReason = nil
+	}
 
 	if err := h.DB.Save(&deal).Error; err != nil {
 		return utils.Internal(c, "Failed to update deal")
@@ -312,22 +453,43 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	if form.Stage == "" {
 		return utils.ValidationError(c, "stage is required", map[string][]string{"stage": {"required"}})
 	}
+	if !utils.IsActivePipelineStage(h.DB, string(form.Stage)) {
+		return utils.ValidationError(c, "stage is not a valid active pipeline stage", map[string][]string{"stage": {"invalid"}})
+	}
+
+	// isWon/isLost prefer the configured PipelineStage row's flags (so a custom,
+	// admin-added stage can behave like Won/Lost without being named exactly
+	// that) — falling back to the hardcoded name match if no row exists yet,
+	// e.g. right after a migration and before the seed runs. Shared with
+	// Create/Update's syncStatusWithStageFlags/defaultProbabilityFor via
+	// utils.IsWonStage/IsLostStage so both endpoints resolve stages the same way.
+	isWon := utils.IsWonStage(h.DB, form.Stage)
+	isLost := utils.IsLostStage(h.DB, form.Stage)
 
 	before := models.JSONMap{"stage": deal.Stage, "status": deal.Status}
 	oldStage := deal.Stage
 	deal.Stage = form.Stage
-	switch deal.Stage {
-	case models.DealStageWon:
+	switch {
+	case isWon:
 		deal.Status = models.DealStatusWon
 		// Hook point: FR-CRM-064 auto-creates/updates a CustomerProduct(status: Active)
 		// per Product on this Deal's accepted Quote — deferred until Quotes have a
 		// real "accepted" flow to hang the side effect off.
-	case models.DealStageLost:
+	case isLost:
 		deal.Status = models.DealStatusLost
 	default:
 		if deal.Status != models.DealStatusWon && deal.Status != models.DealStatusLost {
 			deal.Status = models.DealStatusOpen
 		}
+	}
+	// Re-derive probability for the new stage on every drag/quick-move (Kanban
+	// has no probability input of its own) — the Deal's Overview tab can still
+	// override it manually afterwards. lost_reason isn't collected by this
+	// quick-move endpoint (only the full Update form validates it as
+	// required-when-Lost) so it's deliberately left untouched here.
+	if oldStage != deal.Stage {
+		def := h.defaultProbabilityFor(deal.Stage)
+		deal.Probability = &def
 	}
 
 	after := models.JSONMap{"stage": deal.Stage, "status": deal.Status}

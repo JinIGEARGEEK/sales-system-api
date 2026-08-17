@@ -20,6 +20,15 @@ type Config struct {
 	JWTSecret   string
 	JWTExpiryHr int
 	CORSOrigins string // comma-separated allow-list; "*" (default) allows any origin
+
+	// SMTP settings for the Task due-date email reminder feature. SMTPHost empty
+	// means email is not configured — utils.SendMail no-ops (logs a warning)
+	// rather than erroring, so the app runs fine without these set.
+	SMTPHost     string
+	SMTPPort     string
+	SMTPUsername string
+	SMTPPassword string
+	SMTPFrom     string
 }
 
 func Load() *Config {
@@ -43,6 +52,12 @@ func Load() *Config {
 		JWTSecret:   getEnv("JWT_SECRET", "change-me-in-production"),
 		JWTExpiryHr: expiryHr,
 		CORSOrigins: getEnv("CORS_ORIGINS", "*"),
+
+		SMTPHost:     getEnv("SMTP_HOST", ""),
+		SMTPPort:     getEnv("SMTP_PORT", "587"),
+		SMTPUsername: getEnv("SMTP_USERNAME", ""),
+		SMTPPassword: getEnv("SMTP_PASSWORD", ""),
+		SMTPFrom:     getEnv("SMTP_FROM", ""),
 	}
 }
 

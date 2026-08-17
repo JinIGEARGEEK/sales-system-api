@@ -56,6 +56,11 @@ See [`.env.example`](.env.example). Notable ones:
 | `JWT_SECRET` | HMAC secret for signing tokens — **must** be overridden in production; the server refuses to boot with the default value when `APP_ENV=production` |
 | `JWT_EXPIRY_HOURS` | Access token lifetime |
 | `PORT` | HTTP listen port (default `8080`) |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM` | Outbound mail server for the Task due-date reminder emails. Optional — if `SMTP_HOST` is left unset, the mailer logs a warning and skips sending instead of failing, so the app runs fine without these configured. Set all five in production to actually deliver reminder emails. |
+
+### Task due-date reminders
+
+A background goroutine (`internal/notifier`) polls every 15 minutes for pending Tasks whose `due_date` has passed and haven't been notified yet, and emails the assignee (via `SMTP_*` above) with the task title, due date, and related Deal/Contact/Company name when resolvable. Each task is marked with `notified_at` after sending so the reminder only goes out once. A failed send (or missing SMTP config) is logged and does not block other tasks' reminders.
 
 ## Testing
 

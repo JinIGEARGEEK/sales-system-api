@@ -21,6 +21,9 @@ type Task struct {
 	DueDate     time.Time       `json:"due_date"`
 	Status      TaskStatus      `gorm:"type:varchar(16);default:'pending';index" json:"status"`
 	AssignedTo  *uint           `json:"assigned_to"`
+	// NotifiedAt is set once the due-date reminder email has been sent for this
+	// task, so the background checker doesn't re-send it on every tick.
+	NotifiedAt *time.Time `gorm:"index" json:"notified_at"`
 }
 
 func (Task) TableName() string { return "tasks" }
