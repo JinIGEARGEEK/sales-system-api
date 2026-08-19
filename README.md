@@ -11,6 +11,8 @@ Implements the contract defined in [`biz_spec/api-system-spec.md`](biz_spec/api-
 - **PostgreSQL** (database)
 - **golang-jwt/jwt/v5** (auth) + bcrypt (password hashing)
 
+`go.mod`'s `go` directive pins a specific patch version (not just `1.25`) deliberately — Go's `GOTOOLCHAIN=auto` (default since 1.21) then auto-fetches that exact patch for anyone building the repo, local or CI, which is how stdlib security fixes actually reach every environment without each one needing to separately upgrade its installed `go` binary. Bump it whenever `govulncheck` (run in CI, see below) reports a fixed-in version ahead of what's pinned.
+
 ## Project layout
 
 ```
@@ -69,7 +71,7 @@ A background goroutine (`internal/notifier`) polls every 15 minutes for pending 
 go test ./...
 ```
 
-Tests run against a separate `sales_system_test` database (created automatically if missing) via an in-process Fiber app — no real network listener, and the shared dev database is never touched. Coverage focuses on auth, RBAC/ownership enforcement, and the specific data-integrity behaviors called out in the spec (partial updates not clobbering omitted fields, soft- vs hard-delete semantics, audit logging on sensitive actions).
+Tests run against a separate `sales_system_test` database (created automatically if missing) via an in-process Fiber app — no real network listener, and the shared dev database is never touched. Coverage focuses on auth, RBAC/ownership enforcement, and the specific data-integrity behaviors called out in the spec (partial updates not clobbering omitted fields, soft- vs hard-delete semantics, audit logging on sensitive actions). CI also runs `-race` and a `govulncheck` job — see the note on `go.mod`'s pinned patch version above.
 
 ## API overview
 

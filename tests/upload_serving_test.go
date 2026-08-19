@@ -5,6 +5,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -30,8 +31,7 @@ func multipartAttachmentRequest(t *testing.T, companyID uint, filename string, c
 	require.NoError(t, err)
 	require.NoError(t, w.Close())
 
-	req, err := http.NewRequest(http.MethodPost, "/api/v1/attachments", &buf)
-	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/attachments", &buf)
 	req.Header.Set("Content-Type", w.FormDataContentType())
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -63,8 +63,7 @@ func TestUploadedFile_IsServedAndAuthGated(t *testing.T) {
 	fileURL := *created.Data.FileURL
 
 	t.Run("unauthenticated request is rejected", func(t *testing.T) {
-		getReq, err := http.NewRequest(http.MethodGet, fileURL, nil)
-		require.NoError(t, err)
+		getReq := httptest.NewRequest(http.MethodGet, fileURL, nil)
 		getResp, err := app.Test(getReq, -1)
 		require.NoError(t, err)
 		defer getResp.Body.Close()

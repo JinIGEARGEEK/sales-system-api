@@ -52,3 +52,19 @@ jobs:
       - uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12
+
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      # Catches both stdlib CVEs the resolved Go toolchain patch is behind on,
+      # and known-vulnerable dependency versions actually reachable from our
+      # code (e.g. the fasthttp double-encoded-path auth bypass fixed by
+      # bumping to v1.70.0+ in go.mod) — go vet/golangci-lint don't cover this.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
