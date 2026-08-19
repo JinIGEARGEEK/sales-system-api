@@ -298,7 +298,7 @@ interface Contact {
 - Response for a single-file upload (Quote PDF, Contract signed doc): `{ data: { file_name: string, file_url: string, file_size: number, uploaded_at: string } }` — matches the optional fields already on `Quote` (`interfaces/crm.d.ts`).
 - Max file size: 10 MB; returns `413` with the standard error envelope (§1.5) if exceeded.
 - Allowed extensions: `.pdf .png .jpg .jpeg .doc .docx .xls .xlsx .csv` — anything else returns `400`. Deliberately excludes anything a browser would execute inline (`.html`, `.svg`, etc.), since uploaded files are served back from this API's own origin (see below).
-- `file_url` currently resolves to this API's own `/uploads/<name>` (auth-gated — any authenticated role, same access level as the Quote/Contract PDF export endpoints; unauthenticated requests get `401`), backed by local disk. Store files in object storage (S3-compatible) instead before any real multi-replica deployment — local disk doesn't persist across redeploys or replicas.
+- `file_url` currently resolves to this API's own `/uploads/<name>` (auth-gated — any authenticated role, same access level as the Quote/Contract PDF export endpoints; unauthenticated requests get `401`), backed by local disk. Store files in object storage (S3-compatible) instead before any real multi-replica deployment — local disk doesn't persist across redeploys or replicas. See [`s3-migration-plan.md`](s3-migration-plan.md) for the design; the `file_url` contract itself (a path this API serves, auth-gated the same way) is deliberately meant to stay unchanged by that migration — only what backs it changes.
 
 ### 6.2 Bulk import (Companies/Contacts)
 
