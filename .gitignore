@@ -1,6 +1,10 @@
 # Project-specific
 .env
 /uploads/
+# The integration suite exercises the real utils.SaveUpload path, which
+# writes to ./uploads relative to the test binary's CWD (tests/) — not just
+# the repo root.
+tests/uploads/
 *.log
 /tmp/
 .claude/

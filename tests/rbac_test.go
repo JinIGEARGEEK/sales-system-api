@@ -22,6 +22,12 @@ func TestRBAC_RouteGates(t *testing.T) {
 	routes := []string{
 		"/api/v1/users",
 		"/api/v1/reports/lead-source-conversion",
+		// Admin-only, append-only per NFR-007 — regression guard for a bug
+		// where middleware.RequireRoles was registered AFTER the handler in
+		// routes.go (auditLogH.List, adminOnly instead of adminOnly,
+		// auditLogH.List), so it never actually ran: the handler doesn't call
+		// c.Next(), so any authenticated role could read the full audit trail.
+		"/api/v1/audit-log",
 	}
 
 	for _, path := range routes {
@@ -49,5 +55,39 @@ func TestRBAC_RouteGates(t *testing.T) {
 		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/users", nil, manager.ID, manager.Role)
 		resp := doJSON(t, app, req, nil)
 		assert.Equal(t, http.StatusForbidden, resp.StatusCode, "/users is Admin-only, not Sales-Manager")
+	})
+}
+
+// TestRBAC_TagsWritesAreRestricted guards a gap where the /tags group had no
+// role restriction at all (unlike the structurally identical
+// PipelineStage/LeadSource config, both Admin-only): any authenticated role,
+// including Sales Rep, could rename/deactivate/create shared tags used across
+// Companies/Deals/Contacts. List stays open to every role (tag pickers need
+// it); writes are now Admin/Sales-Manager only, same as bulkRoles elsewhere.
+func TestRBAC_TagsWritesAreRestricted(t *testing.T) {
+	app, db := testutil.App(t)
+	rep := testutil.CreateUser(t, db, models.RoleSalesRep)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	t.Run("list is open to a sales rep", func(t *testing.T) {
+		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/tags", nil, rep.ID, rep.Role)
+		resp := doJSON(t, app, req, nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+
+	t.Run("create is forbidden for a sales rep", func(t *testing.T) {
+		req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/tags", map[string]interface{}{
+			"name": "Enterprise", "category": "Tier",
+		}, rep.ID, rep.Role)
+		resp := doJSON(t, app, req, nil)
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("create succeeds for an admin", func(t *testing.T) {
+		req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/tags", map[string]interface{}{
+			"name": "Enterprise", "category": "Tier",
+		}, admin.ID, admin.Role)
+		resp := doJSON(t, app, req, nil)
+		assert.Equal(t, http.StatusCreated, resp.StatusCode)
 	})
 }

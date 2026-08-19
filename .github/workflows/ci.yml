@@ -32,7 +32,7 @@ jobs:
 
       - run: go build ./...
       - run: go vet ./...
-      - run: go test ./... -v
+      - run: go test ./... -v -race
         env:
           TEST_DB_HOST: localhost
           TEST_DB_PORT: 5432
