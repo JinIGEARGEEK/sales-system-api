@@ -34,7 +34,7 @@ type Lead struct {
 	Status      LeadStatus     `gorm:"type:varchar(16);default:'New';index" json:"status"`
 	Notes       string         `json:"notes"`
 	AssignedTo  *uint          `gorm:"index" json:"assigned_to"`
-	Tags        pq.StringArray `gorm:"type:text[]" json:"tags"`
+	Tags        pq.StringArray `gorm:"type:text[];index:idx_leads_tags,type:gin" json:"tags"`
 	// ConvertedDealID is set once this Lead has been converted into a Deal
 	// (nil = not yet converted). Prevents double-conversion.
 	ConvertedDealID *uint `gorm:"index" json:"converted_deal_id"`

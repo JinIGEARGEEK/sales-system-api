@@ -39,14 +39,7 @@ type projectWithCompany struct {
 // ProductHandler.ListForCompany merges Product into CustomerProduct.
 func (h *ProjectHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
-	query := h.DB.Model(&models.Project{})
-
-	if v := c.Query("status"); v != "" {
-		query = query.Where("status = ?", v)
-	}
-	if v := c.Query("company_id"); v != "" {
-		query = query.Where("company_id = ?", v)
-	}
+	query := applyProjectFilters(h.DB.Model(&models.Project{}), c)
 
 	var total int64
 	query.Count(&total)

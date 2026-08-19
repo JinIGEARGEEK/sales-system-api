@@ -1,14 +1,40 @@
 package routes
 
 import (
+	"strings"
+	"time"
+
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"gorm.io/gorm"
 
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/handlers"
 	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
+	"github.com/igeargeek/sales-system-api/internal/utils"
 )
+
+// clientIP resolves the real client address for rate-limiting purposes. This
+// app's only deployment target is Railway (railway.toml/Dockerfile), which
+// always sits in front as a reverse proxy and sets X-Forwarded-For to the
+// actual client IP on every inbound request — c.IP() alone would return
+// Railway's own edge address for every request in that setup, collapsing all
+// users onto one shared rate-limit bucket (see loginLimiter below) instead of
+// limiting each caller independently. Falls back to c.IP() when the header is
+// absent (local dev, docker-compose, or any direct, non-proxied connection).
+// Take the leftmost hop — Railway's edge sets/overwrites this header itself
+// rather than trusting a client-supplied one, so the leftmost entry is the
+// original caller even if further proxies appended their own hops after it.
+func clientIP(c *fiber.Ctx) string {
+	if xff := c.Get("X-Forwarded-For"); xff != "" {
+		if idx := strings.IndexByte(xff, ','); idx != -1 {
+			return strings.TrimSpace(xff[:idx])
+		}
+		return strings.TrimSpace(xff)
+	}
+	return c.IP()
+}
 
 // Setup registers every route under /api/v1 — api-system-spec.md.
 func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
@@ -38,9 +64,20 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 
 	api := app.Group("/api/v1")
 
-	// Auth — POST /auth/login is the only unauthenticated route.
+	// Auth — POST /auth/login is the only unauthenticated route, so it's the
+	// only one a brute-force credential-stuffing attempt could hit without a
+	// token at all. Rate-limit by IP: generous enough for a mistyped password
+	// but not for scripted guessing.
+	loginLimiter := limiter.New(limiter.Config{
+		Max:          10,
+		Expiration:   1 * time.Minute,
+		KeyGenerator: clientIP,
+		LimitReached: func(c *fiber.Ctx) error {
+			return utils.ErrorResponse(c, fiber.StatusTooManyRequests, "TOO_MANY_REQUESTS", "Too many login attempts — try again shortly")
+		},
+	})
 	auth := api.Group("/auth")
-	auth.Post("/login", authH.Login)
+	auth.Post("/login", loginLimiter, authH.Login)
 
 	authed := api.Group("", middleware.RequireAuth(cfg), middleware.RequirePasswordChanged(db))
 

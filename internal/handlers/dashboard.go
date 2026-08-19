@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -119,30 +120,108 @@ type teamPerformanceItem struct {
 	WinRate  float64 `json:"win_rate"`
 }
 
+// summaryCacheTTL bounds how stale a cached Summary response can be. The
+// dashboard is read-heavy (every sales manager's landing page) and its ~10
+// underlying aggregate queries are expensive to repeat on every refresh, but
+// deal data doesn't need to be second-fresh here — a short TTL trades a small
+// amount of staleness for a large cut in DB load under concurrent viewers.
+const summaryCacheTTL = 30 * time.Second
+
+type summaryCacheEntry struct {
+	body      fiber.Map
+	expiresAt time.Time
+}
+
+var (
+	summaryCacheMu sync.Mutex
+	summaryCache   = map[string]summaryCacheEntry{}
+)
+
+// ResetDashboardCacheForTests clears the whole cache. The integration suite
+// truncates and reseeds the shared test DB between tests but this cache is
+// process-lifetime, keyed only by querystring — two tests both hitting
+// GET /dashboard/summary with no params would otherwise share a cache entry
+// and one could serve the other's stale numbers within the 30s TTL. Not for
+// production use.
+func ResetDashboardCacheForTests() {
+	summaryCacheMu.Lock()
+	defer summaryCacheMu.Unlock()
+	summaryCache = map[string]summaryCacheEntry{}
+}
+
 // Summary — GET /dashboard/summary. api-system-spec.md §9.
 func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
+	cacheKey := string(c.Request().URI().QueryString())
+	summaryCacheMu.Lock()
+	if entry, ok := summaryCache[cacheKey]; ok && time.Now().Before(entry.expiresAt) {
+		summaryCacheMu.Unlock()
+		return utils.OK(c, entry.body)
+	}
+	summaryCacheMu.Unlock()
+
 	base := h.baseFilter(c)
+	// Read every query param the concurrent goroutines below need up front,
+	// on this goroutine, before any of them start. c.Query(...) reads/lazily
+	// parses fasthttp's shared, unsynchronized query-args cache on first
+	// access per request — calling it from multiple goroutines at once (as an
+	// earlier version of this handler did, via each breakdown method calling
+	// h.baseFilter(c) for itself) is a data race. base already resolves every
+	// filter into gorm clauses synchronously right here; companyTagSet is the
+	// one extra bit industryBreakdown needs to avoid double-joining companies.
+	companyTagSet := c.Query("company_tag") != ""
 
-	var openPipelineValue, wonValue, avgDealSize float64
-	base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusOpen).
-		Select("COALESCE(SUM(value), 0)").Scan(&openPipelineValue)
-	base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusWon).
-		Select("COALESCE(SUM(value), 0)").Scan(&wonValue)
-	base.Session(&gorm.Session{}).Select("COALESCE(AVG(value), 0)").Scan(&avgDealSize)
+	// These 5 base aggregates plus the 5 breakdown/trend helpers below are all
+	// independent read-only queries against the same filter — run them
+	// concurrently instead of serially so wall-clock time is roughly the
+	// slowest single query, not the sum of all ~10. None of them touch `c`
+	// (or anything else fiber-request-shaped) from here on, only `base` and
+	// plain values already captured above — see the comment on that.
+	var openPipelineValue, wonValue, avgDealSize, forecastedRevenue float64
+	var openDealsCount, wonCount, lostCount int64
+	var revenueTrend, forecastTrend []revenueTrendPoint
+	var stageBreakdown []stageBreakdownItem
+	var industryBreakdown []industryBreakdownItem
+	var teamPerformance []teamPerformanceItem
 
-	var openDealsCount int64
-	base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusOpen).Count(&openDealsCount)
+	var wg sync.WaitGroup
+	run := func(f func()) {
+		wg.Add(1)
+		go func() { defer wg.Done(); f() }()
+	}
 
+	run(func() {
+		base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusOpen).
+			Select("COALESCE(SUM(value), 0)").Scan(&openPipelineValue)
+	})
+	run(func() {
+		base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusWon).
+			Select("COALESCE(SUM(value), 0)").Scan(&wonValue)
+	})
+	run(func() {
+		base.Session(&gorm.Session{}).Select("COALESCE(AVG(value), 0)").Scan(&avgDealSize)
+	})
+	run(func() {
+		base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusOpen).Count(&openDealsCount)
+	})
 	// forecastedRevenue — sum of (open Deal value × probability/100). Probability
 	// defaults per-stage at write time (see StageDefaultProbability) so every open
 	// Deal has one, but COALESCE guards any pre-existing row a migration missed.
-	var forecastedRevenue float64
-	base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusOpen).
-		Select("COALESCE(SUM(value * COALESCE(probability, 0) / 100.0), 0)").Scan(&forecastedRevenue)
-
-	var wonCount, lostCount int64
-	base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusWon).Count(&wonCount)
-	base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusLost).Count(&lostCount)
+	run(func() {
+		base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusOpen).
+			Select("COALESCE(SUM(value * COALESCE(probability, 0) / 100.0), 0)").Scan(&forecastedRevenue)
+	})
+	run(func() {
+		base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusWon).Count(&wonCount)
+	})
+	run(func() {
+		base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusLost).Count(&lostCount)
+	})
+	run(func() { revenueTrend = h.revenueTrend() })
+	run(func() { forecastTrend = h.forecastTrend() })
+	run(func() { stageBreakdown = h.stageBreakdown(base) })
+	run(func() { industryBreakdown = h.industryBreakdown(base, companyTagSet) })
+	run(func() { teamPerformance = h.teamPerformance(base) })
+	wg.Wait()
 
 	quarterlySalesTarget := h.quarterlySalesTarget()
 	pipelineCoverageRatio := 0.0
@@ -154,13 +233,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	// this is left at 0 until that data exists.
 	avgSalesCycleDays := 0
 
-	revenueTrend := h.revenueTrend(c)
-	forecastTrend := h.forecastTrend(c)
-	stageBreakdown := h.stageBreakdown(c)
-	industryBreakdown := h.industryBreakdown(c)
-	teamPerformance := h.teamPerformance(c)
-
-	return utils.OK(c, fiber.Map{
+	body := fiber.Map{
 		"open_pipeline_value":     openPipelineValue,
 		"won_value":               wonValue,
 		"win_rate":                winRate(wonCount, lostCount),
@@ -178,23 +251,45 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 		// upsell_opportunities needs Tag-tier + stale-contact logic not yet
 		// specified precisely enough to implement — ship empty rather than guess wrong.
 		"upsell_opportunities": []interface{}{},
-	})
+	}
+
+	summaryCacheMu.Lock()
+	summaryCache[cacheKey] = summaryCacheEntry{body: body, expiresAt: time.Now().Add(summaryCacheTTL)}
+	summaryCacheMu.Unlock()
+
+	return utils.OK(c, body)
 }
 
-func (h *DashboardHandler) revenueTrend(c *fiber.Ctx) []revenueTrendPoint {
-	points := make([]revenueTrendPoint, 0, 6)
+// revenueTrend buckets the last 6 months (this month + 5 back) of Won revenue
+// by created_at month, in a single grouped query rather than one query per
+// month — the original shape issued 6 round-trips here on every dashboard
+// load. Deliberately ignores Summary's base filter (business_unit/channel/
+// assigned_to/company_tag/date range) — it's a fixed trailing-6-month view
+// independent of those, same as forecastTrend below.
+func (h *DashboardHandler) revenueTrend() []revenueTrendPoint {
 	now := time.Now()
+	thisMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	rangeStart := thisMonthStart.AddDate(0, -5, 0)
+	rangeEnd := thisMonthStart.AddDate(0, 1, 0)
+
+	var rows []struct {
+		MonthKey string
+		Value    float64
+	}
+	h.DB.Model(&models.Deal{}).
+		Where("status = ? AND created_at >= ? AND created_at < ?", models.DealStatusWon, rangeStart, rangeEnd).
+		Select("to_char(created_at, 'YYYY-MM') as month_key, COALESCE(SUM(value), 0) as value").
+		Group("month_key").Scan(&rows)
+
+	byMonth := make(map[string]float64, len(rows))
+	for _, r := range rows {
+		byMonth[r.MonthKey] = r.Value
+	}
+
+	points := make([]revenueTrendPoint, 0, 6)
 	for i := 5; i >= 0; i-- {
 		month := now.AddDate(0, -i, 0)
-		start := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, month.Location())
-		end := start.AddDate(0, 1, 0)
-
-		var value float64
-		h.DB.Model(&models.Deal{}).
-			Where("status = ? AND created_at >= ? AND created_at < ?", models.DealStatusWon, start, end).
-			Select("COALESCE(SUM(value), 0)").Scan(&value)
-
-		points = append(points, revenueTrendPoint{Label: start.Format("Jan"), Value: value})
+		points = append(points, revenueTrendPoint{Label: month.Format("Jan"), Value: byMonth[month.Format("2006-01")]})
 	}
 	return points
 }
@@ -202,7 +297,8 @@ func (h *DashboardHandler) revenueTrend(c *fiber.Ctx) []revenueTrendPoint {
 // forecastTrend is the forward-looking counterpart to revenueTrend: instead of
 // bucketing past Won revenue by created_at month, it buckets open deals'
 // probability-weighted value by ExpectedCloseDate month for the next 6 months
-// (this month + 5 forward), mirroring revenueTrend's exact date-window shape.
+// (this month + 5 forward), mirroring revenueTrend's exact date-window shape,
+// collapsed the same way into one grouped query instead of one per month.
 //
 // ExpectedCloseDate is a nullable *string (not required at Create), so deals
 // without one cannot be placed in a month bucket here and are excluded from
@@ -210,51 +306,76 @@ func (h *DashboardHandler) revenueTrend(c *fiber.Ctx) []revenueTrendPoint {
 // stat card above, which sums all open deals regardless of date — so this
 // trend's points may sum to less than that headline total. The frontend must
 // not present this breakdown as the complete forecast.
-func (h *DashboardHandler) forecastTrend(c *fiber.Ctx) []revenueTrendPoint {
-	points := make([]revenueTrendPoint, 0, 6)
+//
+// Groups by the date string's first 7 characters ("YYYY-MM") rather than
+// casting expected_close_date to a real date type — it's stored as free-form
+// text (see the type note below) and a LEFT()-based string group-by tolerates
+// both the plain "2006-01-02" and full ISO-datetime forms without risking a
+// cast failure aborting the whole query over one malformed row.
+func (h *DashboardHandler) forecastTrend() []revenueTrendPoint {
 	now := time.Now()
+	thisMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	rangeStart := thisMonthStart
+	rangeEnd := thisMonthStart.AddDate(0, 6, 0)
+
+	// expected_close_date is stored as text (no explicit gorm type on the
+	// nullable *string field), holding either a plain "2006-01-02" date or a
+	// full ISO datetime (the frontend submits Date objects, which
+	// JSON-serialize to e.g. "2026-08-17T00:00:00.000Z"). Comparing against
+	// plain YYYY-MM-DD bounds still buckets correctly either way: it's a
+	// lexicographic string comparison, and since both forms share the same
+	// zero-padded date prefix, "<bound>" sorts before any same-day timestamp
+	// string and after the prior day's, so month windows land on the right
+	// boundary regardless of which format is stored.
+	var rows []struct {
+		MonthKey string
+		Value    float64
+	}
+	h.DB.Model(&models.Deal{}).
+		Where("status = ? AND expected_close_date >= ? AND expected_close_date < ?",
+			models.DealStatusOpen, rangeStart.Format("2006-01-02"), rangeEnd.Format("2006-01-02")).
+		Select("LEFT(expected_close_date, 7) as month_key, COALESCE(SUM(value * COALESCE(probability, 0) / 100.0), 0) as value").
+		Group("month_key").Scan(&rows)
+
+	byMonth := make(map[string]float64, len(rows))
+	for _, r := range rows {
+		byMonth[r.MonthKey] = r.Value
+	}
+
+	points := make([]revenueTrendPoint, 0, 6)
 	for i := 0; i <= 5; i++ {
 		month := now.AddDate(0, i, 0)
-		start := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, month.Location())
-		end := start.AddDate(0, 1, 0)
-
-		// expected_close_date is stored as text (no explicit gorm type on the
-		// nullable *string field), holding either a plain "2006-01-02" date or
-		// a full ISO datetime (the frontend submits Date objects, which
-		// JSON-serialize to e.g. "2026-08-17T00:00:00.000Z"). Comparing against
-		// plain YYYY-MM-DD bounds still buckets correctly either way: it's a
-		// lexicographic string comparison, and since both forms share the same
-		// zero-padded date prefix, "<bound>" sorts before any same-day
-		// timestamp string and after the prior day's, so month windows land
-		// on the right boundary regardless of which format is stored.
-		var value float64
-		h.DB.Model(&models.Deal{}).
-			Where("status = ? AND expected_close_date >= ? AND expected_close_date < ?",
-				models.DealStatusOpen, start.Format("2006-01-02"), end.Format("2006-01-02")).
-			Select("COALESCE(SUM(value * COALESCE(probability, 0) / 100.0), 0)").Scan(&value)
-
-		points = append(points, revenueTrendPoint{Label: start.Format("Jan"), Value: value})
+		points = append(points, revenueTrendPoint{Label: month.Format("Jan"), Value: byMonth[month.Format("2006-01")]})
 	}
 	return points
 }
 
-func (h *DashboardHandler) stageBreakdown(c *fiber.Ctx) []stageBreakdownItem {
+// stageBreakdown, industryBreakdown, and teamPerformance all take the already
+// -built base filter query (from Summary's single synchronous h.baseFilter(c)
+// call) rather than *fiber.Ctx — Summary runs these concurrently via
+// goroutines, and re-deriving the filter from c in each one used to mean
+// several goroutines calling c.Query(...) at once, which is a data race on
+// fasthttp's shared, lazily-parsed query-args cache (it mutates on first
+// access per request with no locking). Passing the pre-built *gorm.DB in
+// avoids touching c from any of these at all.
+func (h *DashboardHandler) stageBreakdown(base *gorm.DB) []stageBreakdownItem {
 	var rows []stageBreakdownItem
-	h.baseFilter(c).Session(&gorm.Session{}).
+	base.Session(&gorm.Session{}).
 		Select("stage, COALESCE(SUM(value), 0) as value, count(*) as count").
 		Group("stage").Scan(&rows)
 	return rows
 }
 
-func (h *DashboardHandler) industryBreakdown(c *fiber.Ctx) []industryBreakdownItem {
+// companyTagSet mirrors whether Summary's base filter already joined
+// companies (only when ?company_tag= was supplied) — avoids joining it twice.
+func (h *DashboardHandler) industryBreakdown(base *gorm.DB, companyTagSet bool) []industryBreakdownItem {
 	var rows []struct {
 		Industry  string
 		WonCount  int64
 		LostCount int64
 	}
-	// baseFilter already joins companies when ?company_tag= is set — don't join twice.
-	query := h.baseFilter(c).Session(&gorm.Session{})
-	if c.Query("company_tag") == "" {
+	query := base.Session(&gorm.Session{})
+	if !companyTagSet {
 		query = query.Joins("JOIN companies ON companies.id = deals.company_id")
 	}
 	query.Select("companies.industry as industry, count(*) FILTER (WHERE deals.status = 'won') as won_count, count(*) FILTER (WHERE deals.status = 'lost') as lost_count").
@@ -269,14 +390,14 @@ func (h *DashboardHandler) industryBreakdown(c *fiber.Ctx) []industryBreakdownIt
 	return result
 }
 
-func (h *DashboardHandler) teamPerformance(c *fiber.Ctx) []teamPerformanceItem {
+func (h *DashboardHandler) teamPerformance(base *gorm.DB) []teamPerformanceItem {
 	var rows []struct {
 		UserID    uint
 		WonCount  int64
 		WonValue  float64
 		LostCount int64
 	}
-	h.baseFilter(c).Session(&gorm.Session{}).
+	base.Session(&gorm.Session{}).
 		Where("assigned_to IS NOT NULL").
 		Select("assigned_to as user_id, count(*) FILTER (WHERE status = 'won') as won_count, COALESCE(SUM(value) FILTER (WHERE status = 'won'), 0) as won_value, count(*) FILTER (WHERE status = 'lost') as lost_count").
 		Group("assigned_to").Scan(&rows)

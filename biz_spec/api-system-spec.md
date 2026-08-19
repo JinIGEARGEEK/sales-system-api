@@ -57,12 +57,13 @@ These apply to every endpoint below unless a section says otherwise.
 > **Forced password change is a special `403`.** Every route except `/auth/me`, `/auth/logout`, and `/auth/change-password` returns `403` with `error.code: "PASSWORD_CHANGE_REQUIRED"` for an account whose `must_change_password` is still `true` (§2.1) — set whenever an Admin creates the account or resets its password (§2.2), cleared only by a successful `POST /auth/change-password`. The frontend's blanket "`403` → redirect to `/`" rule (row above) needs a carve-out for this code — otherwise the account bounces to `/`, which immediately 403s again on its own API calls. Check `error.code` in the axios response interceptor and route to a dedicated "set your password" page instead when it's `PASSWORD_CHANGE_REQUIRED`.
 
 - No refresh-token flow exists in the frontend today. Recommend a long-lived access token (or add refresh in the API without requiring a frontend change for v1 — `useAuth` would need a follow-up change to consume it).
+- `POST /auth/login` is rate-limited to 10 attempts/minute per client IP (keyed off `X-Forwarded-For` behind Railway's proxy, falling back to the connection's own address) — a 429 with the standard error envelope (§1.5, `error.code: "TOO_MANY_REQUESTS"`) once exceeded. Not one of the three special-cased codes above; the frontend's default axios error handling (show the message, don't redirect) already covers it.
 
 #### Endpoints
 
 | Method | Path | Auth | Status | Description |
 |---|---|---|---|---|
-| `POST` | `/auth/login` | none | 🟢 | Body: `{ email: string, password: string }` (frontend field names, see `pages/login.vue`). Returns `{ access_token: string, user: User }`. |
+| `POST` | `/auth/login` | none | 🟢 | Body: `{ email: string, password: string }` (frontend field names, see `pages/login.vue`). Returns `{ access_token: string, user: User }`. Rate-limited — see above. |
 | `POST` | `/auth/logout` | Bearer | 🟢 | Invalidates the token server-side if using a blocklist; frontend clears `localStorage` regardless (`useAuth().removeAccessToken()`). |
 | `GET` | `/auth/me` | Bearer | 🟢 | Returns the current `User` (§2.1). Used to hydrate `stores/user.ts` on load instead of trusting client state alone. |
 | `POST` | `/auth/change-password` | Bearer | 🟢 | Body: `{ current_password: string, new_password: string, confirm_password: string }`. Verifies `current_password`, requires `new_password === confirm_password` and at least 8 characters and different from the current password, then clears `must_change_password`. Returns the updated `User`. This is the only way to satisfy a `PASSWORD_CHANGE_REQUIRED` block (see the note above the status table), so it stays reachable even while that block is active. |
@@ -218,9 +219,9 @@ interface Lead {
 | Method | Path | Status | Description |
 |---|---|---|---|
 | `GET` | `/leads` | 🟢 | Filters: `status`, `source`, `assigned_to`, `search` (name/company_name/email). Backs `pages/crm/leads/index.vue`. |
-| `POST` | `/leads` | 🟢 | Create. |
+| `POST` | `/leads` | 🟢 | Create. `email`, if supplied, must be a syntactically valid address (not domain-restricted like staff `User.email` — a Lead's email belongs to an external contact) — `422` otherwise. Empty is fine; the field stays optional. |
 | `GET` | `/leads/:id` | 🟢 | Single lead. |
-| `PUT` | `/leads/:id` | 🟢 | Update (including status transitions). |
+| `PUT` | `/leads/:id` | 🟢 | Update (including status transitions). Same `email` validation as Create. |
 | `DELETE` | `/leads/:id` | 🟢 | Delete. |
 | `POST` | `/leads/:id/convert` | 🟢 | Converts a Qualified Lead into a Deal (and Company/Contact if new) — `FR-CRM-004`. Body: `{ company_id?: number, contact_id?: number, deal: { title, value, stage, ... } }` — if `company_id`/`contact_id` omitted, backend creates them from the Lead's `company_name`/`email`/`phone`. Response: `{ data: { deal: Deal, company: Company, contact: Contact } }`. |
 
@@ -309,6 +310,8 @@ Backs `components/Crm/ImportContactsModal.vue` — currently a **client-side-onl
 
 > `FR-CRM-014` specifies dedup by email/domain; the current frontend parser dedupes by company **name** instead. Implement the backend against email/domain per the spec — this is a deliberate improvement over, not a mirror of, today's frontend behavior.
 
+> Company dedup resolution order: normalized website domain (case-insensitive, scheme/`www.`/path stripped) first, falling back to a case-insensitive/whitespace-trimmed name match only when either side has no website. Backed by an indexed `domain` column maintained at write time (Create/Update/Import all populate it) rather than scanning every company with a website per imported row, so a large import stays an indexed lookup per row instead of an O(n) scan.
+
 ---
 
 ## 7. Deals, Activities, Tags, Quotes, Payments, Tasks
@@ -340,9 +343,9 @@ interface Deal {
 | Method | Path | Status | Description |
 |---|---|---|---|
 | `GET` | `/deals` | 🟢 | Filters: `stage`, `status`, `company_id`, `assigned_to`, `business_unit`, `channel`, `search` (title). Backs both `pages/crm/deals/index.vue` (Kanban) and the dashboard's `filteredDeals`. |
-| `POST` | `/deals` | 🟢 | Create. |
+| `POST` | `/deals` | 🟢 | Create. `value` must be ≥ 0; `expected_close_date`, if supplied, must parse as either a plain `YYYY-MM-DD` date or a full ISO 8601 timestamp (the two shapes the frontend actually sends) — `422` otherwise on either field. |
 | `GET` | `/deals/:id` | 🟢 | Single deal — `pages/crm/deals/[id].vue` Overview tab. |
-| `PUT` | `/deals/:id` | 🟢 | Full update. |
+| `PUT` | `/deals/:id` | 🟢 | Full update. Same `value`/`expected_close_date` validation as Create. |
 | `PATCH` | `/deals/:id/stage` | 🟢 | Body: `{ stage: DealStage }`. Dedicated endpoint for the Kanban drag-and-drop (`CrmPipelineBoard`'s `@move`) so the backend can also update `status` (open/won/lost) and fire `FR-CRM-064`'s auto Customer-Product creation (§8.2) in one transaction when stage becomes `Won`. |
 | `DELETE` | `/deals/:id` | 🟢 | Delete. |
 | `PATCH` | `/deals/:id/reassign` | 🔜 | Body: `{ assigned_to: number }`. Separate from the general `PUT` so the backend can append to an owner-history log — `FR-CRM-025`/`M-8`, not built in the frontend yet. |
@@ -600,7 +603,7 @@ At minimum, write an entry whenever: a Deal's `stage` changes, a Deal's `status`
 
 | Method | Path | Status | Description |
 |---|---|---|---|
-| `GET` | `/dashboard/summary` | 🟢 | Query params mirror the dashboard's filter bar exactly: `date_from`, `date_to` (or a `period` preset: `all\|month\|quarter\|year\|last6\|last12`), `business_unit`, `business_unit_item`, `channel`. Returns every stat card + chart the page renders in one response (shape below). |
+| `GET` | `/dashboard/summary` | 🟢 | Query params mirror the dashboard's filter bar exactly: `date_from`, `date_to` (or a `period` preset: `all\|month\|quarter\|year\|last6\|last12`), `business_unit`, `business_unit_item`, `channel`. Returns every stat card + chart the page renders in one response (shape below). Responses are cached server-side per exact query-param combination for up to 30s, so a write immediately followed by a refresh may briefly still show pre-write numbers — acceptable staleness for a stat-card dashboard, but worth knowing if a future test asserts read-after-write freshness here specifically. |
 
 Response shape (one object covering every widget on `pages/index.vue`):
 

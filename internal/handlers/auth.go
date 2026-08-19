@@ -142,5 +142,6 @@ func (h *AuthHandler) ChangePassword(c *fiber.Ctx) error {
 	if err := h.DB.Save(&user).Error; err != nil {
 		return utils.Internal(c, "Failed to update password")
 	}
+	middleware.InvalidateMustChangePassword(user.ID)
 	return utils.OK(c, user)
 }

@@ -56,9 +56,13 @@ func RequirePasswordChanged(db *gorm.DB) fiber.Handler {
 			return c.Next()
 		}
 
-		var mustChange bool
-		if err := db.Model(&models.User{}).Where("id = ?", CurrentUserID(c)).Pluck("must_change_password", &mustChange).Error; err != nil {
-			return utils.Unauthorized(c, "Invalid or expired token")
+		userID := CurrentUserID(c)
+		mustChange, cached := mustChangeCacheGet(userID)
+		if !cached {
+			if err := db.Model(&models.User{}).Where("id = ?", userID).Pluck("must_change_password", &mustChange).Error; err != nil {
+				return utils.Unauthorized(c, "Invalid or expired token")
+			}
+			mustChangeCacheSet(userID, mustChange)
 		}
 		if mustChange {
 			return utils.ErrorResponse(c, fiber.StatusForbidden, "PASSWORD_CHANGE_REQUIRED", "You must change your password before continuing")

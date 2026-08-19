@@ -45,14 +45,20 @@ func (h *UserHandler) List(c *fiber.Ctx) error {
 	return utils.List(c, users, page, perPage, total)
 }
 
-// validateCompanyEmail returns a 422 ValidationError if email isn't a valid
-// address on utils.AllowedEmailDomain, nil otherwise.
+// validateCompanyEmail returns utils.ErrHandled (see its doc) after writing a
+// 422 ValidationError if email isn't a valid address on
+// utils.AllowedEmailDomain, nil otherwise. Previously returned
+// ValidationError's own result directly, which is nil even on the invalid
+// path (the JSON write itself succeeds) — that silently defeated both call
+// sites' `if err != nil { return err }` guard below, letting any email
+// through regardless of domain.
 func validateCompanyEmail(c *fiber.Ctx, email string) error {
 	if utils.IsValidCompanyEmail(email) {
 		return nil
 	}
 	msg := "email must be a valid @" + utils.AllowedEmailDomain + " address"
-	return utils.ValidationError(c, msg, map[string][]string{"email": {msg}})
+	_ = utils.ValidationError(c, msg, map[string][]string{"email": {msg}})
+	return utils.ErrHandled
 }
 
 type userForm struct {
@@ -80,7 +86,7 @@ func (h *UserHandler) Create(c *fiber.Ctx) error {
 		return err
 	}
 	if err := validateCompanyEmail(c, form.Email); err != nil {
-		return err
+		return nil
 	}
 
 	password := form.Password
@@ -139,7 +145,7 @@ func (h *UserHandler) Update(c *fiber.Ctx) error {
 		return err
 	}
 	if err := validateCompanyEmail(c, form.Email); err != nil {
-		return err
+		return nil
 	}
 
 	actorID := middleware.CurrentUserID(c)
@@ -166,6 +172,7 @@ func (h *UserHandler) Update(c *fiber.Ctx) error {
 	if err := h.DB.Save(&user).Error; err != nil {
 		return utils.Internal(c, "Failed to update user")
 	}
+	middleware.InvalidateMustChangePassword(user.ID)
 	return utils.OK(c, user)
 }
 

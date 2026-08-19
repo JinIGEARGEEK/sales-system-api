@@ -21,21 +21,7 @@ func NewCompanyHandler(db *gorm.DB) *CompanyHandler {
 // List — GET /companies. Filters: status, tag, industry, search (name).
 func (h *CompanyHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
-	query := h.DB.Model(&models.Company{})
-
-	if v := c.Query("status"); v != "" {
-		query = query.Where("status = ?", v)
-	}
-	if v := c.Query("industry"); v != "" {
-		query = query.Where("industry = ?", v)
-	}
-	if v := c.Query("tag"); v != "" {
-		query = query.Where("? = ANY(tags)", v)
-	}
-	if v := c.Query("search"); v != "" {
-		like := "%" + v + "%"
-		query = query.Where("name ILIKE ? OR website ILIKE ?", like, like)
-	}
+	query := applyCompanyFilters(h.DB.Model(&models.Company{}), c)
 
 	var total int64
 	query.Count(&total)
@@ -74,7 +60,8 @@ func (h *CompanyHandler) Create(c *fiber.Ctx) error {
 	actorID := middleware.CurrentUserID(c)
 	company := models.Company{
 		Name: form.Name, Industry: form.Industry, Size: form.Size, Website: form.Website,
-		Tags: pq.StringArray(form.Tags), Notes: form.Notes,
+		Domain: utils.ExtractDomain(form.Website),
+		Tags:   pq.StringArray(form.Tags), Notes: form.Notes,
 		Status:    models.ActiveArchivedStatus(form.Status),
 		LegalName: form.LegalName, Address: form.Address, TaxID: form.TaxID,
 	}
@@ -111,6 +98,7 @@ func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 	}
 
 	company.Name, company.Industry, company.Size, company.Website = form.Name, form.Industry, form.Size, form.Website
+	company.Domain = utils.ExtractDomain(form.Website)
 	company.Tags = pq.StringArray(form.Tags)
 	company.Notes = form.Notes
 	company.LegalName, company.Address, company.TaxID = form.LegalName, form.Address, form.TaxID

@@ -27,6 +27,8 @@ import (
 
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/database"
+	"github.com/igeargeek/sales-system-api/internal/handlers"
+	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/routes"
 	"github.com/igeargeek/sales-system-api/internal/utils"
@@ -161,7 +163,19 @@ func seedPipelineConfig(db *gorm.DB) {
 // so IDs are predictable and cascading so FKs never block the truncate.
 func TruncateAll(db *gorm.DB) error {
 	stmt := fmt.Sprintf("TRUNCATE TABLE %s RESTART IDENTITY CASCADE", strings.Join(tables, ", "))
-	return db.Exec(stmt).Error
+	if err := db.Exec(stmt).Error; err != nil {
+		return err
+	}
+	// RESTART IDENTITY means the next test's users can be assigned the exact
+	// same primary keys as this test's — without clearing it, middleware's
+	// process-lifetime must_change_password cache would leak a value cached
+	// for e.g. userID 1 here into an unrelated later test's own userID 1.
+	middleware.ResetForTests()
+	// Same class of leak for the dashboard summary cache — two tests hitting
+	// GET /dashboard/summary with identical (often empty) query params would
+	// otherwise share a cache entry across the truncate.
+	handlers.ResetDashboardCacheForTests()
+	return nil
 }
 
 // App returns a fresh Fiber app wired via routes.Setup against the shared

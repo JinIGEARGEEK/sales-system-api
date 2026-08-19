@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -23,31 +24,7 @@ func NewDealHandler(db *gorm.DB) *DealHandler {
 // business_unit, channel, search (title).
 func (h *DealHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
-	query := h.DB.Model(&models.Deal{})
-
-	if v := c.Query("stage"); v != "" {
-		query = query.Where("stage = ?", v)
-	}
-	if v := c.Query("status"); v != "" {
-		query = query.Where("status = ?", v)
-	}
-	if v := c.Query("company_id"); v != "" {
-		query = query.Where("company_id = ?", v)
-	}
-	if v := c.Query("assigned_to"); v == "unassigned" {
-		query = query.Where("assigned_to IS NULL")
-	} else if v != "" {
-		query = query.Where("assigned_to = ?", v)
-	}
-	if v := c.Query("business_unit"); v != "" {
-		query = query.Where("business_unit = ?", v)
-	}
-	if v := c.Query("channel"); v != "" {
-		query = query.Where("channel = ?", v)
-	}
-	if v := c.Query("search"); v != "" {
-		query = query.Where("title ILIKE ?", "%"+v+"%")
-	}
+	query := applyDealFilters(h.DB.Model(&models.Deal{}), c)
 
 	var total int64
 	query.Count(&total)
@@ -94,16 +71,23 @@ type dealForm struct {
 // previously hardcoded DealStage/LeadSource enum whitelist. An empty value is
 // allowed through (defaulted downstream), and a value already stored on an
 // existing row (e.g. the seeded hardcoded stage names) always validates fine.
+//
+// Returns utils.ErrHandled (never the nil c.JSON(...) forwards on its own) so
+// callers' `if err != nil { return nil }` guard actually fires — see
+// ErrHandled's doc for why forwarding ValidationError's own return value here
+// would silently let every invalid stage/channel through.
 func (h *DealHandler) validateStageAndChannel(c *fiber.Ctx, form dealForm) error {
 	if !utils.IsActivePipelineStage(h.DB, string(form.Stage)) {
-		return utils.ValidationError(c, "stage is not a valid active pipeline stage", map[string][]string{
+		_ = utils.ValidationError(c, "stage is not a valid active pipeline stage", map[string][]string{
 			"stage": {"invalid"},
 		})
+		return utils.ErrHandled
 	}
 	if !utils.IsActiveLeadSource(h.DB, string(form.Channel)) {
-		return utils.ValidationError(c, "channel is not a valid active lead source", map[string][]string{
+		_ = utils.ValidationError(c, "channel is not a valid active lead source", map[string][]string{
 			"channel": {"invalid"},
 		})
+		return utils.ErrHandled
 	}
 	return nil
 }
@@ -120,24 +104,57 @@ func isLosingForm(db *gorm.DB, form dealForm) bool {
 // validateProbabilityAndLostReason mirrors the conditional-required pattern
 // already used elsewhere in this codebase (e.g. lost_reason is only required
 // once Stage/Status moves to Lost, the same way Contract-signed-before-Won-style
-// gates only fire once their triggering condition is met). Returns a non-nil
-// error response already written to c, or nil if valid.
+// gates only fire once their triggering condition is met). Returns
+// utils.ErrHandled (see its doc) if invalid, nil if valid.
 func validateProbabilityAndLostReason(c *fiber.Ctx, db *gorm.DB, form dealForm) error {
 	if form.Probability != nil && (*form.Probability < 0 || *form.Probability > 100) {
-		return utils.ValidationError(c, "probability must be between 0 and 100", map[string][]string{
+		_ = utils.ValidationError(c, "probability must be between 0 and 100", map[string][]string{
 			"probability": {"must be between 0 and 100"},
 		})
+		return utils.ErrHandled
 	}
 	if isLosingForm(db, form) {
 		if form.LostReason == nil || *form.LostReason == "" {
-			return utils.ValidationError(c, "lost_reason is required when marking a deal Lost", map[string][]string{
+			_ = utils.ValidationError(c, "lost_reason is required when marking a deal Lost", map[string][]string{
 				"lost_reason": {"required"},
 			})
+			return utils.ErrHandled
 		}
 		if !models.IsValidLostReason(*form.LostReason) {
-			return utils.ValidationError(c, "lost_reason is invalid", map[string][]string{
+			_ = utils.ValidationError(c, "lost_reason is invalid", map[string][]string{
 				"lost_reason": {"invalid"},
 			})
+			return utils.ErrHandled
+		}
+	}
+	return nil
+}
+
+// validateDealValueAndDate checks the two dealForm fields that previously had
+// no format/range validation at all: Value (must be non-negative — a client
+// bug or bad import row supplying a negative number would silently corrupt
+// every value-sum aggregate on the dashboard) and ExpectedCloseDate (must
+// parse as either a plain "YYYY-MM-DD" date or a full RFC3339 timestamp — the
+// two shapes the frontend actually sends, see forecastTrend's comment). A
+// malformed date string would otherwise persist untouched and silently fail
+// to land in any forecastTrend month bucket instead of erroring at write time.
+// Returns utils.ErrHandled (see its doc) if invalid, nil if valid.
+func validateDealValueAndDate(c *fiber.Ctx, form dealForm) error {
+	if form.Value < 0 {
+		_ = utils.ValidationError(c, "value must not be negative", map[string][]string{
+			"value": {"must not be negative"},
+		})
+		return utils.ErrHandled
+	}
+	if form.ExpectedCloseDate != nil && *form.ExpectedCloseDate != "" {
+		date := *form.ExpectedCloseDate
+		if _, err := time.Parse("2006-01-02", date); err != nil {
+			if _, err := time.Parse(time.RFC3339, date); err != nil {
+				_ = utils.ValidationError(c, "expected_close_date must be a valid date", map[string][]string{
+					"expected_close_date": {"invalid"},
+				})
+				return utils.ErrHandled
+			}
 		}
 	}
 	return nil
@@ -185,11 +202,14 @@ func (h *DealHandler) Create(c *fiber.Ctx) error {
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a deal to another sales rep")
 	}
+	if err := validateDealValueAndDate(c, form); err != nil {
+		return nil
+	}
 	if err := validateProbabilityAndLostReason(c, h.DB, form); err != nil {
-		return err
+		return nil
 	}
 	if err := h.validateStageAndChannel(c, form); err != nil {
-		return err
+		return nil
 	}
 
 	deal := models.Deal{
@@ -253,11 +273,14 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 			"title":      {"required"},
 		})
 	}
+	if err := validateDealValueAndDate(c, form); err != nil {
+		return nil
+	}
 	if err := validateProbabilityAndLostReason(c, h.DB, form); err != nil {
-		return err
+		return nil
 	}
 	if err := h.validateStageAndChannel(c, form); err != nil {
-		return err
+		return nil
 	}
 
 	deal.CompanyID, deal.ContactID, deal.Title, deal.Value = form.CompanyID, form.ContactID, form.Title, form.Value
