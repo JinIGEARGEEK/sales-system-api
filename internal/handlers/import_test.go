@@ -1,6 +1,10 @@
 package handlers
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/igeargeek/sales-system-api/internal/utils"
+)
 
 func TestExtractDomain(t *testing.T) {
 	cases := []struct {
@@ -19,8 +23,8 @@ func TestExtractDomain(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := extractDomain(tc.website); got != tc.want {
-				t.Errorf("extractDomain(%q) = %q, want %q", tc.website, got, tc.want)
+			if got := utils.ExtractDomain(tc.website); got != tc.want {
+				t.Errorf("utils.ExtractDomain(%q) = %q, want %q", tc.website, got, tc.want)
 			}
 		})
 	}
@@ -36,8 +40,8 @@ func TestNormalizeName(t *testing.T) {
 // domain-comparison loop, without requiring a live DB, to pin down the
 // intended dedup semantics for Company import rows.
 func matchesExisting(rowName, rowWebsite, existingName, existingWebsite string) bool {
-	rowDomain := extractDomain(rowWebsite)
-	existingDomain := extractDomain(existingWebsite)
+	rowDomain := utils.ExtractDomain(rowWebsite)
+	existingDomain := utils.ExtractDomain(existingWebsite)
 	if rowDomain != "" && existingDomain != "" {
 		return rowDomain == existingDomain
 	}

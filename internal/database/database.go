@@ -9,6 +9,7 @@ import (
 
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/models"
+	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
 func Connect(cfg *config.Config) (*gorm.DB, error) {
@@ -23,7 +24,11 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 		)
 	}
 
-	logLevel := logger.Silent
+	// Never fully silent: a Silent logger means real production DB failures
+	// (constraint violations, connection drops) leave no server-side trace at
+	// all — the handler layer already returns opaque "Failed to X" messages
+	// to the client, so this is the only place they'd be visible.
+	logLevel := logger.Error
 	if cfg.AppEnv == "development" {
 		logLevel = logger.Warn
 	}
@@ -55,7 +60,7 @@ func AutoMigrate(db *gorm.DB) error {
 		}
 	}
 
-	return db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&models.User{},
 		&models.Lead{},
 		&models.Company{},
@@ -75,5 +80,31 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.PipelineStage{},
 		&models.LeadSourceOption{},
 		&models.AppSettings{},
-	)
+	); err != nil {
+		return err
+	}
+
+	return backfillCompanyDomains(db)
+}
+
+// backfillCompanyDomains populates the new Company.Domain column (added
+// alongside the indexed-domain-lookup optimization in ImportCompanies) for
+// any pre-existing row AutoMigrate didn't/couldn't set — the column is new,
+// so every row created before this migration has it blank. Idempotent and
+// cheap to re-run: it only touches rows where domain is still empty.
+func backfillCompanyDomains(db *gorm.DB) error {
+	var companies []models.Company
+	if err := db.Where("website <> '' AND domain = ''").Find(&companies).Error; err != nil {
+		return fmt.Errorf("load companies for domain backfill: %w", err)
+	}
+	for _, co := range companies {
+		domain := utils.ExtractDomain(co.Website)
+		if domain == "" {
+			continue
+		}
+		if err := db.Model(&models.Company{}).Where("id = ?", co.ID).Update("domain", domain).Error; err != nil {
+			return fmt.Errorf("backfill domain for company %d: %w", co.ID, err)
+		}
+	}
+	return nil
 }

@@ -10,7 +10,7 @@ type Contact struct {
 	Email     string               `json:"email"`
 	Phone     string               `json:"phone"`
 	RoleTitle string               `json:"role_title"`
-	Tags      pq.StringArray       `gorm:"type:text[]" json:"tags"`
+	Tags      pq.StringArray       `gorm:"type:text[];index:idx_contacts_tags,type:gin" json:"tags"`
 	Status    ActiveArchivedStatus `gorm:"type:varchar(16);default:'active'" json:"status"`
 }
 

@@ -23,14 +23,7 @@ func NewProductHandler(db *gorm.DB) *ProductHandler {
 // List — GET /products (any authenticated role, route-gated).
 func (h *ProductHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
-	query := h.DB.Model(&models.Product{})
-
-	if v := c.Query("category"); v != "" {
-		query = query.Where("category = ?", v)
-	}
-	if v := c.Query("search"); v != "" {
-		query = query.Where("name ILIKE ?", "%"+v+"%")
-	}
+	query := applyProductFilters(h.DB.Model(&models.Product{}), c)
 
 	var total int64
 	query.Count(&total)

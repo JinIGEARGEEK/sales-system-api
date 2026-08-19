@@ -23,21 +23,7 @@ func NewContactHandler(db *gorm.DB) *ContactHandler {
 // List — GET /contacts. Filters: company_id, status, tag, search (name/email).
 func (h *ContactHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
-	query := h.DB.Model(&models.Contact{})
-
-	if v := c.Query("company_id"); v != "" {
-		query = query.Where("company_id = ?", v)
-	}
-	if v := c.Query("status"); v != "" {
-		query = query.Where("status = ?", v)
-	}
-	if v := c.Query("tag"); v != "" {
-		query = query.Where("? = ANY(tags)", v)
-	}
-	if v := c.Query("search"); v != "" {
-		like := "%" + v + "%"
-		query = query.Where("name ILIKE ? OR email ILIKE ?", like, like)
-	}
+	query := applyContactFilters(h.DB.Model(&models.Contact{}), c)
 
 	var total int64
 	query.Count(&total)

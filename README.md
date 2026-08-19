@@ -53,8 +53,9 @@ See [`.env.example`](.env.example). Notable ones:
 | Var | Purpose |
 |---|---|
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_SSLMODE` | Postgres connection |
-| `JWT_SECRET` | HMAC secret for signing tokens — **must** be overridden in production; the server refuses to boot with the default value when `APP_ENV=production` |
+| `JWT_SECRET` | HMAC secret for signing tokens — **must** be overridden outside local dev; the server refuses to boot with the default value whenever `APP_ENV` is anything other than `development` (deny-by-default — a misspelled/unset `APP_ENV` fails closed instead of silently booting with a guessable secret) |
 | `JWT_EXPIRY_HOURS` | Access token lifetime |
+| `CORS_ORIGINS` | Comma-separated allow-list of origins. Defaults to `*` (any origin) for local dev; the server refuses to boot with `*` whenever `APP_ENV` is anything other than `development`, same deny-by-default reasoning as `JWT_SECRET` above — set an explicit allow-list in every other environment |
 | `PORT` | HTTP listen port (default `8080`) |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM` | Outbound mail server for the Task due-date reminder emails. Optional — if `SMTP_HOST` is left unset, the mailer logs a warning and skips sending instead of failing, so the app runs fine without these configured. Set all five in production to actually deliver reminder emails. |
 
@@ -75,6 +76,8 @@ Tests run against a separate `sales_system_test` database (created automatically
 All routes are prefixed `/api/v1`. Auth is a Bearer JWT (`Authorization: Bearer <token>`), obtained via `POST /auth/login`.
 
 Resources: Auth & Users, Leads, Companies, Contacts, Deals, Activities, Tags, Quotes, Payments, Tasks, Contracts, Products & Customer-Products, Projects, Reports, Audit log, Dashboard aggregate. See `biz_spec/api-system-spec.md` for the full endpoint list, request/response shapes, filters, and per-endpoint status (🟢 required / 🔜 planned).
+
+`POST /auth/login` is rate-limited to 10 attempts/minute per client IP (resolved from `X-Forwarded-For` behind Railway's proxy, falling back to the raw connection address for local/direct connections) — see `internal/routes/routes.go`.
 
 ### Roles (§1.7 of the spec)
 
@@ -106,4 +109,6 @@ The repo builds via the included `Dockerfile` and `railway.toml` (health check a
 
 - The frontend's `AdminUser.role` type was originally `Admin | Editor | Viewer`, which conflicted with the roles actually enforced here. This has been reconciled: both frontend and backend now use `Admin | Sales Rep | Sales Manager | Production`.
 - File uploads (Quote PDFs, signed Contracts) are currently stored on local disk under `./uploads` — swap for S3-compatible object storage before any real deployment.
-- `AutoMigrate` runs on every boot; fine for dev, but consider gating it behind a flag or a separate migration step before running multiple replicas in production.
+- `AutoMigrate` runs on every boot; fine for dev, but consider gating it behind a flag or a separate migration step before running multiple replicas in production. It also backfills the `companies.domain` column (used for indexed import dedup) for any pre-existing row missing it — idempotent, only touches rows where `domain` is still empty, so it's a no-op after the first boot post-upgrade.
+- `GET /{resource}/export` streams its CSV response in batches rather than buffering the full result set in memory — safe for large tables, but note that once the first batch has been validated and streaming begins, a failure partway through can only be logged server-side and cut the response short (the `200` and any bytes already sent can't be un-sent); this is an inherent limitation of streamed HTTP responses.
+- Two handlers cache in an in-process map for correctness/performance (`internal/middleware`'s `must_change_password` cache and `internal/handlers/dashboard.go`'s `GET /dashboard/summary` cache, both with short TTLs and explicit invalidation on writes within the same process). Fine for a single Railway replica; running multiple replicas would need these moved to a shared store (e.g. Redis) since each replica's cache is currently independent and can briefly disagree with the others.

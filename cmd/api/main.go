@@ -20,8 +20,17 @@ import (
 func main() {
 	cfg := config.Load()
 
-	if cfg.JWTSecret == "change-me-in-production" && cfg.AppEnv == "production" {
-		log.Fatal("refusing to start in production with the default JWT_SECRET — set a real secret")
+	// Deny-by-default: only the explicit "development" env may run with the
+	// placeholder secret/wildcard CORS. A misspelled or unset APP_ENV (e.g.
+	// "prod" instead of "production") now fails closed instead of silently
+	// booting a production-looking deployment with a guessable JWT secret.
+	if cfg.AppEnv != "development" {
+		if cfg.JWTSecret == "change-me-in-production" {
+			log.Fatal("refusing to start outside development with the default JWT_SECRET — set a real secret")
+		}
+		if cfg.CORSOrigins == "*" {
+			log.Fatal("refusing to start outside development with CORS_ORIGINS=\"*\" — set an explicit allow-list")
+		}
 	}
 
 	db, err := database.Connect(cfg)

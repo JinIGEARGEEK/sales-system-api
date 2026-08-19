@@ -84,35 +84,6 @@ func respondImportFileError(c *fiber.Ctx, err error) error {
 	}
 }
 
-// extractDomain normalizes a website value down to a bare, lowercase domain
-// for comparison purposes: strips scheme (http/https), a leading "www.",
-// any path/query/fragment, and a trailing slash. Returns "" if website is
-// blank or has no discernible host.
-func extractDomain(website string) string {
-	s := strings.TrimSpace(strings.ToLower(website))
-	if s == "" {
-		return ""
-	}
-	if idx := strings.Index(s, "://"); idx != -1 {
-		s = s[idx+3:]
-	}
-	// Drop path/query/fragment.
-	if idx := strings.IndexAny(s, "/?#"); idx != -1 {
-		s = s[:idx]
-	}
-	// Drop userinfo if present (rare in a website column, but be safe).
-	if idx := strings.LastIndex(s, "@"); idx != -1 {
-		s = s[idx+1:]
-	}
-	// Drop port.
-	if idx := strings.LastIndex(s, ":"); idx != -1 {
-		s = s[:idx]
-	}
-	s = strings.TrimPrefix(s, "www.")
-	s = strings.TrimSuffix(s, ".")
-	return s
-}
-
 // normalizeName lowercases and trims a company name for case/whitespace
 // insensitive fallback matching.
 func normalizeName(name string) string {
@@ -122,20 +93,21 @@ func normalizeName(name string) string {
 // findExistingCompany locates a prior-imported Company matching either the
 // normalized website domain (preferred — catches name spelling/casing drift
 // for the same real-world company) or, when either side has no website, a
-// case-insensitive/whitespace-trimmed name match.
+// case-insensitive/whitespace-trimmed name match. The domain lookup is an
+// indexed equality query against the precomputed Company.Domain column
+// (populated at write time — see companyDomainOrEmpty/database.backfillCompanyDomains)
+// rather than an in-Go scan of every company with a website, which used to be
+// an O(n) full-table load per imported row.
 func findExistingCompany(db *gorm.DB, name, website string) (*models.Company, error) {
-	domain := extractDomain(website)
+	domain := utils.ExtractDomain(website)
 	if domain != "" {
-		// Compare normalized domains in Go rather than via fragile SQL string
-		// munging — scan candidates that have a non-blank website.
-		var candidates []models.Company
-		if err := db.Where("website <> ''").Find(&candidates).Error; err != nil {
-			return nil, err
+		var match models.Company
+		err := db.Where("domain = ?", domain).First(&match).Error
+		if err == nil {
+			return &match, nil
 		}
-		for i := range candidates {
-			if extractDomain(candidates[i].Website) == domain {
-				return &candidates[i], nil
-			}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
 		}
 	}
 
@@ -188,6 +160,7 @@ func (h *ImportHandler) ImportCompanies(c *fiber.Ctx) error {
 		}
 		if existing != nil {
 			existing.Industry, existing.Size, existing.Website = industry, size, website
+			existing.Domain = utils.ExtractDomain(website)
 			if err := h.DB.Save(existing).Error; err != nil {
 				result.Errors = append(result.Errors, importError{Row: rowNum, Message: "failed to update"})
 				result.Skipped++
@@ -197,7 +170,7 @@ func (h *ImportHandler) ImportCompanies(c *fiber.Ctx) error {
 			continue
 		}
 
-		company := models.Company{Name: name, Industry: industry, Size: size, Website: website, Status: models.StatusActive}
+		company := models.Company{Name: name, Industry: industry, Size: size, Website: website, Domain: utils.ExtractDomain(website), Status: models.StatusActive}
 		if err := h.DB.Create(&company).Error; err != nil {
 			result.Errors = append(result.Errors, importError{Row: rowNum, Message: "failed to create"})
 			result.Skipped++

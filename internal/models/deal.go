@@ -91,7 +91,7 @@ type Deal struct {
 	Channel           LeadSource     `gorm:"type:varchar(64);index" json:"channel"`
 	BusinessUnit      *BusinessUnit  `gorm:"type:varchar(16);index" json:"business_unit"`
 	BusinessUnitItem  *string        `json:"business_unit_item"`
-	Tags              pq.StringArray `gorm:"type:text[]" json:"tags"`
+	Tags              pq.StringArray `gorm:"type:text[];index:idx_deals_tags,type:gin" json:"tags"`
 	// LeadID traces this Deal back to the Lead it was converted from, if any.
 	LeadID *uint `gorm:"index" json:"lead_id"`
 	// Probability is the 0-100 win-probability, defaulted per-stage
