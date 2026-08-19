@@ -30,8 +30,10 @@ const (
 // that isn't downloaded/re-hosted.
 type Attachment struct {
 	HardDeleteModel
-	RelatedType  AttachmentRelatedType `gorm:"type:varchar(16);index" json:"related_type"`
-	RelatedID    uint                  `gorm:"index" json:"related_id"`
+	// Composite index on (related_type, related_id) — every List query filters
+	// on both together (see AttachmentHandler.List), same reasoning as Activity's.
+	RelatedType  AttachmentRelatedType `gorm:"type:varchar(16);index:idx_attachments_related,priority:1" json:"related_type"`
+	RelatedID    uint                  `gorm:"index:idx_attachments_related,priority:2" json:"related_id"`
 	Category     AttachmentCategory    `gorm:"type:varchar(16)" json:"category"`
 	FileName     string                `json:"file_name"`
 	FileURL      *string               `json:"file_url"`

@@ -20,11 +20,14 @@ const (
 // Activity — api-system-spec.md §7.2.
 type Activity struct {
 	HardDeleteModel
-	Type        ActivityType        `gorm:"type:varchar(16)" json:"type"`
-	Subject     string              `json:"subject"`
-	Notes       string              `json:"notes"`
-	RelatedType ActivityRelatedType `gorm:"type:varchar(16);index" json:"related_type"`
-	RelatedID   uint                `gorm:"index" json:"related_id"`
+	Type    ActivityType `gorm:"type:varchar(16)" json:"type"`
+	Subject string       `json:"subject"`
+	Notes   string       `json:"notes"`
+	// Composite index on (related_type, related_id) — every List query filters
+	// on both together (see ActivityHandler.List), so this is far more
+	// effective than two separate single-column indexes bitmap-AND'd together.
+	RelatedType ActivityRelatedType `gorm:"type:varchar(16);index:idx_activities_related,priority:1" json:"related_type"`
+	RelatedID   uint                `gorm:"index:idx_activities_related,priority:2" json:"related_id"`
 	CreatedByID uint                `json:"-"`
 	CreatedBy   string              `gorm:"-" json:"created_by"`
 }

@@ -79,6 +79,16 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	auth := api.Group("/auth")
 	auth.Post("/login", loginLimiter, authH.Login)
 
+	// Uploaded files (Quote PDFs, signed Contracts, Attachments) — utils.SaveUpload
+	// returns a root-level "/uploads/<name>" URL (not under /api/v1), so this is
+	// registered on app directly rather than inside the authed group below.
+	// Previously nothing served this path at all — SaveUpload's returned URLs
+	// were dead links regardless of deployment. These are business documents,
+	// so require auth (any authenticated role, matching the export/PDF
+	// endpoints' access level) rather than serving them unauthenticated.
+	app.Use("/uploads", middleware.RequireAuth(cfg))
+	app.Static("/uploads", utils.UploadDir, fiber.Static{Download: true})
+
 	authed := api.Group("", middleware.RequireAuth(cfg), middleware.RequirePasswordChanged(db))
 
 	authed.Post("/auth/logout", authH.Logout)
@@ -182,12 +192,16 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	attachments.Post("/", middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager), attachmentH.Create)
 	attachments.Delete("/:id", attachmentH.Delete)
 
-	// Tags
+	// Tags — shared taxonomy used across Companies/Deals/Contacts; List stays
+	// open to every authenticated role (tag pickers need it), but writes are
+	// Admin/Sales-Manager only (bulkRoles) — a Sales Rep renaming or
+	// deactivating a shared tag would silently break filtering/reporting for
+	// everyone else, the same reasoning PipelineStage/LeadSource are gated on.
 	tags := authed.Group("/tags")
 	tags.Get("/", tagH.List)
-	tags.Post("/", tagH.Create)
-	tags.Put("/:id", tagH.Update)
-	tags.Delete("/:id", tagH.Delete)
+	tags.Post("/", bulkRoles, tagH.Create)
+	tags.Put("/:id", bulkRoles, tagH.Update)
+	tags.Delete("/:id", bulkRoles, tagH.Delete)
 
 	// Quotes / Payments / Contracts (top-level, non-nested routes)
 	authed.Put("/quotes/:id", quoteH.Update)
@@ -227,7 +241,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	reports.Get("/customers-by-product-status", reportH.CustomersByProductStatus)
 
 	// Audit log — Admin only, read-only (NFR-007).
-	authed.Get("/audit-log", auditLogH.List, adminOnly)
+	authed.Get("/audit-log", adminOnly, auditLogH.List)
 
 	// Pipeline stages / lead sources — Admin-only config, replacing the
 	// previously hardcoded DealStage/LeadSource enums as the source of truth.

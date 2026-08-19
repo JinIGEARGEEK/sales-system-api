@@ -296,8 +296,9 @@ interface Contact {
 
 - `multipart/form-data`, single field named `file`.
 - Response for a single-file upload (Quote PDF, Contract signed doc): `{ data: { file_name: string, file_url: string, file_size: number, uploaded_at: string } }` — matches the optional fields already on `Quote` (`interfaces/crm.d.ts`).
-- Max file size: recommend 10 MB; return `413` with the standard error envelope (§1.5) if exceeded.
-- Store files in object storage (S3-compatible) and return a durable `file_url`, not a local path.
+- Max file size: 10 MB; returns `413` with the standard error envelope (§1.5) if exceeded.
+- Allowed extensions: `.pdf .png .jpg .jpeg .doc .docx .xls .xlsx .csv` — anything else returns `400`. Deliberately excludes anything a browser would execute inline (`.html`, `.svg`, etc.), since uploaded files are served back from this API's own origin (see below).
+- `file_url` currently resolves to this API's own `/uploads/<name>` (auth-gated — any authenticated role, same access level as the Quote/Contract PDF export endpoints; unauthenticated requests get `401`), backed by local disk. Store files in object storage (S3-compatible) instead before any real multi-replica deployment — local disk doesn't persist across redeploys or replicas.
 
 ### 6.2 Bulk import (Companies/Contacts)
 
@@ -390,12 +391,14 @@ interface Tag {
 }
 ```
 
-| Method | Path | Status | Description |
-|---|---|---|---|
-| `GET` | `/tags` | 🟢 | Filters: `category`, `status`, `search` (name). Backs `pages/crm/tags/index.vue`. |
-| `POST` | `/tags` | 🟢 | Create. |
-| `PUT` | `/tags/:id` | 🟢 | Update. |
-| `DELETE` | `/tags/:id` | 🟢 | Soft-delete (`status: 'inactive'`). |
+Tags are a shared taxonomy referenced by Company/Deal/Contact — writes are Admin/Sales-Manager only (same `bulkRoles` gate as Deal/Lead bulk actions) since renaming or deactivating a tag affects filtering/reporting for every user, not just its creator; `GET` stays open to every authenticated role since tag pickers on Company/Deal/Contact forms need it regardless of role.
+
+| Method | Path | Auth | Status | Description |
+|---|---|---|---|---|
+| `GET` | `/tags` | any authenticated | 🟢 | Filters: `category`, `status`, `search` (name). Backs `pages/crm/tags/index.vue`. |
+| `POST` | `/tags` | Admin, Sales Manager | 🟢 | Create. |
+| `PUT` | `/tags/:id` | Admin, Sales Manager | 🟢 | Update. |
+| `DELETE` | `/tags/:id` | Admin, Sales Manager | 🟢 | Soft-delete (`status: 'inactive'`). |
 
 ### 7.4 Quotes
 
