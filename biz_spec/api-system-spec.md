@@ -598,6 +598,26 @@ interface AuditLogEntry {
 
 At minimum, write an entry whenever: a Deal's `stage` changes, a Deal's `status` becomes `won`/`lost`, or a `CustomerProduct`/`Project` `status` changes (per `FR-CRM-082`'s explicit minimum scope) — all four are now implemented (`deals.go` for the Deal events, `projects.go`/`products.go` for the other two). The frontend's `/admin/activity-log` page is already repointed at this real endpoint.
 
+### 8.6 Admin Settings (`FR-CRM-058`, `FR-CRM-091`)
+
+A singleton row (`AppSettings`, always `id: 1`) holding two Admin-configurable, company-wide figures that don't warrant their own table. Seeded on first run (`quarterly_sales_target: 3000000`, `annual_revenue_goal: 12000000`) so `GET /dashboard/summary` always has a value even before an Admin has ever touched this screen.
+
+```ts
+interface AppSettings {
+  id: number
+  quarterly_sales_target: number   // FR-CRM-058 — feeds §9's pipeline_coverage_ratio
+  annual_revenue_goal: number      // FR-CRM-091 — feeds §9's annual_revenue_progress_ratio/annual_revenue_trend
+  updated_at: string               // "last updated" hint for the Admin config UI — neither figure resets itself automatically
+}
+```
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/admin/settings` | Admin | Returns the singleton row. |
+| `PATCH` | `/admin/settings` | Admin | Body: `{ quarterly_sales_target: number, annual_revenue_goal: number }`. **Both fields are required on every request** — this is a singleton config row, not a per-field partial-update resource, so an omitted field is a `422` rather than "leave it unchanged." Both must be `>= 0`. Writes an audit-log entry (`entity_type: "settings"`, `action: "updated"`) only when at least one value actually changed — a no-op PATCH (identical values) doesn't add a second entry. |
+
+`annual_revenue_goal` (`FR-CRM-091`) has no automatic per-year reset — an Admin is expected to update it manually at the start of each calendar year (`updated_at` above is the intended staleness signal for that). `annual_revenue_trend` in §9 always tracks the **current** calendar year (Jan through the current month) regardless of when the goal was last set.
+
 ---
 
 ## 9. Dashboard / reporting aggregates
@@ -617,11 +637,17 @@ Response shape (one object covering every widget on `pages/index.vue`):
     "won_value": 1250000,
     "win_rate": 42,
     "open_deals_count": 18,
+    "forecasted_revenue": 2150000,
     "avg_deal_size": 185000,
     "avg_sales_cycle_days": 34,
     "pipeline_coverage_ratio": 1.6,
     "quarterly_sales_target": 3000000,
-    "revenue_trend": [ { "label": "Mar", "value": 320000 }, "...6 months" ],
+    "annual_revenue_goal": 12000000,
+    "annual_revenue_actual": 5230000,
+    "annual_revenue_progress_ratio": 0.436,
+    "annual_revenue_trend": [ { "label": "Jan", "actual": 820000, "goal_pace": 1000000 }, "...Jan through the current month, cumulative" ],
+    "revenue_trend": [ { "label": "Mar", "value": 320000 }, "...trailing 6 months, Won revenue by close month" ],
+    "forecast_trend": [ { "label": "Mar", "value": 410000 }, "...next 6 months, open-deal value × probability by expected_close_date month" ],
     "stage_breakdown": [ { "stage": "Qualified", "value": 900000, "count": 4 }, "...per DealStage" ],
     "industry_breakdown": [ { "industry": "Retail", "win_rate": 55, "won_count": 6 }, "..." ],
     "team_performance": [ { "user_id": 3, "name": "...", "won_count": 5, "won_value": 620000, "win_rate": 60 }, "..." ],
@@ -630,7 +656,7 @@ Response shape (one object covering every widget on `pages/index.vue`):
 }
 ```
 
-`quarterly_sales_target` should move server-side from the frontend's hardcoded `QUARTERLY_SALES_TARGET` constant once Admin-configurable quotas exist (`FR-CRM-058`, currently 🚧) — expose it as a value in this response either way so the frontend stops hardcoding it the moment the backend is live, even before an Admin settings UI for it exists.
+`quarterly_sales_target` (`FR-CRM-058`) and `annual_revenue_goal`/`annual_revenue_actual`/`annual_revenue_progress_ratio`/`annual_revenue_trend` (`FR-CRM-091`) are Admin-configurable via `PATCH /admin/settings` — see §8.6. `annual_revenue_trend`'s `actual` is a running cumulative total through each month (not that month's own delta); `goal_pace` is a straight-line `annual_revenue_goal × months_elapsed / 12` for the same point, letting the frontend chart whether the company is ahead of or behind pace, not just infer it from today's single ratio. Both `revenue_trend`/`forecast_trend` and `annual_revenue_trend` deliberately ignore this endpoint's own `business_unit`/`channel`/`date_from`/`date_to` filters (fixed trailing-6-months and fixed calendar-year views respectively, not filtered slices) — only the top-level stat cards and `stage_breakdown`/`industry_breakdown`/`team_performance` respect them.
 
 ---
 
