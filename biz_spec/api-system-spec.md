@@ -404,6 +404,10 @@ Tags are a shared taxonomy referenced by Company/Deal/Contact — writes are Adm
 
 ```ts
 type QuoteStatus = 'draft' | 'sent' | 'accepted' | 'rejected'
+// 'expired' is a fifth, read-derived-only value: never settable directly via
+// Create/Update, only ever returned by GET/List once a Sent quote's
+// validity_date has passed (Quote.EffectiveStatus) — see quotes-expiring-soon
+// (§8.4) for the forward-looking mirror of this same check.
 
 interface QuoteItem {
   description: string
@@ -416,7 +420,7 @@ interface Quote {
   deal_id: number
   items: QuoteItem[]
   validity_date: string | null
-  status: QuoteStatus
+  status: QuoteStatus | 'expired'
   file_name?: string
   file_url?: string
   file_size?: number
@@ -426,11 +430,11 @@ interface Quote {
 
 | Method | Path | Status | Description |
 |---|---|---|---|
-| `GET` | `/deals/:dealId/quotes` | 🔜 | List quotes for a Deal. **Planned** — `FR-CRM-040`/`041`; today Quotes are a mock array embedded directly in the Deal detail page, no dedicated CRUD exists in the frontend either. |
-| `POST` | `/deals/:dealId/quotes` | 🔜 | Create a line-item quote. |
-| `POST` | `/deals/:dealId/quotes/upload` | 🔜 | Upload a PDF quote in place of line items (§6.1) — sets `file_name/file_url/file_size/uploaded_at`, leaves `items` empty. |
-| `PUT` | `/quotes/:id` | 🔜 | Update status/items/validity_date. |
-| `DELETE` | `/quotes/:id` | 🔜 | Delete. |
+| `GET` | `/deals/:dealId/quotes` | 🟢 | List quotes for a Deal. `status` on each row reflects `EffectiveStatus` (may report `expired`), not necessarily the raw stored value. |
+| `POST` | `/deals/:dealId/quotes` | 🟢 | Create a line-item quote. |
+| `POST` | `/deals/:dealId/quotes/upload` | 🟢 | Upload a PDF quote in place of line items (§6.1) — sets `file_name/file_url/file_size/uploaded_at`, leaves `items` empty. |
+| `PUT` | `/quotes/:id` | 🟢 | Update status/items/validity_date. |
+| `DELETE` | `/quotes/:id` | 🟢 | Delete. |
 | `GET` | `/quotes/:id/export-pdf` | 🟢 | `FR-CRM-042` — returns a generated PDF (`github.com/go-pdf/fpdf`): line items table, Deal/Company/Contact header, validity date, status. Read-only, same access level as List (no `CanWrite` ownership check). |
 
 ### 7.5 Payments
@@ -570,7 +574,9 @@ interface Project {
 
 Do **not** add sub-resources for tasks/sprints/milestones under `/projects/:id` — `FR-CRM-071` explicitly rules this out; a Project here is a summary record, never a delivery-management tool.
 
-### 8.4 Reports (`FR-CRM-054`, `056`)
+### 8.4 Reports (`FR-CRM-054`, `056`, `093`–`098`)
+
+All `/reports/*` endpoints are Sales Manager/Admin only (route-gated, same as §1.7). Every list-shaped report returns `[]` on an empty result, never `null` — a nil Go slice marshals to `null` and the frontend's `.map()`/`.length` on the response body would throw.
 
 Two report shapes the frontend dashboard doesn't compute today because the underlying data (lead-source conversion, product/project status) doesn't exist yet:
 
@@ -578,6 +584,17 @@ Two report shapes the frontend dashboard doesn't compute today because the under
 |---|---|---|
 | `GET` | `/reports/lead-source-conversion` | Conversion rate by `Lead.source` (`FR-CRM-054`). |
 | `GET` | `/reports/customers-by-product-status?product_id=&status=` | "Which customers use Product X" / "have a Project in status Y" (`FR-CRM-056`) — do not confuse with the `business_unit`/`channel` filters in §9, which are lightweight Deal tags, not this real relationship query. |
+
+Six more, going beyond the dashboard's aggregate stat cards into "which specific records need attention":
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/reports/win-loss-reasons?date_from=&date_to=&assigned_to=` | `FR-CRM-093`. Every closed Deal (`won` or `lost`), grouped by `"won"` or its `lost_reason` code — `[{ reason, count, value }]`. Answers "why are we losing," not just the dashboard's win-rate number. A lost Deal missing `lost_reason` (shouldn't happen given `lost_reason`'s required-on-Lost validation, but tolerated defensively) groups under `"other"` rather than being dropped. |
+| `GET` | `/reports/stalled-deals?min_days=&assigned_to=` | `FR-CRM-094`. Open Deals with no logged Activity for at least `min_days` (default 14, falling back to the Deal's own `created_at` if it has never had one) — `[{ deal_id, title, company_name, stage, value, assigned_to, last_activity_at, days_stalled }]`. Surfaces deals quietly going cold, not yet marked Lost. |
+| `GET` | `/reports/outstanding-balance?assigned_to=&company_tag=` | `FR-CRM-095`. Won Deals whose recorded Payments sum to less than the Deal's `value` — `[{ deal_id, deal_title, company_name, deal_value, paid_amount, outstanding_amount }]`, every row money still owed. A flat list, not 30/60/90-day aging — `Payment` has no due-date field, only `paid_at` (when actually received), so aging-by-due-date isn't possible until that field exists. |
+| `GET` | `/reports/quotes-expiring-soon?within_days=` | `FR-CRM-096`. Sent quotes (not yet Accepted/Rejected) whose `validity_date` falls within the next `within_days` (default 7) — `[{ quote_id, deal_id, deal_title, company_name, validity_date, total_value }]`. The forward-looking mirror of `Quote`'s `EffectiveStatus`-derived `expired` state (§7.4) — same permissive RFC3339-or-bare-date `validity_date` parsing, a value that fails to parse is silently skipped rather than erroring the whole report. |
+| `GET` | `/reports/contracts-stuck?min_days=` | `FR-CRM-097`. Contracts sitting in `draft` or `sent` for at least `min_days` (default 14) without being signed — `[{ contract_id, deal_id, deal_title, company_name, status, days_in_status }]`. `Contract` has no start/end date to measure true expiration by (only `signed_date`, set once actually signed), so this tracks staleness before signature instead — the contract-side equivalent of `stalled-deals` above. |
+| `GET` | `/reports/projects-at-risk` | `FR-CRM-098`. Projects whose `target_end_date` has already passed but whose `status` isn't `Completed`/`Cancelled` — `[{ project_id, name, company_id, company_name, status, target_end_date, days_overdue }]`. The delivery-side equivalent of `stalled-deals`, for whoever owns customer-delivery visibility (§8.3). |
 
 ### 8.5 Audit log (`FR-CRM-082`)
 

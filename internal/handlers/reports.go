@@ -280,15 +280,9 @@ func (h *ReportHandler) QuotesExpiringSoon(c *fiber.Ctx) error {
 	deadline := now.AddDate(0, 0, withinDays)
 	byDeal := map[uint][]models.Quote{}
 	for _, q := range quotes {
-		if q.ValidityDate == nil || *q.ValidityDate == "" {
+		validUntil, ok := models.ParseValidityDate(q.ValidityDate)
+		if !ok {
 			continue
-		}
-		validUntil, err := time.Parse(time.RFC3339, *q.ValidityDate)
-		if err != nil {
-			validUntil, err = time.Parse("2006-01-02", *q.ValidityDate)
-			if err != nil {
-				continue
-			}
 		}
 		if validUntil.Before(now) || validUntil.After(deadline) {
 			continue
