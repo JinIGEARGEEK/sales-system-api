@@ -75,15 +75,66 @@ func periodStart(period string) (time.Time, bool) {
 	}
 }
 
-// quarterlySalesTarget resolves the Admin-configurable quota (FR-CRM-058)
-// from the AppSettings singleton row, falling back to the original hardcoded
-// default if the row is somehow missing (e.g. seed hasn't run yet).
-func (h *DashboardHandler) quarterlySalesTarget() int64 {
+// appSettings loads the AppSettings singleton row once so both
+// quarterlySalesTarget and annualRevenueGoal below don't each issue their own
+// query, falling back to the original hardcoded defaults if the row is
+// somehow missing (e.g. seed hasn't run yet).
+func (h *DashboardHandler) appSettings() models.AppSettings {
 	var settings models.AppSettings
 	if err := h.DB.First(&settings, 1).Error; err != nil {
-		return models.DefaultAppSettings.QuarterlySalesTarget
+		return models.DefaultAppSettings
 	}
-	return settings.QuarterlySalesTarget
+	return settings
+}
+
+type annualGoalTrendPoint struct {
+	Label    string  `json:"label"`
+	Actual   float64 `json:"actual"`
+	GoalPace float64 `json:"goal_pace"`
+}
+
+// annualRevenueTrend buckets cumulative Won Deal value for the current
+// calendar year, Jan through the current month, alongside a straight-line
+// "goal pace" for the same point (annualGoal × months-elapsed/12) — lets the
+// frontend chart whether the company is ahead of or behind pace over the
+// year, not just infer it from today's single ratio. A fixed company-wide
+// figure, deliberately ignoring Summary's base filter (business_unit/
+// channel/assigned_to/company_tag/date range) the same way revenueTrend/
+// forecastTrend do, since the annual goal (FR-CRM-091) tracks the whole
+// company against one company-wide target, not a filtered slice. The last
+// point's Actual also doubles as annual_revenue_actual in Summary's response
+// — one grouped query instead of a duplicate SUM.
+func (h *DashboardHandler) annualRevenueTrend(annualGoal int64) []annualGoalTrendPoint {
+	now := time.Now()
+	yearStart := time.Date(now.Year(), 1, 1, 0, 0, 0, 0, now.Location())
+
+	var rows []struct {
+		MonthKey string
+		Value    float64
+	}
+	h.DB.Model(&models.Deal{}).
+		Where("status = ? AND created_at >= ?", models.DealStatusWon, yearStart).
+		Select("to_char(created_at, 'YYYY-MM') as month_key, COALESCE(SUM(value), 0) as value").
+		Group("month_key").Scan(&rows)
+
+	byMonth := make(map[string]float64, len(rows))
+	for _, r := range rows {
+		byMonth[r.MonthKey] = r.Value
+	}
+
+	monthsElapsed := int(now.Month())
+	points := make([]annualGoalTrendPoint, 0, monthsElapsed)
+	cumulative := 0.0
+	for i := 0; i < monthsElapsed; i++ {
+		month := yearStart.AddDate(0, i, 0)
+		cumulative += byMonth[month.Format("2006-01")]
+		points = append(points, annualGoalTrendPoint{
+			Label:    month.Format("Jan"),
+			Actual:   cumulative,
+			GoalPace: float64(annualGoal) * float64(i+1) / 12,
+		})
+	}
+	return points
 }
 
 // winRate is the won/(won+lost) formula shared by Summary, industryBreakdown,
@@ -137,16 +188,34 @@ var (
 	summaryCache   = map[string]summaryCacheEntry{}
 )
 
-// ResetDashboardCacheForTests clears the whole cache. The integration suite
-// truncates and reseeds the shared test DB between tests but this cache is
-// process-lifetime, keyed only by querystring — two tests both hitting
-// GET /dashboard/summary with no params would otherwise share a cache entry
-// and one could serve the other's stale numbers within the 30s TTL. Not for
-// production use.
-func ResetDashboardCacheForTests() {
+// InvalidateDashboardCache drops every cached Summary response. The cache is
+// keyed per exact querystring, so a targeted invalidation isn't possible
+// without re-deriving every filter combination a caller might have used —
+// clearing the whole thing is the simple, correct option and this is already
+// a rare event (an Admin changing settings), not a hot path.
+//
+// Call this whenever something Summary's response depends on changes outside
+// of a normal Deal/Company write — currently just SettingsHandler.Update,
+// since quarterly_sales_target/annual_revenue_goal both feed directly into
+// Summary's response (pipeline_coverage_ratio, annual_revenue_goal/
+// annual_revenue_progress_ratio) but a settings PATCH doesn't touch the deals
+// table at all, so nothing else would ever invalidate this cache for them —
+// without this, an Admin changing the annual goal could see the old value
+// reflected back on their own dashboard for up to summaryCacheTTL.
+func InvalidateDashboardCache() {
 	summaryCacheMu.Lock()
 	defer summaryCacheMu.Unlock()
 	summaryCache = map[string]summaryCacheEntry{}
+}
+
+// ResetDashboardCacheForTests is InvalidateDashboardCache under a
+// test-specific name — the integration suite truncates and reseeds the
+// shared test DB between tests but this cache is process-lifetime, keyed
+// only by querystring, so two tests both hitting GET /dashboard/summary with
+// no params would otherwise share a cache entry and one could serve the
+// other's stale numbers within the TTL.
+func ResetDashboardCacheForTests() {
+	InvalidateDashboardCache()
 }
 
 // Summary — GET /dashboard/summary. api-system-spec.md §9.
@@ -170,10 +239,15 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	// one extra bit industryBreakdown needs to avoid double-joining companies.
 	companyTagSet := c.Query("company_tag") != ""
 
-	// These 5 base aggregates plus the 5 breakdown/trend helpers below are all
+	// Loaded synchronously up front (one cheap query) rather than after
+	// wg.Wait() below, since annualRevenueTrend needs settings.AnnualRevenueGoal
+	// and runs inside that same concurrent block.
+	settings := h.appSettings()
+
+	// These 5 base aggregates plus the 6 breakdown/trend helpers below are all
 	// independent read-only queries against the same filter — run them
 	// concurrently instead of serially so wall-clock time is roughly the
-	// slowest single query, not the sum of all ~10. None of them touch `c`
+	// slowest single query, not the sum of all ~11. None of them touch `c`
 	// (or anything else fiber-request-shaped) from here on, only `base` and
 	// plain values already captured above — see the comment on that.
 	var openPipelineValue, wonValue, avgDealSize, forecastedRevenue float64
@@ -182,6 +256,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	var stageBreakdown []stageBreakdownItem
 	var industryBreakdown []industryBreakdownItem
 	var teamPerformance []teamPerformanceItem
+	var annualRevenueTrend []annualGoalTrendPoint
 
 	var wg sync.WaitGroup
 	run := func(f func()) {
@@ -221,12 +296,23 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	run(func() { stageBreakdown = h.stageBreakdown(base) })
 	run(func() { industryBreakdown = h.industryBreakdown(base, companyTagSet) })
 	run(func() { teamPerformance = h.teamPerformance(base) })
+	run(func() { annualRevenueTrend = h.annualRevenueTrend(settings.AnnualRevenueGoal) })
 	wg.Wait()
 
-	quarterlySalesTarget := h.quarterlySalesTarget()
+	quarterlySalesTarget := settings.QuarterlySalesTarget
 	pipelineCoverageRatio := 0.0
 	if quarterlySalesTarget > 0 {
 		pipelineCoverageRatio = openPipelineValue / (float64(quarterlySalesTarget) / 4)
+	}
+
+	// annualRevenueActual is the trend's last cumulative point (Jan through
+	// the current month) rather than a duplicate SUM query — annualRevenueTrend
+	// always has at least one point since now.Month() is never 0.
+	annualRevenueGoal := settings.AnnualRevenueGoal
+	annualRevenueActual := annualRevenueTrend[len(annualRevenueTrend)-1].Actual
+	annualRevenueProgressRatio := 0.0
+	if annualRevenueGoal > 0 {
+		annualRevenueProgressRatio = annualRevenueActual / float64(annualRevenueGoal)
 	}
 
 	// avg_sales_cycle_days: no stage-transition timestamps are tracked yet, so
@@ -234,20 +320,24 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	avgSalesCycleDays := 0
 
 	body := fiber.Map{
-		"open_pipeline_value":     openPipelineValue,
-		"won_value":               wonValue,
-		"win_rate":                winRate(wonCount, lostCount),
-		"open_deals_count":        openDealsCount,
-		"forecasted_revenue":      forecastedRevenue,
-		"avg_deal_size":           avgDealSize,
-		"avg_sales_cycle_days":    avgSalesCycleDays,
-		"pipeline_coverage_ratio": pipelineCoverageRatio,
-		"quarterly_sales_target":  float64(quarterlySalesTarget),
-		"revenue_trend":           revenueTrend,
-		"forecast_trend":          forecastTrend,
-		"stage_breakdown":         stageBreakdown,
-		"industry_breakdown":      industryBreakdown,
-		"team_performance":        teamPerformance,
+		"open_pipeline_value":           openPipelineValue,
+		"won_value":                     wonValue,
+		"win_rate":                      winRate(wonCount, lostCount),
+		"open_deals_count":              openDealsCount,
+		"forecasted_revenue":            forecastedRevenue,
+		"avg_deal_size":                 avgDealSize,
+		"avg_sales_cycle_days":          avgSalesCycleDays,
+		"pipeline_coverage_ratio":       pipelineCoverageRatio,
+		"quarterly_sales_target":        float64(quarterlySalesTarget),
+		"annual_revenue_goal":           float64(annualRevenueGoal),
+		"annual_revenue_actual":         annualRevenueActual,
+		"annual_revenue_progress_ratio": annualRevenueProgressRatio,
+		"annual_revenue_trend":          annualRevenueTrend,
+		"revenue_trend":                 revenueTrend,
+		"forecast_trend":                forecastTrend,
+		"stage_breakdown":               stageBreakdown,
+		"industry_breakdown":            industryBreakdown,
+		"team_performance":              teamPerformance,
 		// upsell_opportunities needs Tag-tier + stale-contact logic not yet
 		// specified precisely enough to implement — ship empty rather than guess wrong.
 		"upsell_opportunities": []interface{}{},

@@ -161,5 +161,5 @@ func seedAppSettings(db *gorm.DB) {
 	if err := db.Create(&models.DefaultAppSettings).Error; err != nil {
 		log.Fatalf("failed to seed app settings: %v", err)
 	}
-	log.Printf("Seeded default app settings (quarterly_sales_target=%d)", models.DefaultAppSettings.QuarterlySalesTarget)
+	log.Printf("Seeded default app settings (quarterly_sales_target=%d, annual_revenue_goal=%d)", models.DefaultAppSettings.QuarterlySalesTarget, models.DefaultAppSettings.AnnualRevenueGoal)
 }

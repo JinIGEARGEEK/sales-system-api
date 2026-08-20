@@ -131,7 +131,25 @@ func setup() {
 		panic(fmt.Sprintf("testutil: automigrate: %v", err))
 	}
 	seedPipelineConfig(db)
+	seedAppSettings(db)
 	testDB = db
+}
+
+// seedAppSettings mirrors cmd/api/main.go's seedAppSettings — the test DB
+// needs the same singleton AppSettings row (id: 1) production gets on first
+// run, since SettingsHandler.get()/Update() both 500 if it's missing rather
+// than falling back silently (unlike dashboard.go's own read path, which
+// tolerates a missing row). Same "only if empty, once per test binary" idiom
+// as seedPipelineConfig above — app_settings is deliberately NOT part of
+// TruncateAll's `tables` list either, for the same reason.
+func seedAppSettings(db *gorm.DB) {
+	var count int64
+	db.Model(&models.AppSettings{}).Count(&count)
+	if count == 0 {
+		if err := db.Create(&models.DefaultAppSettings).Error; err != nil {
+			panic(fmt.Sprintf("testutil: seed app settings: %v", err))
+		}
+	}
 }
 
 // seedPipelineConfig mirrors cmd/api/main.go's seedPipelineConfig — the test
