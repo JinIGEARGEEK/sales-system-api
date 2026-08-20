@@ -61,6 +61,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	pipelineStageH := handlers.NewPipelineStageHandler(db)
 	leadSourceH := handlers.NewLeadSourceHandler(db)
 	settingsH := handlers.NewSettingsHandler(db)
+	salesTargetH := handlers.NewSalesTargetHandler(db)
 
 	api := app.Group("/api/v1")
 
@@ -268,6 +269,14 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	settings := authed.Group("/admin/settings", adminOnly)
 	settings.Get("/", settingsH.Get)
 	settings.Patch("/", settingsH.Update)
+
+	// Per-quarter/per-year sales targets — Admin-only config, FR-CRM-092.
+	// Overrides AppSettings.QuarterlySalesTarget/4 for a specific period.
+	salesTargets := authed.Group("/admin/sales-targets", adminOnly)
+	salesTargets.Get("/", salesTargetH.List)
+	salesTargets.Post("/", salesTargetH.Create)
+	salesTargets.Patch("/:id", salesTargetH.Update)
+	salesTargets.Delete("/:id", salesTargetH.Delete)
 
 	// Dashboard
 	authed.Get("/dashboard/summary", dashboardH.Summary)
