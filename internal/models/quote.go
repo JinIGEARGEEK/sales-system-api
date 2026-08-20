@@ -61,25 +61,39 @@ type Quote struct {
 
 func (Quote) TableName() string { return "quotes" }
 
+// ParseValidityDate parses a Quote.ValidityDate value permissively (RFC3339
+// timestamp — how the frontend serializes it — falling back to a bare date),
+// returning ok=false for a malformed or empty value rather than an error, so
+// every caller (EffectiveStatus below, ReportHandler.QuotesExpiringSoon)
+// treats "can't parse it" as "skip it" instead of each re-implementing the
+// same two-format fallback.
+func ParseValidityDate(validityDate *string) (t time.Time, ok bool) {
+	if validityDate == nil || *validityDate == "" {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse(time.RFC3339, *validityDate); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse("2006-01-02", *validityDate); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
+}
+
 // EffectiveStatus returns QuoteStatusExpired when this Quote is Sent and its
 // ValidityDate has passed, otherwise it returns the stored Status unchanged.
 // This is a read-derived value only — it never mutates q.Status or the
 // underlying stored row. Only a Sent quote can be considered expired: a
 // Draft past its validity date is still a Draft (never sent, nothing to
 // expire), and Accepted/Rejected are terminal states that Expired shouldn't
-// override. ValidityDate is parsed permissively (RFC3339 timestamp — how the
-// frontend serializes it — falling back to a bare date) so a malformed or
-// missing value simply leaves the stored Status as-is rather than erroring.
+// override.
 func (q *Quote) EffectiveStatus() QuoteStatus {
-	if q.Status != QuoteStatusSent || q.ValidityDate == nil || *q.ValidityDate == "" {
+	if q.Status != QuoteStatusSent {
 		return q.Status
 	}
-	validUntil, err := time.Parse(time.RFC3339, *q.ValidityDate)
-	if err != nil {
-		validUntil, err = time.Parse("2006-01-02", *q.ValidityDate)
-		if err != nil {
-			return q.Status
-		}
+	validUntil, ok := ParseValidityDate(q.ValidityDate)
+	if !ok {
+		return q.Status
 	}
 	if time.Now().After(validUntil) {
 		return QuoteStatusExpired
