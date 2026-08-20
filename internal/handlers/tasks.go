@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"errors"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
@@ -101,6 +103,86 @@ func (h *TaskHandler) Toggle(c *fiber.Ctx) error {
 		return utils.Internal(c, "Failed to toggle task")
 	}
 	return utils.OK(c, task)
+}
+
+type taskBulkIDsForm struct {
+	IDs []uint `json:"ids"`
+}
+
+// BulkMarkDone — PATCH /tasks/bulk-mark-done. Marks every id done in one
+// transaction. Ownership-gated per row via CanWrite, the same rule Toggle
+// uses for a single task — not restricted to Admin/Sales Manager like
+// Deals'/Leads' bulk endpoints, since a Sales Rep bulk-marking their own
+// backlog done is the primary use case for a personal task list.
+func (h *TaskHandler) BulkMarkDone(c *fiber.Ctx) error {
+	var form taskBulkIDsForm
+	if err := c.BodyParser(&form); err != nil {
+		return utils.BadRequest(c, "Invalid request body")
+	}
+	if len(form.IDs) == 0 {
+		return utils.ValidationError(c, "ids is required", map[string][]string{"ids": {"required"}})
+	}
+
+	actorID := middleware.CurrentUserID(c)
+	err := utils.BulkUpdate(h.DB, form.IDs, "task", "bulk_marked_done", actorID,
+		func(tx *gorm.DB, task *models.Task) (models.JSONMap, models.JSONMap, error) {
+			if !CanWrite(c, task.AssignedTo) {
+				return nil, nil, errForbidden
+			}
+			before := models.JSONMap{"status": task.Status}
+			task.Status = models.TaskStatusDone
+			after := models.JSONMap{"status": task.Status}
+			return before, after, tx.Save(task).Error
+		})
+	if err != nil {
+		if errors.Is(err, errForbidden) {
+			return utils.Forbidden(c, "Not authorized to update one or more of these tasks")
+		}
+		return utils.Internal(c, "Failed to bulk mark tasks done")
+	}
+	return utils.NoContent(c)
+}
+
+type taskBulkReassignForm struct {
+	IDs        []uint `json:"ids"`
+	AssignedTo *uint  `json:"assigned_to"`
+}
+
+// BulkReassign — PATCH /tasks/bulk-reassign. Same ownership rule as
+// BulkMarkDone above: checks CanWrite against the new assignee (the same
+// check Create makes) up front, since it's identical for every row, then
+// against each task's current assignee (the same check Toggle/Delete make)
+// inside the loop.
+func (h *TaskHandler) BulkReassign(c *fiber.Ctx) error {
+	var form taskBulkReassignForm
+	if err := c.BodyParser(&form); err != nil {
+		return utils.BadRequest(c, "Invalid request body")
+	}
+	if len(form.IDs) == 0 {
+		return utils.ValidationError(c, "ids is required", map[string][]string{"ids": {"required"}})
+	}
+	if !CanWrite(c, form.AssignedTo) {
+		return utils.Forbidden(c, "Cannot assign a task to another sales rep")
+	}
+
+	actorID := middleware.CurrentUserID(c)
+	err := utils.BulkUpdate(h.DB, form.IDs, "task", "bulk_reassigned", actorID,
+		func(tx *gorm.DB, task *models.Task) (models.JSONMap, models.JSONMap, error) {
+			if !CanWrite(c, task.AssignedTo) {
+				return nil, nil, errForbidden
+			}
+			before := models.JSONMap{"assigned_to": task.AssignedTo}
+			task.AssignedTo = form.AssignedTo
+			after := models.JSONMap{"assigned_to": task.AssignedTo}
+			return before, after, tx.Save(task).Error
+		})
+	if err != nil {
+		if errors.Is(err, errForbidden) {
+			return utils.Forbidden(c, "Not authorized to reassign one or more of these tasks")
+		}
+		return utils.Internal(c, "Failed to bulk reassign tasks")
+	}
+	return utils.NoContent(c)
 }
 
 // Delete — DELETE /tasks/:id (hard delete).

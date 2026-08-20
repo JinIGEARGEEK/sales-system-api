@@ -216,6 +216,12 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	tasks := authed.Group("/tasks")
 	tasks.Get("/", taskH.List)
 	tasks.Post("/", taskH.Create)
+	// Not bulkRoles-gated like Deals'/Leads' bulk endpoints — ownership is
+	// enforced per row inside the handlers instead (CanWrite), same as
+	// Toggle/Delete below, since a Sales Rep bulk-acting on their own tasks
+	// is the primary use case for a personal task list.
+	tasks.Patch("/bulk-mark-done", taskH.BulkMarkDone)
+	tasks.Patch("/bulk-reassign", taskH.BulkReassign)
 	tasks.Patch("/:id/toggle", taskH.Toggle)
 	tasks.Delete("/:id", taskH.Delete)
 
