@@ -87,6 +87,22 @@ func (h *DashboardHandler) appSettings() models.AppSettings {
 	return settings
 }
 
+// currentQuarterTarget resolves the actual target to use for THIS calendar
+// quarter's pipeline_coverage_ratio (FR-CRM-092): a SalesTarget row for the
+// current (year, quarter) if an Admin has set one, else the flat
+// AppSettings.QuarterlySalesTarget/4 fallback (today's pre-FR-CRM-092
+// behavior, unchanged for anyone who's never touched the new feature).
+func (h *DashboardHandler) currentQuarterTarget(fallbackAnnual int64) float64 {
+	now := time.Now()
+	quarter := (int(now.Month())-1)/3 + 1
+
+	var target models.SalesTarget
+	if err := h.DB.Where("year = ? AND quarter = ?", now.Year(), quarter).First(&target).Error; err == nil {
+		return float64(target.TargetValue)
+	}
+	return float64(fallbackAnnual) / 4
+}
+
 type annualGoalTrendPoint struct {
 	Label    string  `json:"label"`
 	Actual   float64 `json:"actual"`
@@ -244,11 +260,13 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	// and runs inside that same concurrent block.
 	settings := h.appSettings()
 
-	// These 5 base aggregates plus the 6 breakdown/trend helpers below are all
-	// independent read-only queries against the same filter — run them
-	// concurrently instead of serially so wall-clock time is roughly the
-	// slowest single query, not the sum of all ~11. None of them touch `c`
-	// (or anything else fiber-request-shaped) from here on, only `base` and
+	// These 5 base aggregates plus the 7 breakdown/trend/target helpers below
+	// are all independent read-only queries — run them concurrently instead
+	// of serially so wall-clock time is roughly the slowest single query, not
+	// the sum of all ~12 (currentQuarterTarget's SalesTarget lookup included,
+	// so it's no longer the one query left running after wg.Wait()). None of
+	// them touch `c` (or anything else fiber-request-shaped) from here on,
+	// only `base`/`settings` and
 	// plain values already captured above — see the comment on that.
 	var openPipelineValue, wonValue, avgDealSize, forecastedRevenue float64
 	var openDealsCount, wonCount, lostCount int64
@@ -297,12 +315,13 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	run(func() { industryBreakdown = h.industryBreakdown(base, companyTagSet) })
 	run(func() { teamPerformance = h.teamPerformance(base) })
 	run(func() { annualRevenueTrend = h.annualRevenueTrend(settings.AnnualRevenueGoal) })
+	var quarterlySalesTarget float64
+	run(func() { quarterlySalesTarget = h.currentQuarterTarget(settings.QuarterlySalesTarget) })
 	wg.Wait()
 
-	quarterlySalesTarget := settings.QuarterlySalesTarget
 	pipelineCoverageRatio := 0.0
 	if quarterlySalesTarget > 0 {
-		pipelineCoverageRatio = openPipelineValue / (float64(quarterlySalesTarget) / 4)
+		pipelineCoverageRatio = openPipelineValue / quarterlySalesTarget
 	}
 
 	// annualRevenueActual is the trend's last cumulative point (Jan through
@@ -328,7 +347,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 		"avg_deal_size":                 avgDealSize,
 		"avg_sales_cycle_days":          avgSalesCycleDays,
 		"pipeline_coverage_ratio":       pipelineCoverageRatio,
-		"quarterly_sales_target":        float64(quarterlySalesTarget),
+		"quarterly_sales_target":        quarterlySalesTarget,
 		"annual_revenue_goal":           float64(annualRevenueGoal),
 		"annual_revenue_actual":         annualRevenueActual,
 		"annual_revenue_progress_ratio": annualRevenueProgressRatio,

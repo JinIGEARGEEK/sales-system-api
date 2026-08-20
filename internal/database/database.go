@@ -80,6 +80,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.PipelineStage{},
 		&models.LeadSourceOption{},
 		&models.AppSettings{},
+		&models.SalesTarget{},
 	); err != nil {
 		return err
 	}

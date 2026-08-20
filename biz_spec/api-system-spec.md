@@ -618,6 +618,32 @@ interface AppSettings {
 
 `annual_revenue_goal` (`FR-CRM-091`) has no automatic per-year reset — an Admin is expected to update it manually at the start of each calendar year (`updated_at` above is the intended staleness signal for that). `annual_revenue_trend` in §9 always tracks the **current** calendar year (Jan through the current month) regardless of when the goal was last set.
 
+### 8.7 Per-quarter Sales Targets (`FR-CRM-092`)
+
+`quarterly_sales_target` (§8.6) is one flat annual figure, always divided by 4 for "whatever quarter it is right now" — fine until an Admin wants to set a *different* target for a specific quarter (e.g. a higher Q4 push, or pre-setting next year's Q1 before this year ends). `SalesTarget` is a row-per-`(year, quarter)` table that overrides the flat fallback for its own period only — purely additive: a quarter with no row just falls back to `quarterly_sales_target / 4`, so nothing changes for an Admin who never touches this.
+
+```ts
+interface SalesTarget {
+  id: number
+  year: number
+  quarter: number       // 1-4
+  target_value: number  // the true quarterly figure — NOT divided by 4 the way quarterly_sales_target is
+  created_at: string
+  updated_at: string
+  created_by: number | null
+  updated_by: number | null
+}
+```
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/admin/sales-targets` | Admin | Filter: `year`. Returns every row (optionally scoped to one year), ordered oldest-to-newest. |
+| `POST` | `/admin/sales-targets` | Admin | Body: `{ year: number, quarter: number, target_value: number }`. `quarter` must be 1–4, `year` a plausible calendar year, `target_value >= 0` and required. One row per `(year, quarter)` — a second `POST` for an already-targeted period is a `422` pointing the caller at `PATCH` instead. |
+| `PATCH` | `/admin/sales-targets/:id` | Admin | Same body/validation as `POST`. Moving a row's `(year, quarter)` onto another existing row's period is rejected the same way. |
+| `DELETE` | `/admin/sales-targets/:id` | Admin | Reverts that period back to the flat `quarterly_sales_target / 4` fallback — safe and reversible (re-`POST` the same period to restore the override). |
+
+Every write here also invalidates `GET /dashboard/summary`'s response cache (§9) — a `SalesTarget` change affects `pipeline_coverage_ratio`/`quarterly_sales_target` without ever touching the `deals` table, so nothing else would surface the change promptly otherwise.
+
 ---
 
 ## 9. Dashboard / reporting aggregates
@@ -656,7 +682,7 @@ Response shape (one object covering every widget on `pages/index.vue`):
 }
 ```
 
-`quarterly_sales_target` (`FR-CRM-058`) and `annual_revenue_goal`/`annual_revenue_actual`/`annual_revenue_progress_ratio`/`annual_revenue_trend` (`FR-CRM-091`) are Admin-configurable via `PATCH /admin/settings` — see §8.6. `annual_revenue_trend`'s `actual` is a running cumulative total through each month (not that month's own delta); `goal_pace` is a straight-line `annual_revenue_goal × months_elapsed / 12` for the same point, letting the frontend chart whether the company is ahead of or behind pace, not just infer it from today's single ratio. Both `revenue_trend`/`forecast_trend` and `annual_revenue_trend` deliberately ignore this endpoint's own `business_unit`/`channel`/`date_from`/`date_to` filters (fixed trailing-6-months and fixed calendar-year views respectively, not filtered slices) — only the top-level stat cards and `stage_breakdown`/`industry_breakdown`/`team_performance` respect them.
+`quarterly_sales_target` (`FR-CRM-058`) and `annual_revenue_goal`/`annual_revenue_actual`/`annual_revenue_progress_ratio`/`annual_revenue_trend` (`FR-CRM-091`) are Admin-configurable via `PATCH /admin/settings` — see §8.6. `quarterly_sales_target`'s value resolves through §8.7's per-quarter override first (a `SalesTarget` row for the current `(year, quarter)`, if an Admin has set one) before falling back to `quarterly_sales_target(annual) / 4` — this response field always reports whichever one actually applies to the current quarter, not the raw annual figure. `annual_revenue_trend`'s `actual` is a running cumulative total through each month (not that month's own delta); `goal_pace` is a straight-line `annual_revenue_goal × months_elapsed / 12` for the same point, letting the frontend chart whether the company is ahead of or behind pace, not just infer it from today's single ratio. Both `revenue_trend`/`forecast_trend` and `annual_revenue_trend` deliberately ignore this endpoint's own `business_unit`/`channel`/`date_from`/`date_to` filters (fixed trailing-6-months and fixed calendar-year views respectively, not filtered slices) — only the top-level stat cards and `stage_breakdown`/`industry_breakdown`/`team_performance` respect them.
 
 ---
 
