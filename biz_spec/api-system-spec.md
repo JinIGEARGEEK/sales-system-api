@@ -477,6 +477,8 @@ interface Task {
 | `GET` | `/tasks` | 🟢 | Filters: `related_type`+`related_id`, `status`, `assigned_to`. `status=pending` powers the dashboard's "Upcoming Follow-ups" widget across all related records — support that query without requiring `related_type`/`related_id`. |
 | `POST` | `/tasks` | 🟢 | Create. |
 | `PATCH` | `/tasks/:id/toggle` | 🟢 | Flips `pending`⇄`done` — mirrors `stores/tasks.ts`'s `toggleDone`. |
+| `PATCH` | `/tasks/bulk-mark-done` | 🟢 | Body: `{ ids: number[] }`. `FR-CRM-032`'s bulk mark-done on the all-tasks page. Unlike Deal/Lead bulk endpoints (Admin/Sales-Manager only), this is open to every authenticated role — ownership is enforced per row (the same `assigned_to`-or-unassigned rule `PATCH /tasks/:id/toggle` uses), since a Sales Rep bulk-clearing their own backlog is the primary use case. A forbidden row rolls back the whole call — no partial apply. |
+| `PATCH` | `/tasks/bulk-reassign` | 🟢 | Body: `{ ids: number[], assigned_to: number \| null }`. Same per-row ownership rule as above, checked against both the new assignee (once, up front) and each task's current assignee (per row) — a Sales Rep may bulk-reassign their own tasks to themselves/unassigned, not to a different rep. |
 | `DELETE` | `/tasks/:id` | 🟢 | Delete. |
 | — | *(reminder notifications)* | 🔜 | `FR-CRM-032`'s "notification on due" — no delivery mechanism (email/push) exists in the frontend; needs a scheduled job + `/6` integrations, out of scope for this v1 endpoint list. |
 
