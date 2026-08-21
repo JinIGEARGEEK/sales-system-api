@@ -20,10 +20,15 @@ import "time"
 // staleness hint is the cheapest guard against a stale number quietly
 // surviving into a new year unnoticed.
 type AppSettings struct {
-	ID                   uint      `gorm:"primaryKey" json:"id"`
-	QuarterlySalesTarget int64     `gorm:"not null;default:3000000" json:"quarterly_sales_target"`
-	AnnualRevenueGoal    int64     `gorm:"not null;default:12000000" json:"annual_revenue_goal"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	ID                   uint  `gorm:"primaryKey" json:"id"`
+	QuarterlySalesTarget int64 `gorm:"not null;default:3000000" json:"quarterly_sales_target"`
+	AnnualRevenueGoal    int64 `gorm:"not null;default:12000000" json:"annual_revenue_goal"`
+	// LeadScoringMqlThreshold — FR-CRM-007: a Lead whose computed Score meets
+	// or exceeds this value is classified "mql". Lives here rather than a new
+	// singleton table since it's one more Admin-tunable number, same shape as
+	// the two fields above.
+	LeadScoringMqlThreshold int       `gorm:"not null;default:50" json:"lead_scoring_mql_threshold"`
+	UpdatedAt               time.Time `json:"updated_at"`
 }
 
 func (AppSettings) TableName() string { return "app_settings" }
@@ -31,7 +36,8 @@ func (AppSettings) TableName() string { return "app_settings" }
 // DefaultAppSettings is the seed row inserted on first run if app_settings is
 // empty — mirrors DefaultPipelineStages/DefaultLeadSourceOptions.
 var DefaultAppSettings = AppSettings{
-	ID:                   1,
-	QuarterlySalesTarget: 3000000,
-	AnnualRevenueGoal:    12000000,
+	ID:                      1,
+	QuarterlySalesTarget:    3000000,
+	AnnualRevenueGoal:       12000000,
+	LeadScoringMqlThreshold: 50,
 }

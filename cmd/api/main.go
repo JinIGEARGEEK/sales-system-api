@@ -44,6 +44,7 @@ func main() {
 
 	seedAdmin(db)
 	seedPipelineConfig(db)
+	seedLeadScoringCriteria(db)
 	seedAppSettings(db)
 
 	app := fiber.New(fiber.Config{
@@ -66,6 +67,7 @@ func main() {
 	// Background job: emails a Task's assignee once its due date has passed.
 	// Safe to run even without SMTP configured — see internal/utils/mailer.go.
 	notifier.StartTaskDueReminders(db, cfg)
+	notifier.StartWorkflowRuleReminders(db, cfg)
 
 	log.Fatal(app.Listen(":" + cfg.Port))
 }
@@ -147,6 +149,19 @@ func seedPipelineConfig(db *gorm.DB) {
 			log.Fatalf("failed to seed default lead sources: %v", err)
 		}
 		log.Printf("Seeded %d default lead sources", len(models.DefaultLeadSourceOptions))
+	}
+}
+
+// seedLeadScoringCriteria inserts the default LeadScoringCriterion rows if
+// the table is empty, same first-run-only idiom as seedPipelineConfig above.
+func seedLeadScoringCriteria(db *gorm.DB) {
+	var count int64
+	db.Model(&models.LeadScoringCriterion{}).Count(&count)
+	if count == 0 {
+		if err := db.Create(&models.DefaultLeadScoringCriteria).Error; err != nil {
+			log.Fatalf("failed to seed default lead scoring criteria: %v", err)
+		}
+		log.Printf("Seeded %d default lead scoring criteria", len(models.DefaultLeadScoringCriteria))
 	}
 }
 

@@ -576,3 +576,174 @@ func (h *ReportHandler) ProjectsAtRisk(c *fiber.Ctx) error {
 	}
 	return utils.OK(c, result)
 }
+
+// stageTransition is one "deal" stage_changed audit_log_entries row, scanned
+// directly off the jsonb before/after columns (models.JSONMap unmarshals a
+// jsonb column into map[string]interface{}, so string fields like "stage"/
+// "status" come back as plain Go strings via a .(string) assertion below).
+type stageTransition struct {
+	DealID    uint
+	Before    models.JSONMap
+	After     models.JSONMap
+	CreatedAt time.Time
+}
+
+type sisAgg struct {
+	TotalDays float64
+	Count     int
+}
+
+func (a *sisAgg) add(days float64) {
+	a.TotalDays += days
+	a.Count++
+}
+
+func (a sisAgg) avgDays() float64 {
+	if a.Count == 0 {
+		return 0
+	}
+	return a.TotalDays / float64(a.Count)
+}
+
+type salesCycleBucketRow struct {
+	Key     string  `json:"key"`
+	AvgDays float64 `json:"avg_days"`
+	Count   int     `json:"count"`
+}
+
+// fetchSalesCycle — FR-CRM-099, extending FR-CRM-057's single running
+// average with a breakdown by pipeline stage / Sales Rep / Lead source.
+// Time-in-stage is derived entirely from "deal" stage_changed audit log
+// entries (internal/handlers/deals.go's UpdateStage — the only place that
+// writes them), walking each Deal's entries in order and measuring the gap
+// between consecutive transitions (and from Deal.CreatedAt to the first
+// transition). Only *completed* stage segments are counted — the Deal's
+// current, still-open stage has no end timestamp yet, so including it would
+// bias the average toward whatever's sitting in pipeline right now.
+//
+// Deals with no stage_changed entries at all (never moved since creation)
+// contribute nothing to by-stage/by-rep/by-source, same reasoning.
+func (h *ReportHandler) fetchSalesCycle(assignedTo, dateFrom, dateTo string) (fiber.Map, error) {
+	dealQuery := h.DB.Model(&models.Deal{})
+	if assignedTo != "" {
+		dealQuery = dealQuery.Where("assigned_to = ?", assignedTo)
+	}
+	if dateFrom != "" {
+		dealQuery = dealQuery.Where("created_at >= ?", dateFrom)
+	}
+	if dateTo != "" {
+		dealQuery = dealQuery.Where("created_at <= ?", dateTo)
+	}
+	var deals []models.Deal
+	if err := dealQuery.Find(&deals).Error; err != nil {
+		return nil, err
+	}
+	dealByID := make(map[uint]models.Deal, len(deals))
+	for _, d := range deals {
+		dealByID[d.ID] = d
+	}
+
+	var transitions []stageTransition
+	if err := h.DB.Table("audit_log_entries").
+		Select("entity_id as deal_id, before, after, created_at").
+		Where("entity_type = ? AND action = ?", "deal", "stage_changed").
+		Order("entity_id ASC, created_at ASC").
+		Scan(&transitions).Error; err != nil {
+		return nil, err
+	}
+
+	transitionsByDeal := map[uint][]stageTransition{}
+	for _, t := range transitions {
+		if _, ok := dealByID[t.DealID]; !ok {
+			continue // excluded by the assigned_to/date_range filter above
+		}
+		transitionsByDeal[t.DealID] = append(transitionsByDeal[t.DealID], t)
+	}
+
+	byStage := map[string]*sisAgg{}
+	byRep := map[string]*sisAgg{}
+	bySource := map[string]*sisAgg{}
+	addAll := func(stage string, rep string, source string, days float64) {
+		if days < 0 {
+			return // clock skew / bad data guard, never expected in practice
+		}
+		for key, m := range map[string]map[string]*sisAgg{stage: byStage, rep: byRep, source: bySource} {
+			if key == "" {
+				continue
+			}
+			a, ok := m[key]
+			if !ok {
+				a = &sisAgg{}
+				m[key] = a
+			}
+			a.add(days)
+		}
+	}
+
+	cycleTotalDays, closedDealCount := 0.0, 0
+
+	for dealID, dealTransitions := range transitionsByDeal {
+		deal := dealByID[dealID]
+		repKey := ""
+		if deal.AssignedTo != nil {
+			repKey = strconv.FormatUint(uint64(*deal.AssignedTo), 10)
+		}
+
+		prevTime := deal.CreatedAt
+		prevStage, _ := dealTransitions[0].Before["stage"].(string)
+
+		var closedAt time.Time
+		for _, t := range dealTransitions {
+			days := t.CreatedAt.Sub(prevTime).Hours() / 24
+			addAll(prevStage, repKey, string(deal.Channel), days)
+
+			if status, ok := t.After["status"].(string); ok &&
+				(deal.Status == models.DealStatusWon || deal.Status == models.DealStatusLost) &&
+				status == string(deal.Status) {
+				closedAt = t.CreatedAt
+			}
+
+			prevTime = t.CreatedAt
+			if s, ok := t.After["stage"].(string); ok {
+				prevStage = s
+			}
+		}
+
+		if !closedAt.IsZero() {
+			cycleTotalDays += closedAt.Sub(deal.CreatedAt).Hours() / 24
+			closedDealCount++
+		}
+	}
+
+	toRows := func(m map[string]*sisAgg) []salesCycleBucketRow {
+		rows := make([]salesCycleBucketRow, 0, len(m))
+		for k, a := range m {
+			rows = append(rows, salesCycleBucketRow{Key: k, AvgDays: a.avgDays(), Count: a.Count})
+		}
+		sort.Slice(rows, func(i, j int) bool { return rows[i].Key < rows[j].Key })
+		return rows
+	}
+
+	avgCycleDays := 0.0
+	if closedDealCount > 0 {
+		avgCycleDays = cycleTotalDays / float64(closedDealCount)
+	}
+
+	return fiber.Map{
+		"by_stage":             toRows(byStage),
+		"by_rep":               toRows(byRep),
+		"by_source":            toRows(bySource),
+		"avg_sales_cycle_days": avgCycleDays,
+		"closed_deal_count":    closedDealCount,
+	}, nil
+}
+
+// SalesCycle — GET /reports/sales-cycle?assigned_to=&date_from=&date_to=
+// (Sales Manager/Admin, route-gated). FR-CRM-099.
+func (h *ReportHandler) SalesCycle(c *fiber.Ctx) error {
+	result, err := h.fetchSalesCycle(c.Query("assigned_to"), c.Query("date_from"), c.Query("date_to"))
+	if err != nil {
+		return utils.Internal(c, "Failed to compute sales cycle report")
+	}
+	return utils.OK(c, result)
+}

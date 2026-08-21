@@ -79,6 +79,9 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.Attachment{},
 		&models.PipelineStage{},
 		&models.LeadSourceOption{},
+		&models.LeadScoringCriterion{},
+		&models.NotificationRule{},
+		&models.NotificationLog{},
 		&models.AppSettings{},
 		&models.SalesTarget{},
 	); err != nil {

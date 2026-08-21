@@ -38,6 +38,20 @@ type Lead struct {
 	// ConvertedDealID is set once this Lead has been converted into a Deal
 	// (nil = not yet converted). Prevents double-conversion.
 	ConvertedDealID *uint `gorm:"index" json:"converted_deal_id"`
+	// Score/Classification — FR-CRM-006/007. Score is the sum of matching
+	// active LeadScoringCriterion weights, recomputed on Create/Update.
+	// Classification is derived from Score vs AppSettings.LeadScoringMqlThreshold
+	// ("mql"), or set manually by a rep to "sql"; "none" below threshold.
+	Score          int    `gorm:"not null;default:0" json:"score"`
+	Classification string `gorm:"type:varchar(16);not null;default:'none';index" json:"classification"`
 }
+
+const (
+	LeadClassificationNone LeadClassification = "none"
+	LeadClassificationMQL  LeadClassification = "mql"
+	LeadClassificationSQL  LeadClassification = "sql"
+)
+
+type LeadClassification string
 
 func (Lead) TableName() string { return "leads" }

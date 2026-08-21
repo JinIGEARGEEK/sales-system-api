@@ -60,6 +60,9 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	attachmentH := handlers.NewAttachmentHandler(db)
 	pipelineStageH := handlers.NewPipelineStageHandler(db)
 	leadSourceH := handlers.NewLeadSourceHandler(db)
+	leadScoringCriteriaH := handlers.NewLeadScoringCriteriaHandler(db)
+	notificationRuleH := handlers.NewNotificationRuleHandler(db)
+	notificationLogH := handlers.NewNotificationLogHandler(db)
 	settingsH := handlers.NewSettingsHandler(db)
 	salesTargetH := handlers.NewSalesTargetHandler(db)
 
@@ -260,6 +263,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	reports.Get("/contracts-stuck/export", reportH.ContractsStuckExport)
 	reports.Get("/projects-at-risk", reportH.ProjectsAtRisk)
 	reports.Get("/projects-at-risk/export", reportH.ProjectsAtRiskExport)
+	reports.Get("/sales-cycle", reportH.SalesCycle)
 
 	// Audit log — Admin only, read-only (NFR-007).
 	authed.Get("/audit-log", adminOnly, auditLogH.List)
@@ -277,6 +281,24 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	leadSources.Post("/", leadSourceH.Create)
 	leadSources.Patch("/:id", leadSourceH.Update)
 	leadSources.Delete("/:id", leadSourceH.Delete)
+
+	// Lead scoring criteria — Admin-only config, FR-CRM-006.
+	leadScoringCriteria := authed.Group("/admin/lead-scoring-criteria", adminOnly)
+	leadScoringCriteria.Get("/", leadScoringCriteriaH.List)
+	leadScoringCriteria.Post("/", leadScoringCriteriaH.Create)
+	leadScoringCriteria.Patch("/:id", leadScoringCriteriaH.Update)
+	leadScoringCriteria.Delete("/:id", leadScoringCriteriaH.Delete)
+
+	// Workflow notification rules — Admin-only config, FR-CRM-100/101/102.
+	notificationRules := authed.Group("/admin/notification-rules", adminOnly)
+	notificationRules.Get("/", notificationRuleH.List)
+	notificationRules.Post("/", notificationRuleH.Create)
+	notificationRules.Patch("/:id", notificationRuleH.Update)
+	notificationRules.Delete("/:id", notificationRuleH.Delete)
+
+	// Recent rule firings, in-app — any authenticated role; per-row CanWrite
+	// scoping happens inside the handler, not via adminOnly/RequireRoles.
+	authed.Get("/notification-log", notificationLogH.List)
 
 	// App settings (e.g. quarterly sales quota) — Admin-only config,
 	// FR-CRM-058.

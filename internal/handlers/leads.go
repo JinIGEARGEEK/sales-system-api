@@ -85,6 +85,11 @@ type leadForm struct {
 	Status      models.LeadStatus `json:"status"`
 	Notes       string            `json:"notes"`
 	AssignedTo  *uint             `json:"assigned_to"`
+	// Classification — FR-CRM-007. Only "sql" is honored as an explicit
+	// manual override (a rep marking a Lead "sales-ready"); any other value
+	// (including empty) falls back to the auto-computed mql/none result from
+	// computeAndClassify, so a client can't accidentally set "mql" directly.
+	Classification models.LeadClassification `json:"classification"`
 }
 
 // Create — POST /leads.
@@ -127,10 +132,71 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 	if lead.Status == "" {
 		lead.Status = models.LeadStatusNew
 	}
+	if err := h.computeAndClassify(&lead, form.Classification); err != nil {
+		return utils.Internal(c, "Failed to score lead")
+	}
 	if err := h.DB.Create(&lead).Error; err != nil {
 		return utils.Internal(c, "Failed to create lead")
 	}
 	return utils.Created(c, lead)
+}
+
+// computeLeadScore sums the Weight of every active LeadScoringCriterion that
+// matches this Lead (FR-CRM-006). Unknown Field values never match — new
+// match fields are additive, not something existing rows accidentally start
+// matching.
+func (h *LeadHandler) computeLeadScore(lead models.Lead) (int, error) {
+	var criteria []models.LeadScoringCriterion
+	if err := h.DB.Where("is_active = ?", true).Find(&criteria).Error; err != nil {
+		return 0, err
+	}
+	score := 0
+	for _, cr := range criteria {
+		switch cr.Field {
+		case "source":
+			if string(lead.Source) == cr.MatchValue {
+				score += cr.Weight
+			}
+		case "has_company_name":
+			if lead.CompanyName != "" {
+				score += cr.Weight
+			}
+		case "has_phone":
+			if lead.Phone != "" {
+				score += cr.Weight
+			}
+		}
+	}
+	return score, nil
+}
+
+// computeAndClassify recomputes lead.Score and sets lead.Classification —
+// FR-CRM-006/007. manualClassification lets a caller explicitly mark a Lead
+// "sql" (sales-ready); any other value defers to the auto mql/none result
+// against AppSettings.LeadScoringMqlThreshold.
+func (h *LeadHandler) computeAndClassify(lead *models.Lead, manualClassification models.LeadClassification) error {
+	score, err := h.computeLeadScore(*lead)
+	if err != nil {
+		return err
+	}
+	lead.Score = score
+
+	if manualClassification == models.LeadClassificationSQL {
+		lead.Classification = string(models.LeadClassificationSQL)
+		return nil
+	}
+
+	threshold := models.DefaultAppSettings.LeadScoringMqlThreshold
+	var settings models.AppSettings
+	if err := h.DB.First(&settings, 1).Error; err == nil {
+		threshold = settings.LeadScoringMqlThreshold
+	}
+	if score >= threshold {
+		lead.Classification = string(models.LeadClassificationMQL)
+	} else {
+		lead.Classification = string(models.LeadClassificationNone)
+	}
+	return nil
 }
 
 // pickAutoAssignee implements round-robin lead assignment via a stateless
@@ -233,6 +299,20 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 
 	lead.Name, lead.CompanyName, lead.Email, lead.Phone = form.Name, form.CompanyName, form.Email, form.Phone
 	lead.Source, lead.Status, lead.Notes, lead.AssignedTo = form.Source, form.Status, form.Notes, form.AssignedTo
+
+	// A general-purpose Update PUT doesn't necessarily resend classification
+	// (most fields, like a status/notes edit, have nothing to do with it), so
+	// treat an omitted classification as "leave the manual sql override as it
+	// was" rather than letting it fall through to computeAndClassify's
+	// auto-recompute and silently downgrade a Lead a rep already marked
+	// sales-ready. An explicit "sql" in the form still always wins.
+	manualClassification := form.Classification
+	if manualClassification == "" && models.LeadClassification(lead.Classification) == models.LeadClassificationSQL {
+		manualClassification = models.LeadClassificationSQL
+	}
+	if err := h.computeAndClassify(&lead, manualClassification); err != nil {
+		return utils.Internal(c, "Failed to score lead")
+	}
 
 	if err := h.DB.Save(&lead).Error; err != nil {
 		return utils.Internal(c, "Failed to update lead")

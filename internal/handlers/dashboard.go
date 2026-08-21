@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"math"
 	"sync"
 	"time"
 
@@ -254,6 +255,10 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	// filter into gorm clauses synchronously right here; companyTagSet is the
 	// one extra bit industryBreakdown needs to avoid double-joining companies.
 	companyTagSet := c.Query("company_tag") != ""
+	// Same up-front-synchronous-read rule as companyTagSet above — fetchSalesCycle
+	// (called from a goroutine below) only takes plain strings, not `c`, for
+	// exactly this reason.
+	assignedTo, dateFrom, dateTo := c.Query("assigned_to"), c.Query("date_from"), c.Query("date_to")
 
 	// Loaded synchronously up front (one cheap query) rather than after
 	// wg.Wait() below, since annualRevenueTrend needs settings.AnnualRevenueGoal
@@ -317,6 +322,19 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	run(func() { annualRevenueTrend = h.annualRevenueTrend(settings.AnnualRevenueGoal) })
 	var quarterlySalesTarget float64
 	run(func() { quarterlySalesTarget = h.currentQuarterTarget(settings.QuarterlySalesTarget) })
+	// FR-CRM-099's report computation, reused here rather than duplicated —
+	// only assigned_to/date_from/date_to are honored (business_unit/channel/
+	// company_tag are not, same as annual_revenue_actual's precedent of not
+	// applying every dashboard filter to every figure). A query error just
+	// leaves this at 0 rather than failing the whole dashboard summary.
+	var avgSalesCycleDaysRaw float64
+	run(func() {
+		if result, err := (&ReportHandler{DB: h.DB}).fetchSalesCycle(assignedTo, dateFrom, dateTo); err == nil {
+			if v, ok := result["avg_sales_cycle_days"].(float64); ok {
+				avgSalesCycleDaysRaw = v
+			}
+		}
+	})
 	wg.Wait()
 
 	pipelineCoverageRatio := 0.0
@@ -334,9 +352,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 		annualRevenueProgressRatio = annualRevenueActual / float64(annualRevenueGoal)
 	}
 
-	// avg_sales_cycle_days: no stage-transition timestamps are tracked yet, so
-	// this is left at 0 until that data exists.
-	avgSalesCycleDays := 0
+	avgSalesCycleDays := int(math.Round(avgSalesCycleDaysRaw))
 
 	body := fiber.Map{
 		"open_pipeline_value":           openPipelineValue,

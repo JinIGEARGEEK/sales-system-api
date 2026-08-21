@@ -40,8 +40,9 @@ func (h *SettingsHandler) Get(c *fiber.Ctx) error {
 }
 
 type settingsForm struct {
-	QuarterlySalesTarget *int64 `json:"quarterly_sales_target"`
-	AnnualRevenueGoal    *int64 `json:"annual_revenue_goal"`
+	QuarterlySalesTarget    *int64 `json:"quarterly_sales_target"`
+	AnnualRevenueGoal       *int64 `json:"annual_revenue_goal"`
+	LeadScoringMqlThreshold *int64 `json:"lead_scoring_mql_threshold"`
 }
 
 // requireNonNegative validates one required *int64 form field, writing the
@@ -85,15 +86,27 @@ func (h *SettingsHandler) Update(c *fiber.Ctx) error {
 	if !requireNonNegative(c, "annual_revenue_goal", form.AnnualRevenueGoal) {
 		return nil
 	}
+	// Unlike the two fields above, lead_scoring_mql_threshold is optional on
+	// PATCH: it was added after quarterly_sales_target/annual_revenue_goal
+	// were already an established "both required" pair, and existing clients
+	// (and this handler's own pre-existing tests) PATCH those two without
+	// knowing this field exists. Omitting it just leaves the current value
+	// in place instead of 422ing every settings PATCH that predates it.
+	if form.LeadScoringMqlThreshold != nil && *form.LeadScoringMqlThreshold < 0 {
+		return utils.ValidationError(c, "lead_scoring_mql_threshold must be non-negative", map[string][]string{"lead_scoring_mql_threshold": {"must be >= 0"}})
+	}
 
-	oldQuarterlyTarget, oldAnnualGoal := settings.QuarterlySalesTarget, settings.AnnualRevenueGoal
-	before := models.JSONMap{"quarterly_sales_target": oldQuarterlyTarget, "annual_revenue_goal": oldAnnualGoal}
+	oldQuarterlyTarget, oldAnnualGoal, oldMqlThreshold := settings.QuarterlySalesTarget, settings.AnnualRevenueGoal, settings.LeadScoringMqlThreshold
+	before := models.JSONMap{"quarterly_sales_target": oldQuarterlyTarget, "annual_revenue_goal": oldAnnualGoal, "lead_scoring_mql_threshold": oldMqlThreshold}
 
 	settings.QuarterlySalesTarget = *form.QuarterlySalesTarget
 	settings.AnnualRevenueGoal = *form.AnnualRevenueGoal
-	after := models.JSONMap{"quarterly_sales_target": settings.QuarterlySalesTarget, "annual_revenue_goal": settings.AnnualRevenueGoal}
+	if form.LeadScoringMqlThreshold != nil {
+		settings.LeadScoringMqlThreshold = int(*form.LeadScoringMqlThreshold)
+	}
+	after := models.JSONMap{"quarterly_sales_target": settings.QuarterlySalesTarget, "annual_revenue_goal": settings.AnnualRevenueGoal, "lead_scoring_mql_threshold": settings.LeadScoringMqlThreshold}
 
-	changed := oldQuarterlyTarget != settings.QuarterlySalesTarget || oldAnnualGoal != settings.AnnualRevenueGoal
+	changed := oldQuarterlyTarget != settings.QuarterlySalesTarget || oldAnnualGoal != settings.AnnualRevenueGoal || oldMqlThreshold != settings.LeadScoringMqlThreshold
 	err = utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error { return tx.Save(&settings).Error },
 		changed, "settings", settings.ID, "updated", before, after, middleware.CurrentUserID(c))
 	if err != nil {
