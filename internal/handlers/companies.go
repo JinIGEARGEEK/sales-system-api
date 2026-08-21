@@ -56,6 +56,12 @@ func (h *CompanyHandler) Create(c *fiber.Ctx) error {
 	if form.Name == "" {
 		return utils.ValidationError(c, "name is required", map[string][]string{"name": {"required"}})
 	}
+	if !utils.IsActiveIndustry(h.DB, form.Industry) {
+		return utils.ValidationError(c, "industry is not a valid active industry", map[string][]string{"industry": {"invalid"}})
+	}
+	if !utils.IsActiveCompanySize(h.DB, form.Size) {
+		return utils.ValidationError(c, "size is not a valid active company size", map[string][]string{"size": {"invalid"}})
+	}
 
 	actorID := middleware.CurrentUserID(c)
 	company := models.Company{
@@ -95,6 +101,12 @@ func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 	var form companyForm
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
+	}
+	if !utils.IsActiveIndustry(h.DB, form.Industry) {
+		return utils.ValidationError(c, "industry is not a valid active industry", map[string][]string{"industry": {"invalid"}})
+	}
+	if !utils.IsActiveCompanySize(h.DB, form.Size) {
+		return utils.ValidationError(c, "size is not a valid active company size", map[string][]string{"size": {"invalid"}})
 	}
 
 	company.Name, company.Industry, company.Size, company.Website = form.Name, form.Industry, form.Size, form.Website

@@ -53,6 +53,9 @@ func (h *ProductHandler) Create(c *fiber.Ctx) error {
 	if form.Name == "" {
 		return utils.ValidationError(c, "name is required", map[string][]string{"name": {"required"}})
 	}
+	if !utils.IsActiveProductCategory(h.DB, form.Category) {
+		return utils.ValidationError(c, "category is not a valid active product category", map[string][]string{"category": {"invalid"}})
+	}
 
 	actorID := middleware.CurrentUserID(c)
 	product := models.Product{Name: form.Name, Category: form.Category, Description: form.Description, Price: form.Price, IsActive: true}
@@ -82,6 +85,9 @@ func (h *ProductHandler) Update(c *fiber.Ctx) error {
 	}
 	if form.Name == "" {
 		return utils.ValidationError(c, "name is required", map[string][]string{"name": {"required"}})
+	}
+	if !utils.IsActiveProductCategory(h.DB, form.Category) {
+		return utils.ValidationError(c, "category is not a valid active product category", map[string][]string{"category": {"invalid"}})
 	}
 
 	product.Name = form.Name
@@ -170,6 +176,9 @@ func (h *ProductHandler) AddForCompany(c *fiber.Ctx) error {
 	if form.ProductID == 0 {
 		return utils.ValidationError(c, "product_id is required", map[string][]string{"product_id": {"required"}})
 	}
+	if !models.IsValidCustomerProductStatus(form.Status) {
+		return utils.ValidationError(c, "status is invalid", map[string][]string{"status": {"invalid"}})
+	}
 
 	actorID := middleware.CurrentUserID(c)
 	record := models.CustomerProduct{
@@ -208,6 +217,9 @@ func (h *ProductHandler) UpdateCustomerProduct(c *fiber.Ctx) error {
 	var form customerProductUpdateForm
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
+	}
+	if !models.IsValidCustomerProductStatus(form.Status) {
+		return utils.ValidationError(c, "status is invalid", map[string][]string{"status": {"invalid"}})
 	}
 
 	if form.Status != "" {

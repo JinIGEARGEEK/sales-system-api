@@ -28,6 +28,18 @@ const (
 	BusinessUnitProduct BusinessUnit = "Product"
 )
 
+// IsValidBusinessUnit reports whether bu is nil (BusinessUnit is optional) or
+// one of the two fixed values above — this is a small, structural
+// classification tied into business_unit_item's own behavior, not an
+// open-ended categorization list, so it gets simple const-set validation
+// like LostReason rather than an Admin-configurable option table.
+func IsValidBusinessUnit(bu *BusinessUnit) bool {
+	if bu == nil {
+		return true
+	}
+	return *bu == BusinessUnitProject || *bu == BusinessUnitProduct
+}
+
 // LostReason is the required-when-Lost reason code for a Deal (Part of the
 // probability/lost-reason forecast feature).
 type LostReason string

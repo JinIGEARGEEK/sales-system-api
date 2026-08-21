@@ -71,6 +71,9 @@ func (h *ContactHandler) Create(c *fiber.Ctx) error {
 			"name":       {"required"},
 		})
 	}
+	if !utils.IsActiveJobTitle(h.DB, form.RoleTitle) {
+		return utils.ValidationError(c, "role_title is not a valid active job title", map[string][]string{"role_title": {"invalid"}})
+	}
 
 	actorID := middleware.CurrentUserID(c)
 	contact := models.Contact{
@@ -108,6 +111,9 @@ func (h *ContactHandler) Update(c *fiber.Ctx) error {
 	var form contactForm
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
+	}
+	if !utils.IsActiveJobTitle(h.DB, form.RoleTitle) {
+		return utils.ValidationError(c, "role_title is not a valid active job title", map[string][]string{"role_title": {"invalid"}})
 	}
 
 	if form.CompanyID != 0 {

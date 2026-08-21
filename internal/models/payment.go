@@ -11,6 +11,25 @@ const (
 	PaymentMethodOther    PaymentMethod = "other"
 )
 
+// ValidPaymentMethods lists every accepted PaymentMethod value, for
+// handler-layer validation — a fixed accounting-category enum, not an
+// open-ended list.
+var ValidPaymentMethods = []PaymentMethod{
+	PaymentMethodCash, PaymentMethodTransfer, PaymentMethodCard, PaymentMethodOther,
+}
+
+func IsValidPaymentMethod(m PaymentMethod) bool {
+	if m == "" {
+		return true
+	}
+	for _, v := range ValidPaymentMethods {
+		if v == m {
+			return true
+		}
+	}
+	return false
+}
+
 // Payment — api-system-spec.md §7.5.
 type Payment struct {
 	HardDeleteModel

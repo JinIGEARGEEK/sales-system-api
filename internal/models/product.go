@@ -23,6 +23,25 @@ const (
 	CustomerProductChurned    CustomerProductStatus = "Churned"
 )
 
+// ValidCustomerProductStatuses lists every accepted CustomerProductStatus
+// value, for handler-layer validation — this is a fixed lifecycle enum
+// (mirrors LostReason), not an open-ended categorization list.
+var ValidCustomerProductStatuses = []CustomerProductStatus{
+	CustomerProductInterested, CustomerProductTrial, CustomerProductActive, CustomerProductChurned,
+}
+
+func IsValidCustomerProductStatus(s CustomerProductStatus) bool {
+	if s == "" {
+		return true
+	}
+	for _, v := range ValidCustomerProductStatuses {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 // CustomerProduct — api-system-spec.md §8.2.
 type CustomerProduct struct {
 	AuditedModel

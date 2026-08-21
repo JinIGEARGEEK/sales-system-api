@@ -30,6 +30,53 @@ func IsActiveLeadSource(db *gorm.DB, name string) bool {
 	return count > 0
 }
 
+// IsActiveIndustry reports whether name matches an active IndustryOption
+// row — the DB-backed replacement for the old frontend-only INDUSTRY_OPTIONS
+// whitelist. Empty name is allowed through (Industry has no NOT NULL
+// constraint at the DB level).
+func IsActiveIndustry(db *gorm.DB, name string) bool {
+	if name == "" {
+		return true
+	}
+	var count int64
+	db.Model(&models.IndustryOption{}).Where("name = ? AND is_active = ?", name, true).Count(&count)
+	return count > 0
+}
+
+// IsActiveCompanySize reports whether name matches an active
+// CompanySizeOption row. Empty name is allowed through — Size is optional.
+func IsActiveCompanySize(db *gorm.DB, name string) bool {
+	if name == "" {
+		return true
+	}
+	var count int64
+	db.Model(&models.CompanySizeOption{}).Where("name = ? AND is_active = ?", name, true).Count(&count)
+	return count > 0
+}
+
+// IsActiveJobTitle reports whether name matches an active JobTitleOption
+// row. Empty name is allowed through — Contact.RoleTitle is optional.
+func IsActiveJobTitle(db *gorm.DB, name string) bool {
+	if name == "" {
+		return true
+	}
+	var count int64
+	db.Model(&models.JobTitleOption{}).Where("name = ? AND is_active = ?", name, true).Count(&count)
+	return count > 0
+}
+
+// IsActiveProductCategory reports whether name matches an active
+// ProductCategoryOption row. Empty name is allowed through — Category is
+// optional.
+func IsActiveProductCategory(db *gorm.DB, name string) bool {
+	if name == "" {
+		return true
+	}
+	var count int64
+	db.Model(&models.ProductCategoryOption{}).Where("name = ? AND is_active = ?", name, true).Count(&count)
+	return count > 0
+}
+
 // IsWonStage and IsLostStage report whether stage should be treated as the
 // Won/Lost terminal state — preferring the configured PipelineStage row's
 // IsWonStage/IsLostStage flag (so a custom, admin-renamed stage still behaves

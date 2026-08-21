@@ -150,6 +150,42 @@ func seedPipelineConfig(db *gorm.DB) {
 		}
 		log.Printf("Seeded %d default lead sources", len(models.DefaultLeadSourceOptions))
 	}
+
+	var industryCount int64
+	db.Model(&models.IndustryOption{}).Count(&industryCount)
+	if industryCount == 0 {
+		if err := db.Create(&models.DefaultIndustryOptions).Error; err != nil {
+			log.Fatalf("failed to seed default industries: %v", err)
+		}
+		log.Printf("Seeded %d default industries", len(models.DefaultIndustryOptions))
+	}
+
+	var companySizeCount int64
+	db.Model(&models.CompanySizeOption{}).Count(&companySizeCount)
+	if companySizeCount == 0 {
+		if err := db.Create(&models.DefaultCompanySizeOptions).Error; err != nil {
+			log.Fatalf("failed to seed default company sizes: %v", err)
+		}
+		log.Printf("Seeded %d default company sizes", len(models.DefaultCompanySizeOptions))
+	}
+
+	var jobTitleCount int64
+	db.Model(&models.JobTitleOption{}).Count(&jobTitleCount)
+	if jobTitleCount == 0 {
+		if err := db.Create(&models.DefaultJobTitleOptions).Error; err != nil {
+			log.Fatalf("failed to seed default job titles: %v", err)
+		}
+		log.Printf("Seeded %d default job titles", len(models.DefaultJobTitleOptions))
+	}
+
+	var productCategoryCount int64
+	db.Model(&models.ProductCategoryOption{}).Count(&productCategoryCount)
+	if productCategoryCount == 0 {
+		if err := db.Create(&models.DefaultProductCategoryOptions).Error; err != nil {
+			log.Fatalf("failed to seed default product categories: %v", err)
+		}
+		log.Printf("Seeded %d default product categories", len(models.DefaultProductCategoryOptions))
+	}
 }
 
 // seedLeadScoringCriteria inserts the default LeadScoringCriterion rows if

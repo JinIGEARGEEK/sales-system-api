@@ -89,6 +89,12 @@ func (h *DealHandler) validateStageAndChannel(c *fiber.Ctx, form dealForm) error
 		})
 		return utils.ErrHandled
 	}
+	if !models.IsValidBusinessUnit(form.BusinessUnit) {
+		_ = utils.ValidationError(c, "business_unit is invalid", map[string][]string{
+			"business_unit": {"invalid"},
+		})
+		return utils.ErrHandled
+	}
 	return nil
 }
 
