@@ -87,7 +87,7 @@ func (h *ReportHandler) WinLossReasonsExport(c *fiber.Ctx) error {
 
 // StalledDealsExport — GET /reports/stalled-deals/export.
 func (h *ReportHandler) StalledDealsExport(c *fiber.Ctx) error {
-	rows, _, err := h.fetchStalledDeals(c)
+	rows, err := h.fetchStalledDeals(c)
 	if err != nil {
 		return utils.Internal(c, "Failed to export stalled deals")
 	}
@@ -150,11 +150,11 @@ func (h *ReportHandler) ContractsStuckExport(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.Internal(c, "Failed to export contracts stuck")
 	}
-	header := []string{"Deal", "Company", "Status", "Days Unsigned"}
+	header := []string{"Deal", "Company", "Status", "Assigned To", "Days Unsigned"}
 	return streamCSV(c, "contracts-stuck.csv", header, func(w *csv.Writer) error {
 		for _, r := range rows {
 			if err := w.Write([]string{
-				r.DealTitle, r.CompanyName, r.Status, strconv.Itoa(r.DaysInStatus),
+				r.DealTitle, r.CompanyName, r.Status, derefUintStr(r.AssignedTo), strconv.Itoa(r.DaysInStatus),
 			}); err != nil {
 				return err
 			}
