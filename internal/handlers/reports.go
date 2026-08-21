@@ -224,7 +224,7 @@ type stalledDealRow struct {
 // days_stalled calculation below it — sorting by DaysStalled DESC piggybacks
 // on that same pass so the deal that's been cold longest (the most urgent
 // one) always leads.
-func (h *ReportHandler) fetchStalledDeals(c *fiber.Ctx) ([]stalledDealRow, int, error) {
+func (h *ReportHandler) fetchStalledDeals(c *fiber.Ctx) ([]stalledDealRow, error) {
 	minDays := 14
 	if v := c.Query("min_days"); v != "" {
 		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
@@ -250,7 +250,7 @@ func (h *ReportHandler) fetchStalledDeals(c *fiber.Ctx) ([]stalledDealRow, int, 
 
 	var rows []stalledDealRow
 	if err := query.Scan(&rows).Error; err != nil {
-		return nil, minDays, err
+		return nil, err
 	}
 
 	cutoff := time.Now().AddDate(0, 0, -minDays)
@@ -263,13 +263,13 @@ func (h *ReportHandler) fetchStalledDeals(c *fiber.Ctx) ([]stalledDealRow, int, 
 		result = append(result, r)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].DaysStalled > result[j].DaysStalled })
-	return result, minDays, nil
+	return result, nil
 }
 
 // StalledDeals — GET /reports/stalled-deals?min_days=&assigned_to=&company_tag=
 // (Sales Manager/Admin, route-gated). FR-CRM-094.
 func (h *ReportHandler) StalledDeals(c *fiber.Ctx) error {
-	result, _, err := h.fetchStalledDeals(c)
+	result, err := h.fetchStalledDeals(c)
 	if err != nil {
 		return utils.Internal(c, "Failed to compute stalled deals")
 	}
@@ -447,6 +447,7 @@ type contractStuckRow struct {
 	DealTitle    string `json:"deal_title"`
 	CompanyName  string `json:"company_name"`
 	Status       string `json:"status"`
+	AssignedTo   *uint  `json:"assigned_to"`
 	DaysInStatus int    `json:"days_in_status"`
 }
 
@@ -468,7 +469,7 @@ func (h *ReportHandler) fetchContractsStuck(c *fiber.Ctx) ([]contractStuckRow, e
 
 	query := h.DB.Table("contracts").
 		Select(`contracts.id as contract_id, contracts.deal_id, deals.title as deal_title,
-			companies.name as company_name, contracts.status, contracts.updated_at`).
+			companies.name as company_name, contracts.status, deals.assigned_to, contracts.updated_at`).
 		Joins("JOIN deals ON deals.id = contracts.deal_id").
 		Joins("JOIN companies ON companies.id = deals.company_id").
 		Where("contracts.status IN ('draft', 'sent') AND contracts.updated_at <= ? AND deals.deleted_at IS NULL", cutoff)
@@ -486,6 +487,7 @@ func (h *ReportHandler) fetchContractsStuck(c *fiber.Ctx) ([]contractStuckRow, e
 		DealTitle   string
 		CompanyName string
 		Status      string
+		AssignedTo  *uint
 		UpdatedAt   time.Time
 	}
 	if err := query.Scan(&rows).Error; err != nil {
@@ -496,7 +498,7 @@ func (h *ReportHandler) fetchContractsStuck(c *fiber.Ctx) ([]contractStuckRow, e
 	for _, r := range rows {
 		result = append(result, contractStuckRow{
 			ContractID: r.ContractID, DealID: r.DealID, DealTitle: r.DealTitle,
-			CompanyName: r.CompanyName, Status: r.Status,
+			CompanyName: r.CompanyName, Status: r.Status, AssignedTo: r.AssignedTo,
 			DaysInStatus: int(time.Since(r.UpdatedAt).Hours() / 24),
 		})
 	}

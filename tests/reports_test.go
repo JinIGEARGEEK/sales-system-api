@@ -495,3 +495,34 @@ func TestReports_ExportForbiddenForSalesRep(t *testing.T) {
 	resp := doJSON(t, app, req, nil)
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 }
+
+// TestContractsStuckExport_IncludesAssignedTo guards a real gap caught while
+// reviewing this endpoint: contractStuckRow gained an AssignedTo field (and
+// the JSON response surfaces it) without ContractsStuckExport's CSV header/
+// row ever being updated to match — the column was silently missing from the
+// export while present in the JSON response for the same report.
+func TestContractsStuckExport_IncludesAssignedTo(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	rep := testutil.CreateUser(t, db, models.RoleSalesRep)
+
+	deal := seedDeal(t, db, &rep.ID)
+	contract := &models.Contract{DealID: deal.ID, Status: models.ContractStatusSent}
+	require.NoError(t, db.Create(contract).Error)
+	require.NoError(t, db.Model(&models.Contract{}).Where("id = ?", contract.ID).
+		Update("updated_at", time.Now().AddDate(0, 0, -20)).Error)
+
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/reports/contracts-stuck/export?min_days=14", nil, admin.ID, admin.Role)
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body := make([]byte, 4096)
+	n, _ := resp.Body.Read(body)
+	csvText := string(body[:n])
+
+	lines := strings.SplitN(csvText, "\n", 2)
+	assert.Contains(t, lines[0], "Assigned To", "CSV header must include the same fields the JSON response does")
+	require.True(t, len(lines) > 1, "expected at least one data row")
+	assert.Contains(t, lines[1], itoa(rep.ID), "the stuck contract's row must include the assigned rep's id")
+}
