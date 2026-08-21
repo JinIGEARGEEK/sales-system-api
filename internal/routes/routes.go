@@ -60,6 +60,10 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	attachmentH := handlers.NewAttachmentHandler(db)
 	pipelineStageH := handlers.NewPipelineStageHandler(db)
 	leadSourceH := handlers.NewLeadSourceHandler(db)
+	industryOptionH := handlers.NewIndustryOptionHandler(db)
+	companySizeOptionH := handlers.NewCompanySizeOptionHandler(db)
+	jobTitleOptionH := handlers.NewJobTitleOptionHandler(db)
+	productCategoryOptionH := handlers.NewProductCategoryOptionHandler(db)
 	leadScoringCriteriaH := handlers.NewLeadScoringCriteriaHandler(db)
 	notificationRuleH := handlers.NewNotificationRuleHandler(db)
 	notificationLogH := handlers.NewNotificationLogHandler(db)
@@ -281,6 +285,36 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	leadSources.Post("/", leadSourceH.Create)
 	leadSources.Patch("/:id", leadSourceH.Update)
 	leadSources.Delete("/:id", leadSourceH.Delete)
+
+	// Company industry / size — Admin-only config, replacing the previously
+	// frontend-only hardcoded INDUSTRY_OPTIONS list (and Size's total lack of
+	// one).
+	industries := authed.Group("/admin/industries", adminOnly)
+	industries.Get("/", industryOptionH.List)
+	industries.Post("/", industryOptionH.Create)
+	industries.Patch("/:id", industryOptionH.Update)
+	industries.Delete("/:id", industryOptionH.Delete)
+
+	companySizes := authed.Group("/admin/company-sizes", adminOnly)
+	companySizes.Get("/", companySizeOptionH.List)
+	companySizes.Post("/", companySizeOptionH.Create)
+	companySizes.Patch("/:id", companySizeOptionH.Update)
+	companySizes.Delete("/:id", companySizeOptionH.Delete)
+
+	// Contact job titles / Product categories — Admin-only config, same
+	// treatment as Industry/Size (previously pure free text with no
+	// controlled list at all).
+	jobTitles := authed.Group("/admin/job-titles", adminOnly)
+	jobTitles.Get("/", jobTitleOptionH.List)
+	jobTitles.Post("/", jobTitleOptionH.Create)
+	jobTitles.Patch("/:id", jobTitleOptionH.Update)
+	jobTitles.Delete("/:id", jobTitleOptionH.Delete)
+
+	productCategories := authed.Group("/admin/product-categories", adminOnly)
+	productCategories.Get("/", productCategoryOptionH.List)
+	productCategories.Post("/", productCategoryOptionH.Create)
+	productCategories.Patch("/:id", productCategoryOptionH.Update)
+	productCategories.Delete("/:id", productCategoryOptionH.Delete)
 
 	// Lead scoring criteria — Admin-only config, FR-CRM-006.
 	leadScoringCriteria := authed.Group("/admin/lead-scoring-criteria", adminOnly)

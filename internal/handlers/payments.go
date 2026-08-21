@@ -56,6 +56,9 @@ func (h *PaymentHandler) Create(c *fiber.Ctx) error {
 	if form.Amount <= 0 {
 		return utils.ValidationError(c, "amount is required", map[string][]string{"amount": {"required"}})
 	}
+	if !models.IsValidPaymentMethod(form.Method) {
+		return utils.ValidationError(c, "method is invalid", map[string][]string{"method": {"invalid"}})
+	}
 
 	paidAt := time.Now()
 	if form.PaidAt != nil {
