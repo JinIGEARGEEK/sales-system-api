@@ -47,3 +47,24 @@ var DefaultCompanySizeOptions = []CompanySizeOption{
 	{Name: "501-1000", IsActive: true},
 	{Name: "1000+", IsActive: true},
 }
+
+// RevenueSizeOption is an Admin-configurable Company revenue bracket. Unlike
+// IndustryOption, there's no prior hardcoded list to preserve — RevenueSize was
+// unconstrained free text before this — so DefaultRevenueSizeOptions is a
+// starting point an Admin is expected to tune, not a fixed business rule
+// (same framing as DefaultLeadScoringCriteria).
+type RevenueSizeOption struct {
+	AuditedModel
+	Name     string `gorm:"not null;uniqueIndex" json:"name"`
+	IsActive bool   `gorm:"not null;default:true;index" json:"is_active"`
+}
+
+func (RevenueSizeOption) TableName() string { return "revenue_size_options" }
+
+var DefaultRevenueSizeOptions = []RevenueSizeOption{
+	{Name: "< 1M THB", IsActive: true},
+	{Name: "1M - 5M THB", IsActive: true},
+	{Name: "5M - 20M THB", IsActive: true},
+	{Name: "20M - 100M THB", IsActive: true},
+	{Name: "100M+ THB", IsActive: true},
+}

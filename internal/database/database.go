@@ -81,6 +81,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.LeadSourceOption{},
 		&models.IndustryOption{},
 		&models.CompanySizeOption{},
+		&models.RevenueSizeOption{},
 		&models.JobTitleOption{},
 		&models.ProductCategoryOption{},
 		&models.LeadScoringCriterion{},
