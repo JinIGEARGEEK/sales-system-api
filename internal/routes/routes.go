@@ -62,6 +62,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	leadSourceH := handlers.NewLeadSourceHandler(db)
 	industryOptionH := handlers.NewIndustryOptionHandler(db)
 	companySizeOptionH := handlers.NewCompanySizeOptionHandler(db)
+	revenueSizeOptionH := handlers.NewRevenueSizeOptionHandler(db)
 	jobTitleOptionH := handlers.NewJobTitleOptionHandler(db)
 	productCategoryOptionH := handlers.NewProductCategoryOptionHandler(db)
 	leadScoringCriteriaH := handlers.NewLeadScoringCriteriaHandler(db)
@@ -300,6 +301,12 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	companySizes.Post("/", companySizeOptionH.Create)
 	companySizes.Patch("/:id", companySizeOptionH.Update)
 	companySizes.Delete("/:id", companySizeOptionH.Delete)
+
+	revenueSizes := authed.Group("/admin/revenue-sizes", adminOnly)
+	revenueSizes.Get("/", revenueSizeOptionH.List)
+	revenueSizes.Post("/", revenueSizeOptionH.Create)
+	revenueSizes.Patch("/:id", revenueSizeOptionH.Update)
+	revenueSizes.Delete("/:id", revenueSizeOptionH.Delete)
 
 	// Contact job titles / Product categories — Admin-only config, same
 	// treatment as Industry/Size (previously pure free text with no

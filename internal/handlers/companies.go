@@ -35,16 +35,17 @@ func (h *CompanyHandler) List(c *fiber.Ctx) error {
 }
 
 type companyForm struct {
-	Name      string   `json:"name"`
-	Industry  string   `json:"industry"`
-	Size      string   `json:"size"`
-	Website   string   `json:"website"`
-	Tags      []string `json:"tags"`
-	Notes     string   `json:"notes"`
-	Status    string   `json:"status"`
-	LegalName *string  `json:"legal_name"`
-	Address   *string  `json:"address"`
-	TaxID     *string  `json:"tax_id"`
+	Name        string   `json:"name"`
+	Industry    string   `json:"industry"`
+	Size        string   `json:"size"`
+	RevenueSize string   `json:"revenue_size"`
+	Website     string   `json:"website"`
+	Tags        []string `json:"tags"`
+	Notes       string   `json:"notes"`
+	Status      string   `json:"status"`
+	LegalName   *string  `json:"legal_name"`
+	Address     *string  `json:"address"`
+	TaxID       *string  `json:"tax_id"`
 }
 
 // Create — POST /companies.
@@ -62,10 +63,13 @@ func (h *CompanyHandler) Create(c *fiber.Ctx) error {
 	if !utils.IsActiveCompanySize(h.DB, form.Size) {
 		return utils.ValidationError(c, "size is not a valid active company size", map[string][]string{"size": {"invalid"}})
 	}
+	if !utils.IsActiveRevenueSize(h.DB, form.RevenueSize) {
+		return utils.ValidationError(c, "revenue_size is not a valid active revenue size", map[string][]string{"revenue_size": {"invalid"}})
+	}
 
 	actorID := middleware.CurrentUserID(c)
 	company := models.Company{
-		Name: form.Name, Industry: form.Industry, Size: form.Size, Website: form.Website,
+		Name: form.Name, Industry: form.Industry, Size: form.Size, RevenueSize: form.RevenueSize, Website: form.Website,
 		Domain: utils.ExtractDomain(form.Website),
 		Tags:   pq.StringArray(form.Tags), Notes: form.Notes,
 		Status:    models.ActiveArchivedStatus(form.Status),
@@ -108,8 +112,11 @@ func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 	if !utils.IsActiveCompanySize(h.DB, form.Size) {
 		return utils.ValidationError(c, "size is not a valid active company size", map[string][]string{"size": {"invalid"}})
 	}
+	if !utils.IsActiveRevenueSize(h.DB, form.RevenueSize) {
+		return utils.ValidationError(c, "revenue_size is not a valid active revenue size", map[string][]string{"revenue_size": {"invalid"}})
+	}
 
-	company.Name, company.Industry, company.Size, company.Website = form.Name, form.Industry, form.Size, form.Website
+	company.Name, company.Industry, company.Size, company.RevenueSize, company.Website = form.Name, form.Industry, form.Size, form.RevenueSize, form.Website
 	company.Domain = utils.ExtractDomain(form.Website)
 	company.Tags = pq.StringArray(form.Tags)
 	company.Notes = form.Notes

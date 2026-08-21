@@ -169,6 +169,15 @@ func seedPipelineConfig(db *gorm.DB) {
 		log.Printf("Seeded %d default company sizes", len(models.DefaultCompanySizeOptions))
 	}
 
+	var revenueSizeCount int64
+	db.Model(&models.RevenueSizeOption{}).Count(&revenueSizeCount)
+	if revenueSizeCount == 0 {
+		if err := db.Create(&models.DefaultRevenueSizeOptions).Error; err != nil {
+			log.Fatalf("failed to seed default revenue sizes: %v", err)
+		}
+		log.Printf("Seeded %d default revenue sizes", len(models.DefaultRevenueSizeOptions))
+	}
+
 	var jobTitleCount int64
 	db.Model(&models.JobTitleOption{}).Count(&jobTitleCount)
 	if jobTitleCount == 0 {

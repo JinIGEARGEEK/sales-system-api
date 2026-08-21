@@ -54,6 +54,17 @@ func IsActiveCompanySize(db *gorm.DB, name string) bool {
 	return count > 0
 }
 
+// IsActiveRevenueSize reports whether name matches an active
+// RevenueSizeOption row. Empty name is allowed through — RevenueSize is optional.
+func IsActiveRevenueSize(db *gorm.DB, name string) bool {
+	if name == "" {
+		return true
+	}
+	var count int64
+	db.Model(&models.RevenueSizeOption{}).Where("name = ? AND is_active = ?", name, true).Count(&count)
+	return count > 0
+}
+
 // IsActiveJobTitle reports whether name matches an active JobTitleOption
 // row. Empty name is allowed through — Contact.RoleTitle is optional.
 func IsActiveJobTitle(db *gorm.DB, name string) bool {
