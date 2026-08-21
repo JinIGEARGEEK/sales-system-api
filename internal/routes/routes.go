@@ -118,18 +118,24 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 
 	// Leads
 	bulkRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesManager)
+	// salesRoles excludes Production — Production's job is narrowly "update
+	// Project status/reference link tied to a Deal" (biz_spec/user-story.md),
+	// so it has no business reading/writing Leads, Contacts, Quotes, Payments,
+	// Contracts, the Dashboard summary, or Deal writes (read access to Deals
+	// stays open to Production for context).
+	salesRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager)
 	leads := authed.Group("/leads")
-	leads.Get("/", leadH.List)
-	leads.Post("/", leadH.Create)
+	leads.Get("/", salesRoles, leadH.List)
+	leads.Post("/", salesRoles, leadH.Create)
 	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
 	leads.Get("/trash", bulkRoles, leadH.Trash)
 	leads.Patch("/bulk-reassign", bulkRoles, leadH.BulkReassign)
 	leads.Patch("/bulk-tag", bulkRoles, leadH.BulkTag)
 	leads.Patch("/bulk-archive", bulkRoles, leadH.BulkArchive)
-	leads.Get("/:id", leadH.Get)
-	leads.Put("/:id", leadH.Update)
-	leads.Delete("/:id", leadH.Delete)
-	leads.Post("/:id/convert", leadH.Convert)
+	leads.Get("/:id", salesRoles, leadH.Get)
+	leads.Put("/:id", salesRoles, leadH.Update)
+	leads.Delete("/:id", salesRoles, leadH.Delete)
+	leads.Post("/:id/convert", salesRoles, leadH.Convert)
 	leads.Post("/:id/restore", bulkRoles, leadH.Restore)
 
 	// Companies
@@ -151,21 +157,22 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 
 	// Contacts
 	contacts := authed.Group("/contacts")
-	contacts.Get("/", contactH.List)
-	contacts.Post("/", contactH.Create)
-	contacts.Post("/import", importH.ImportContacts)
+	contacts.Get("/", salesRoles, contactH.List)
+	contacts.Post("/", salesRoles, contactH.Create)
+	contacts.Post("/import", salesRoles, importH.ImportContacts)
 	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
 	contacts.Get("/trash", bulkRoles, contactH.Trash)
 	contacts.Get("/export", bulkRoles, exportH.Contacts)
-	contacts.Get("/:id", contactH.Get)
-	contacts.Put("/:id", contactH.Update)
-	contacts.Delete("/:id", contactH.Delete)
+	contacts.Get("/:id", salesRoles, contactH.Get)
+	contacts.Put("/:id", salesRoles, contactH.Update)
+	contacts.Delete("/:id", salesRoles, contactH.Delete)
 	contacts.Post("/:id/restore", bulkRoles, contactH.Restore)
 
-	// Deals
+	// Deals — reads (List/Get) stay open to Production for context; writes are
+	// salesRoles-only (Production's job is Projects, not Deals).
 	deals := authed.Group("/deals")
 	deals.Get("/", dealH.List)
-	deals.Post("/", dealH.Create)
+	deals.Post("/", salesRoles, dealH.Create)
 	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
 	deals.Get("/trash", bulkRoles, dealH.Trash)
 	deals.Patch("/bulk-reassign", bulkRoles, dealH.BulkReassign)
@@ -173,18 +180,18 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	deals.Patch("/bulk-archive", bulkRoles, dealH.BulkArchive)
 	deals.Get("/export", bulkRoles, exportH.Deals)
 	deals.Get("/:id", dealH.Get)
-	deals.Put("/:id", dealH.Update)
-	deals.Delete("/:id", dealH.Delete)
-	deals.Patch("/:id/stage", dealH.UpdateStage)
+	deals.Put("/:id", salesRoles, dealH.Update)
+	deals.Delete("/:id", salesRoles, dealH.Delete)
+	deals.Patch("/:id/stage", salesRoles, dealH.UpdateStage)
 	deals.Patch("/:id/reassign", middleware.RequireRoles(models.RoleAdmin, models.RoleSalesManager), dealH.Reassign)
 	deals.Post("/:id/restore", bulkRoles, dealH.Restore)
-	deals.Get("/:dealId/quotes", quoteH.List)
-	deals.Post("/:dealId/quotes", quoteH.Create)
-	deals.Post("/:dealId/quotes/upload", quoteH.Upload)
-	deals.Get("/:dealId/payments", paymentH.List)
-	deals.Post("/:dealId/payments", paymentH.Create)
-	deals.Get("/:dealId/contracts", contractH.List)
-	deals.Post("/:dealId/contracts", contractH.Create)
+	deals.Get("/:dealId/quotes", salesRoles, quoteH.List)
+	deals.Post("/:dealId/quotes", salesRoles, quoteH.Create)
+	deals.Post("/:dealId/quotes/upload", salesRoles, quoteH.Upload)
+	deals.Get("/:dealId/payments", salesRoles, paymentH.List)
+	deals.Post("/:dealId/payments", salesRoles, paymentH.Create)
+	deals.Get("/:dealId/contracts", salesRoles, contractH.List)
+	deals.Post("/:dealId/contracts", salesRoles, contractH.Create)
 
 	// Activities
 	activities := authed.Group("/activities")
@@ -212,13 +219,13 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	tags.Delete("/:id", bulkRoles, tagH.Delete)
 
 	// Quotes / Payments / Contracts (top-level, non-nested routes)
-	authed.Put("/quotes/:id", quoteH.Update)
-	authed.Delete("/quotes/:id", quoteH.Delete)
-	authed.Get("/quotes/:id/export-pdf", quoteH.ExportPDF)
-	authed.Delete("/payments/:id", paymentH.Delete)
-	authed.Put("/contracts/:id", contractH.Update)
-	authed.Post("/contracts/:id/upload", contractH.Upload)
-	authed.Get("/contracts/:id/export-pdf", contractH.ExportPDF)
+	authed.Put("/quotes/:id", salesRoles, quoteH.Update)
+	authed.Delete("/quotes/:id", salesRoles, quoteH.Delete)
+	authed.Get("/quotes/:id/export-pdf", salesRoles, quoteH.ExportPDF)
+	authed.Delete("/payments/:id", salesRoles, paymentH.Delete)
+	authed.Put("/contracts/:id", salesRoles, contractH.Update)
+	authed.Post("/contracts/:id/upload", salesRoles, contractH.Upload)
+	authed.Get("/contracts/:id/export-pdf", salesRoles, contractH.ExportPDF)
 
 	// Tasks
 	tasks := authed.Group("/tasks")
@@ -233,13 +240,14 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	tasks.Patch("/:id/toggle", taskH.Toggle)
 	tasks.Delete("/:id", taskH.Delete)
 
-	// Products — any authenticated role manages the shared catalog.
+	// Products — read access open to any authenticated role, but the catalog
+	// itself is Admin-maintained per the biz spec.
 	products := authed.Group("/products")
 	products.Get("/", productH.List)
-	products.Post("/", productH.Create)
+	products.Post("/", adminOnly, productH.Create)
 	products.Get("/export", bulkRoles, exportH.Products)
-	products.Patch("/:id", productH.Update)
-	products.Patch("/:id/deactivate", productH.Deactivate)
+	products.Patch("/:id", adminOnly, productH.Update)
+	products.Patch("/:id/deactivate", adminOnly, productH.Deactivate)
 
 	// Customer-Product link — any authenticated (mirrors AddForCompany's access level).
 	authed.Patch("/customer-products/:id", productH.UpdateCustomerProduct)
@@ -349,5 +357,5 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	salesTargets.Delete("/:id", salesTargetH.Delete)
 
 	// Dashboard
-	authed.Get("/dashboard/summary", dashboardH.Summary)
+	authed.Get("/dashboard/summary", salesRoles, dashboardH.Summary)
 }
