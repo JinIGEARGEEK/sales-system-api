@@ -2,9 +2,11 @@ package apitests
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -272,4 +274,224 @@ func TestReports_ForbiddenForSalesRep(t *testing.T) {
 		resp := doJSON(t, app, req, nil)
 		assert.Equal(t, http.StatusForbidden, resp.StatusCode, path)
 	}
+}
+
+// TestStalledDeals_SortedByDaysStalledDescending guards the "worst first"
+// default sort added alongside the report-consistency pass: the deal cold
+// the longest must lead the list, not whichever order the GROUP BY emits.
+func TestStalledDeals_SortedByDaysStalledDescending(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	lessStale := seedDeal(t, db, nil)
+	require.NoError(t, db.Model(&models.Deal{}).Where("id = ?", lessStale.ID).
+		Update("created_at", time.Now().AddDate(0, 0, -15)).Error)
+
+	moreStale := seedDeal(t, db, nil)
+	require.NoError(t, db.Model(&models.Deal{}).Where("id = ?", moreStale.ID).
+		Update("created_at", time.Now().AddDate(0, 0, -40)).Error)
+
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/reports/stalled-deals?min_days=14", nil, admin.ID, admin.Role)
+	var out struct {
+		Data []struct {
+			DealID      uint `json:"deal_id"`
+			DaysStalled int  `json:"days_stalled"`
+		} `json:"data"`
+	}
+	resp := doJSON(t, app, req, &out)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Len(t, out.Data, 2)
+	assert.Equal(t, moreStale.ID, out.Data[0].DealID, "the longer-stalled deal must lead the list")
+	assert.Equal(t, lessStale.ID, out.Data[1].DealID)
+	assert.GreaterOrEqual(t, out.Data[0].DaysStalled, out.Data[1].DaysStalled)
+}
+
+// TestStalledDeals_CompanyTagFilter guards the company_tag filter added
+// alongside the report-consistency pass: only deals whose Company carries
+// the given tag are returned.
+func TestStalledDeals_CompanyTagFilter(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	tagged := seedDeal(t, db, nil)
+	require.NoError(t, db.Model(&models.Deal{}).Where("id = ?", tagged.ID).
+		Update("created_at", time.Now().AddDate(0, 0, -20)).Error)
+	require.NoError(t, db.Model(&models.Company{}).Where("id = ?", tagged.CompanyID).
+		Update("tags", pq.StringArray{"vip"}).Error)
+
+	untagged := seedDeal(t, db, nil)
+	require.NoError(t, db.Model(&models.Deal{}).Where("id = ?", untagged.ID).
+		Update("created_at", time.Now().AddDate(0, 0, -20)).Error)
+
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/reports/stalled-deals?min_days=14&company_tag=vip", nil, admin.ID, admin.Role)
+	var out struct {
+		Data []struct {
+			DealID uint `json:"deal_id"`
+		} `json:"data"`
+	}
+	resp := doJSON(t, app, req, &out)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Len(t, out.Data, 1)
+	assert.Equal(t, tagged.ID, out.Data[0].DealID)
+}
+
+// TestOutstandingBalance_SortedByOutstandingAmountDescending guards the
+// "biggest amount owed first" default sort.
+func TestOutstandingBalance_SortedByOutstandingAmountDescending(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	smallerBalance := seedDeal(t, db, nil)
+	smallerBalance.Status = models.DealStatusWon
+	smallerBalance.Value = 1000
+	require.NoError(t, db.Save(smallerBalance).Error)
+	require.NoError(t, db.Create(&models.Payment{DealID: smallerBalance.ID, Amount: 900, PaidAt: time.Now()}).Error)
+
+	biggerBalance := seedDeal(t, db, nil)
+	biggerBalance.Status = models.DealStatusWon
+	biggerBalance.Value = 1000
+	require.NoError(t, db.Save(biggerBalance).Error)
+	require.NoError(t, db.Create(&models.Payment{DealID: biggerBalance.ID, Amount: 200, PaidAt: time.Now()}).Error)
+
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/reports/outstanding-balance", nil, admin.ID, admin.Role)
+	var out struct {
+		Data []struct {
+			DealID            uint    `json:"deal_id"`
+			OutstandingAmount float64 `json:"outstanding_amount"`
+		} `json:"data"`
+	}
+	resp := doJSON(t, app, req, &out)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Len(t, out.Data, 2)
+	assert.Equal(t, biggerBalance.ID, out.Data[0].DealID, "the larger outstanding amount must lead the list")
+	assert.Equal(t, 800.0, out.Data[0].OutstandingAmount)
+}
+
+// TestQuotesExpiringSoon_SortedBySoonestFirst guards the "most urgent
+// (expiring soonest) first" default sort.
+func TestQuotesExpiringSoon_SortedBySoonestFirst(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	sooner := seedDeal(t, db, nil)
+	soonerDate := time.Now().AddDate(0, 0, 2).Format("2006-01-02")
+	require.NoError(t, db.Create(&models.Quote{DealID: sooner.ID, Items: models.JSONItems{}, ValidityDate: &soonerDate, Status: models.QuoteStatusSent}).Error)
+
+	later := seedDeal(t, db, nil)
+	laterDate := time.Now().AddDate(0, 0, 6).Format("2006-01-02")
+	require.NoError(t, db.Create(&models.Quote{DealID: later.ID, Items: models.JSONItems{}, ValidityDate: &laterDate, Status: models.QuoteStatusSent}).Error)
+
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/reports/quotes-expiring-soon?within_days=7", nil, admin.ID, admin.Role)
+	var out struct {
+		Data []struct {
+			DealID uint `json:"deal_id"`
+		} `json:"data"`
+	}
+	resp := doJSON(t, app, req, &out)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Len(t, out.Data, 2)
+	assert.Equal(t, sooner.ID, out.Data[0].DealID, "the soonest-expiring quote must lead the list")
+}
+
+// TestContractsStuck_AssignedToFilter and TestContractsStuck_SortedByDaysInStatusDescending
+// guard the assigned_to filter and the "longest stuck first" sort added
+// alongside the report-consistency pass.
+func TestContractsStuck_AssignedToFilter(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	rep := testutil.CreateUser(t, db, models.RoleSalesRep)
+
+	repDeal := seedDeal(t, db, &rep.ID)
+	repContract := &models.Contract{DealID: repDeal.ID, Status: models.ContractStatusSent}
+	require.NoError(t, db.Create(repContract).Error)
+	require.NoError(t, db.Model(&models.Contract{}).Where("id = ?", repContract.ID).
+		Update("updated_at", time.Now().AddDate(0, 0, -20)).Error)
+
+	otherDeal := seedDeal(t, db, nil)
+	otherContract := &models.Contract{DealID: otherDeal.ID, Status: models.ContractStatusSent}
+	require.NoError(t, db.Create(otherContract).Error)
+	require.NoError(t, db.Model(&models.Contract{}).Where("id = ?", otherContract.ID).
+		Update("updated_at", time.Now().AddDate(0, 0, -20)).Error)
+
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/reports/contracts-stuck?min_days=14&assigned_to="+itoa(rep.ID), nil, admin.ID, admin.Role)
+	var out struct {
+		Data []struct {
+			DealID uint `json:"deal_id"`
+		} `json:"data"`
+	}
+	resp := doJSON(t, app, req, &out)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Len(t, out.Data, 1)
+	assert.Equal(t, repDeal.ID, out.Data[0].DealID)
+}
+
+// TestProjectsAtRisk_CompanyTagFilter guards the company_tag filter added
+// alongside the report-consistency pass.
+func TestProjectsAtRisk_CompanyTagFilter(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	taggedCompany := seedCompany(t, db)
+	require.NoError(t, db.Model(&models.Company{}).Where("id = ?", taggedCompany.ID).
+		Update("tags", pq.StringArray{"vip"}).Error)
+	plainCompany := seedCompany(t, db)
+
+	pastDate := time.Now().AddDate(0, 0, -5)
+	taggedProject := &models.Project{CompanyID: taggedCompany.ID, Name: "Tagged", Status: models.ProjectStatusInProgress, StartDate: time.Now(), TargetEndDate: &pastDate}
+	require.NoError(t, db.Create(taggedProject).Error)
+	plainProject := &models.Project{CompanyID: plainCompany.ID, Name: "Plain", Status: models.ProjectStatusInProgress, StartDate: time.Now(), TargetEndDate: &pastDate}
+	require.NoError(t, db.Create(plainProject).Error)
+
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/reports/projects-at-risk?company_tag=vip", nil, admin.ID, admin.Role)
+	var out struct {
+		Data []struct {
+			ProjectID uint `json:"project_id"`
+		} `json:"data"`
+	}
+	resp := doJSON(t, app, req, &out)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Len(t, out.Data, 1)
+	assert.Equal(t, taggedProject.ID, out.Data[0].ProjectID)
+}
+
+// TestReports_ExportEndpointsReturnCSV guards every /reports/*/export route:
+// each must respond 200 with a text/csv body whose first line is the header
+// row, matching the existing Companies/Contacts/Deals/Products/Projects
+// export convention.
+func TestReports_ExportEndpointsReturnCSV(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	paths := map[string]string{
+		"/api/v1/reports/lead-source-conversion/export":      "Source",
+		"/api/v1/reports/customers-by-product-status/export": "Company",
+		"/api/v1/reports/win-loss-reasons/export":            "Reason",
+		"/api/v1/reports/stalled-deals/export":               "Deal",
+		"/api/v1/reports/outstanding-balance/export":         "Deal",
+		"/api/v1/reports/quotes-expiring-soon/export":        "Deal",
+		"/api/v1/reports/contracts-stuck/export":             "Deal",
+		"/api/v1/reports/projects-at-risk/export":            "Project",
+	}
+	for path, expectedFirstHeader := range paths {
+		req := testutil.AuthRequest(t, http.MethodGet, path, nil, admin.ID, admin.Role)
+		resp, err := app.Test(req, -1)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode, path)
+		assert.Equal(t, "text/csv", resp.Header.Get("Content-Type"), path)
+		body := make([]byte, 4096)
+		n, _ := resp.Body.Read(body)
+		firstLine := strings.SplitN(string(body[:n]), "\n", 2)[0]
+		assert.True(t, strings.HasPrefix(firstLine, expectedFirstHeader), "%s: expected header to start with %q, got %q", path, expectedFirstHeader, firstLine)
+	}
+}
+
+// TestReports_ExportForbiddenForSalesRep guards the same route-level RBAC
+// gate on the /export endpoints as the JSON ones.
+func TestReports_ExportForbiddenForSalesRep(t *testing.T) {
+	app, db := testutil.App(t)
+	rep := testutil.CreateUser(t, db, models.RoleSalesRep)
+
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/reports/stalled-deals/export", nil, rep.ID, rep.Role)
+	resp := doJSON(t, app, req, nil)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 }

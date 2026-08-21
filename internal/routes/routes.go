@@ -245,13 +245,21 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	// Reports — Sales Manager/Admin only.
 	reports := authed.Group("/reports", middleware.RequireRoles(models.RoleAdmin, models.RoleSalesManager))
 	reports.Get("/lead-source-conversion", reportH.LeadSourceConversion)
+	reports.Get("/lead-source-conversion/export", reportH.LeadSourceConversionExport)
 	reports.Get("/customers-by-product-status", reportH.CustomersByProductStatus)
+	reports.Get("/customers-by-product-status/export", reportH.CustomersByProductStatusExport)
 	reports.Get("/win-loss-reasons", reportH.WinLossReasons)
+	reports.Get("/win-loss-reasons/export", reportH.WinLossReasonsExport)
 	reports.Get("/stalled-deals", reportH.StalledDeals)
+	reports.Get("/stalled-deals/export", reportH.StalledDealsExport)
 	reports.Get("/outstanding-balance", reportH.OutstandingBalance)
+	reports.Get("/outstanding-balance/export", reportH.OutstandingBalanceExport)
 	reports.Get("/quotes-expiring-soon", reportH.QuotesExpiringSoon)
+	reports.Get("/quotes-expiring-soon/export", reportH.QuotesExpiringSoonExport)
 	reports.Get("/contracts-stuck", reportH.ContractsStuck)
+	reports.Get("/contracts-stuck/export", reportH.ContractsStuckExport)
 	reports.Get("/projects-at-risk", reportH.ProjectsAtRisk)
+	reports.Get("/projects-at-risk/export", reportH.ProjectsAtRiskExport)
 
 	// Audit log — Admin only, read-only (NFR-007).
 	authed.Get("/audit-log", adminOnly, auditLogH.List)
