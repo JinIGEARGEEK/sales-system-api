@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"sort"
 	"strconv"
 	"time"
 
@@ -19,6 +20,24 @@ func NewReportHandler(db *gorm.DB) *ReportHandler {
 	return &ReportHandler{DB: db}
 }
 
+// companyIDsWithTag resolves a company_tag query param into the set of
+// Company ids carrying that tag, for reports that don't already have a SQL
+// join to `companies` available at the point they need to filter (i.e. any
+// Go-side/manually-joined report, not the ones already building a `companies`
+// JOIN in SQL). Returns nil (meaning "no filter") when tag is empty.
+func (h *ReportHandler) companyIDsWithTag(tag string) map[uint]bool {
+	if tag == "" {
+		return nil
+	}
+	var ids []uint
+	h.DB.Model(&models.Company{}).Where("tags && ARRAY[?]::text[]", tag).Pluck("id", &ids)
+	set := make(map[uint]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	return set
+}
+
 type leadSourceConversion struct {
 	Source         models.LeadSource `json:"source"`
 	Total          int64             `json:"total"`
@@ -26,11 +45,13 @@ type leadSourceConversion struct {
 	ConversionRate float64           `json:"conversion_rate"`
 }
 
-// LeadSourceConversion — GET /reports/lead-source-conversion?assigned_to=&date_from=&date_to=
-// (Sales Manager/Admin, route-gated). FR-CRM-054, FR-CRM-055 (rep filter). Lead
-// has no Company FK (only a free-text company_name), so there's no company_tag
-// filter here — that only applies to Deal-based reports.
-func (h *ReportHandler) LeadSourceConversion(c *fiber.Ctx) error {
+// fetchLeadSourceConversion — shared by LeadSourceConversion (JSON) and
+// LeadSourceConversionExport (CSV). FR-CRM-054, FR-CRM-055 (rep filter). Lead
+// has no Company FK (only a free-text company_name), so there's no
+// company_tag filter here — that only applies to Deal-based reports. Sorted
+// by Total DESC so the sources actually driving pipeline volume lead the
+// list, not whichever the GROUP BY happens to emit first.
+func (h *ReportHandler) fetchLeadSourceConversion(c *fiber.Ctx) ([]leadSourceConversion, error) {
 	query := h.DB.Model(&models.Lead{})
 	if v := c.Query("assigned_to"); v != "" {
 		query = query.Where("assigned_to = ?", v)
@@ -50,9 +71,10 @@ func (h *ReportHandler) LeadSourceConversion(c *fiber.Ctx) error {
 	err := query.
 		Select("source, count(*) as total, count(*) FILTER (WHERE status = 'Qualified') as qualified").
 		Group("source").
+		Order("total DESC").
 		Scan(&rows).Error
 	if err != nil {
-		return utils.Internal(c, "Failed to compute lead source conversion")
+		return nil, err
 	}
 
 	result := make([]leadSourceConversion, 0, len(rows))
@@ -62,6 +84,16 @@ func (h *ReportHandler) LeadSourceConversion(c *fiber.Ctx) error {
 			rate = float64(r.Qualified) / float64(r.Total) * 100
 		}
 		result = append(result, leadSourceConversion{Source: r.Source, Total: r.Total, Qualified: r.Qualified, ConversionRate: rate})
+	}
+	return result, nil
+}
+
+// LeadSourceConversion — GET /reports/lead-source-conversion?assigned_to=&date_from=&date_to=
+// (Sales Manager/Admin, route-gated). FR-CRM-054.
+func (h *ReportHandler) LeadSourceConversion(c *fiber.Ctx) error {
+	result, err := h.fetchLeadSourceConversion(c)
+	if err != nil {
+		return utils.Internal(c, "Failed to compute lead source conversion")
 	}
 	return utils.OK(c, result)
 }
@@ -74,9 +106,10 @@ type customerByProductStatus struct {
 	StartDate   string                       `json:"start_date"`
 }
 
-// CustomersByProductStatus — GET /reports/customers-by-product-status?product_id=&status=&company_tag=
-// (Sales Manager/Admin, route-gated). FR-CRM-056, FR-CRM-055 (company-tag filter).
-func (h *ReportHandler) CustomersByProductStatus(c *fiber.Ctx) error {
+// fetchCustomersByProductStatus — shared by CustomersByProductStatus (JSON)
+// and its CSV export. FR-CRM-056, FR-CRM-055 (company-tag filter). Sorted by
+// start_date DESC so the most recently adopted/onboarded rows surface first.
+func (h *ReportHandler) fetchCustomersByProductStatus(c *fiber.Ctx) ([]customerByProductStatus, error) {
 	query := h.DB.Model(&models.CustomerProduct{}).
 		Select("customer_products.company_id, companies.name as company_name, customer_products.product_id, customer_products.status, customer_products.start_date").
 		Joins("JOIN companies ON companies.id = customer_products.company_id")
@@ -97,7 +130,15 @@ func (h *ReportHandler) CustomersByProductStatus(c *fiber.Ctx) error {
 	// starting slice stays nil straight through to json.Marshal, and the
 	// frontend's `.map()`/`.length` on the response blows up on a null body.
 	rows := []customerByProductStatus{}
-	if err := query.Scan(&rows).Error; err != nil {
+	err := query.Order("customer_products.start_date DESC").Scan(&rows).Error
+	return rows, err
+}
+
+// CustomersByProductStatus — GET /reports/customers-by-product-status?product_id=&status=&company_tag=
+// (Sales Manager/Admin, route-gated). FR-CRM-056.
+func (h *ReportHandler) CustomersByProductStatus(c *fiber.Ctx) error {
+	rows, err := h.fetchCustomersByProductStatus(c)
+	if err != nil {
 		return utils.Internal(c, "Failed to compute customers by product status")
 	}
 	return utils.OK(c, rows)
@@ -109,33 +150,50 @@ type winLossReasonRow struct {
 	Value  float64 `json:"value"`
 }
 
-// WinLossReasons — GET /reports/win-loss-reasons?date_from=&date_to=&assigned_to=
-// (Sales Manager/Admin, route-gated). FR-CRM-093. Every closed Deal (won or
-// lost), grouped by "won" or its lost_reason code (models.LostReason) —
-// answers "why are we losing deals," not just the win-rate number the
-// dashboard already shows. A lost Deal missing lost_reason (shouldn't
-// happen given FR-CRM-024's required-on-Lost validation, but tolerated
-// defensively) falls into "other" rather than being silently dropped.
-func (h *ReportHandler) WinLossReasons(c *fiber.Ctx) error {
-	query := h.DB.Model(&models.Deal{}).Where("status IN ('won', 'lost')")
+// fetchWinLossReasons — shared by WinLossReasons (JSON) and its CSV export.
+// FR-CRM-093. Every closed Deal (won or lost), grouped by "won" or its
+// lost_reason code (models.LostReason) — answers "why are we losing deals,"
+// not just the win-rate number the dashboard already shows. A lost Deal
+// missing lost_reason (shouldn't happen given FR-CRM-024's required-on-Lost
+// validation, but tolerated defensively) falls into "other" rather than
+// being silently dropped. company_tag filters via an explicit JOIN (only
+// added when the param is present, since it's the one filter here that isn't
+// already a plain column on deals) — every deal.* reference stays qualified
+// so adding that join never makes a column ambiguous. Sorted by count DESC
+// so the biggest-volume reason (often "won") leads, with the largest lost
+// reasons right behind it.
+func (h *ReportHandler) fetchWinLossReasons(c *fiber.Ctx) ([]winLossReasonRow, error) {
+	query := h.DB.Model(&models.Deal{}).Where("deals.status IN ('won', 'lost')")
 	if v := c.Query("assigned_to"); v != "" {
-		query = query.Where("assigned_to = ?", v)
+		query = query.Where("deals.assigned_to = ?", v)
 	}
 	if v := c.Query("date_from"); v != "" {
-		query = query.Where("created_at >= ?", v)
+		query = query.Where("deals.created_at >= ?", v)
 	}
 	if v := c.Query("date_to"); v != "" {
-		query = query.Where("created_at <= ?", v)
+		query = query.Where("deals.created_at <= ?", v)
+	}
+	if v := c.Query("company_tag"); v != "" {
+		query = query.Joins("JOIN companies ON companies.id = deals.company_id").
+			Where("companies.tags && ARRAY[?]::text[]", v)
 	}
 
-	// Non-nil starting slice — see the comment on CustomersByProductStatus's
+	// Non-nil starting slice — see the comment on fetchCustomersByProductStatus's
 	// identical `rows := []T{}` above for why this matters.
 	rows := []winLossReasonRow{}
 	err := query.
-		Select(`CASE WHEN status = 'won' THEN 'won' ELSE COALESCE(lost_reason, 'other') END as reason,
-			count(*) as count, COALESCE(SUM(value), 0) as value`).
+		Select(`CASE WHEN deals.status = 'won' THEN 'won' ELSE COALESCE(deals.lost_reason, 'other') END as reason,
+			count(*) as count, COALESCE(SUM(deals.value), 0) as value`).
 		Group("reason").
+		Order("count DESC").
 		Scan(&rows).Error
+	return rows, err
+}
+
+// WinLossReasons — GET /reports/win-loss-reasons?date_from=&date_to=&assigned_to=&company_tag=
+// (Sales Manager/Admin, route-gated). FR-CRM-093.
+func (h *ReportHandler) WinLossReasons(c *fiber.Ctx) error {
+	rows, err := h.fetchWinLossReasons(c)
 	if err != nil {
 		return utils.Internal(c, "Failed to compute win/loss reasons")
 	}
@@ -153,19 +211,20 @@ type stalledDealRow struct {
 	DaysStalled    int       `json:"days_stalled"`
 }
 
-// StalledDeals — GET /reports/stalled-deals?min_days=&assigned_to=
-// (Sales Manager/Admin, route-gated). FR-CRM-094. Open Deals with no
-// logged Activity (or, if none ever logged, since creation) for at least
-// min_days (default 14) — surfaces deals quietly going cold in the
-// pipeline rather than actively Lost. last_activity_at is
-// COALESCE(MAX(activities.created_at), deals.created_at) via a LEFT JOIN,
-// using the same (related_type, related_id) composite index Activity
-// already carries for exactly this access pattern (see activity.go).
-// min_days filtering happens in Go after the query rather than a SQL
-// HAVING, since it's a simple post-filter over an already-small result set
-// (open deals only) and keeps the cutoff-vs-now comparison in one place
-// with the days_stalled calculation below it.
-func (h *ReportHandler) StalledDeals(c *fiber.Ctx) error {
+// fetchStalledDeals — shared by StalledDeals (JSON) and its CSV export.
+// FR-CRM-094. Open Deals with no logged Activity (or, if none ever logged,
+// since creation) for at least min_days (default 14) — surfaces deals
+// quietly going cold in the pipeline rather than actively Lost.
+// last_activity_at is COALESCE(MAX(activities.created_at), deals.created_at)
+// via a LEFT JOIN, using the same (related_type, related_id) composite index
+// Activity already carries for exactly this access pattern (see activity.go).
+// min_days filtering happens in Go after the query rather than a SQL HAVING,
+// since it's a simple post-filter over an already-small result set (open
+// deals only) and keeps the cutoff-vs-now comparison in one place with the
+// days_stalled calculation below it — sorting by DaysStalled DESC piggybacks
+// on that same pass so the deal that's been cold longest (the most urgent
+// one) always leads.
+func (h *ReportHandler) fetchStalledDeals(c *fiber.Ctx) ([]stalledDealRow, int, error) {
 	minDays := 14
 	if v := c.Query("min_days"); v != "" {
 		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
@@ -185,10 +244,13 @@ func (h *ReportHandler) StalledDeals(c *fiber.Ctx) error {
 	if v := c.Query("assigned_to"); v != "" {
 		query = query.Where("deals.assigned_to = ?", v)
 	}
+	if v := c.Query("company_tag"); v != "" {
+		query = query.Where("companies.tags && ARRAY[?]::text[]", v)
+	}
 
 	var rows []stalledDealRow
 	if err := query.Scan(&rows).Error; err != nil {
-		return utils.Internal(c, "Failed to compute stalled deals")
+		return nil, minDays, err
 	}
 
 	cutoff := time.Now().AddDate(0, 0, -minDays)
@@ -199,6 +261,17 @@ func (h *ReportHandler) StalledDeals(c *fiber.Ctx) error {
 		}
 		r.DaysStalled = int(time.Since(r.LastActivityAt).Hours() / 24)
 		result = append(result, r)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].DaysStalled > result[j].DaysStalled })
+	return result, minDays, nil
+}
+
+// StalledDeals — GET /reports/stalled-deals?min_days=&assigned_to=&company_tag=
+// (Sales Manager/Admin, route-gated). FR-CRM-094.
+func (h *ReportHandler) StalledDeals(c *fiber.Ctx) error {
+	result, _, err := h.fetchStalledDeals(c)
+	if err != nil {
+		return utils.Internal(c, "Failed to compute stalled deals")
 	}
 	return utils.OK(c, result)
 }
@@ -212,14 +285,14 @@ type outstandingBalanceRow struct {
 	OutstandingAmount float64 `json:"outstanding_amount"`
 }
 
-// OutstandingBalance — GET /reports/outstanding-balance?company_tag=&assigned_to=
-// (Sales Manager/Admin, route-gated). FR-CRM-095. Won Deals whose recorded
-// Payments sum to less than the Deal's value — every row is money still
-// owed. Payment has no due_date field (only paid_at, when an installment
-// was actually received — api-system-spec.md §7.3), so this can't be
-// bucketed into 30/60/90-day aging; it's a flat "who still owes what" list
-// until that field exists.
-func (h *ReportHandler) OutstandingBalance(c *fiber.Ctx) error {
+// fetchOutstandingBalance — shared by OutstandingBalance (JSON) and its CSV
+// export. FR-CRM-095. Won Deals whose recorded Payments sum to less than the
+// Deal's value — every row is money still owed. Payment has no due_date
+// field (only paid_at, when an installment was actually received —
+// api-system-spec.md §7.3), so this can't be bucketed into 30/60/90-day
+// aging; it's a flat "who still owes what" list until that field exists.
+// Sorted by outstanding_amount DESC so the largest amount owed leads.
+func (h *ReportHandler) fetchOutstandingBalance(c *fiber.Ctx) ([]outstandingBalanceRow, error) {
 	query := h.DB.Table("deals").
 		Select(`deals.id as deal_id, deals.title as deal_title, companies.name as company_name,
 			deals.value as deal_value, COALESCE(SUM(payments.amount), 0) as paid_amount,
@@ -228,7 +301,8 @@ func (h *ReportHandler) OutstandingBalance(c *fiber.Ctx) error {
 		Joins("LEFT JOIN payments ON payments.deal_id = deals.id").
 		Where("deals.status = ? AND deals.deleted_at IS NULL", models.DealStatusWon).
 		Group("deals.id, deals.title, companies.name, deals.value").
-		Having("deals.value - COALESCE(SUM(payments.amount), 0) > 0")
+		Having("deals.value - COALESCE(SUM(payments.amount), 0) > 0").
+		Order("outstanding_amount DESC")
 
 	if v := c.Query("assigned_to"); v != "" {
 		query = query.Where("deals.assigned_to = ?", v)
@@ -237,10 +311,18 @@ func (h *ReportHandler) OutstandingBalance(c *fiber.Ctx) error {
 		query = query.Where("companies.tags && ARRAY[?]::text[]", v)
 	}
 
-	// Non-nil starting slice — see the comment on CustomersByProductStatus's
+	// Non-nil starting slice — see the comment on fetchCustomersByProductStatus's
 	// identical `rows := []T{}` above for why this matters.
 	rows := []outstandingBalanceRow{}
-	if err := query.Scan(&rows).Error; err != nil {
+	err := query.Scan(&rows).Error
+	return rows, err
+}
+
+// OutstandingBalance — GET /reports/outstanding-balance?company_tag=&assigned_to=
+// (Sales Manager/Admin, route-gated). FR-CRM-095.
+func (h *ReportHandler) OutstandingBalance(c *fiber.Ctx) error {
+	rows, err := h.fetchOutstandingBalance(c)
+	if err != nil {
 		return utils.Internal(c, "Failed to compute outstanding balance")
 	}
 	return utils.OK(c, rows)
@@ -255,30 +337,39 @@ type quoteExpiringSoonRow struct {
 	TotalValue   float64 `json:"total_value"`
 }
 
-// QuotesExpiringSoon — GET /reports/quotes-expiring-soon?within_days=
-// (Sales Manager/Admin, route-gated). FR-CRM-096. Sent quotes (not yet
-// Accepted/Rejected) whose validity_date falls within the next
-// within_days (default 7) — a forward-looking "needs a follow-up before
-// it lapses" view, the mirror image of Quote.EffectiveStatus's
-// already-expired check. validity_date is free-text (RFC3339 or a bare
-// date, same dual-format tolerance as EffectiveStatus), so it's parsed in
-// Go rather than SQL.
-func (h *ReportHandler) QuotesExpiringSoon(c *fiber.Ctx) error {
+// fetchQuotesExpiringSoon — shared by QuotesExpiringSoon (JSON) and its CSV
+// export. FR-CRM-096. Sent quotes (not yet Accepted/Rejected) whose
+// validity_date falls within the next within_days (default 7) — a
+// forward-looking "needs a follow-up before it lapses" view, the mirror
+// image of Quote.EffectiveStatus's already-expired check. validity_date is
+// free-text (RFC3339 or a bare date, same dual-format tolerance as
+// EffectiveStatus), so it's parsed in Go rather than SQL — and assigned_to/
+// company_tag filtering happens the same way, against the Deal/Company each
+// quote resolves to, since there's no single SQL query joining all three
+// tables here. Sorted by validity_date ascending so the soonest-to-expire
+// quote (the most urgent one) leads.
+func (h *ReportHandler) fetchQuotesExpiringSoon(c *fiber.Ctx) ([]quoteExpiringSoonRow, error) {
 	withinDays := 7
 	if v := c.Query("within_days"); v != "" {
 		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
 			withinDays = parsed
 		}
 	}
+	assignedTo := c.Query("assigned_to")
+	companyTagIDs := h.companyIDsWithTag(c.Query("company_tag"))
 
 	var quotes []models.Quote
 	if err := h.DB.Where("status = ?", models.QuoteStatusSent).Find(&quotes).Error; err != nil {
-		return utils.Internal(c, "Failed to compute quotes expiring soon")
+		return nil, err
 	}
 
 	now := time.Now()
 	deadline := now.AddDate(0, 0, withinDays)
-	byDeal := map[uint][]models.Quote{}
+	type quoteWithDeadline struct {
+		quote      models.Quote
+		validUntil time.Time
+	}
+	byDeal := map[uint][]quoteWithDeadline{}
 	for _, q := range quotes {
 		validUntil, ok := models.ParseValidityDate(q.ValidityDate)
 		if !ok {
@@ -287,12 +378,12 @@ func (h *ReportHandler) QuotesExpiringSoon(c *fiber.Ctx) error {
 		if validUntil.Before(now) || validUntil.After(deadline) {
 			continue
 		}
-		byDeal[q.DealID] = append(byDeal[q.DealID], q)
+		byDeal[q.DealID] = append(byDeal[q.DealID], quoteWithDeadline{quote: q, validUntil: validUntil})
 	}
 
 	result := make([]quoteExpiringSoonRow, 0)
 	if len(byDeal) == 0 {
-		return utils.OK(c, result)
+		return result, nil
 	}
 
 	dealIDs := make([]uint, 0, len(byDeal))
@@ -319,16 +410,33 @@ func (h *ReportHandler) QuotesExpiringSoon(c *fiber.Ctx) error {
 		if !ok {
 			continue
 		}
-		for _, q := range dealQuotes {
+		if assignedTo != "" && (deal.AssignedTo == nil || strconv.FormatUint(uint64(*deal.AssignedTo), 10) != assignedTo) {
+			continue
+		}
+		if companyTagIDs != nil && !companyTagIDs[deal.CompanyID] {
+			continue
+		}
+		for _, qwd := range dealQuotes {
 			total := 0.0
-			for _, item := range q.Items {
+			for _, item := range qwd.quote.Items {
 				total += item.Qty * item.Price
 			}
 			result = append(result, quoteExpiringSoonRow{
-				QuoteID: q.ID, DealID: dealID, DealTitle: deal.Title,
-				CompanyName: companyNameByID[deal.CompanyID], ValidityDate: *q.ValidityDate, TotalValue: total,
+				QuoteID: qwd.quote.ID, DealID: dealID, DealTitle: deal.Title,
+				CompanyName: companyNameByID[deal.CompanyID], ValidityDate: *qwd.quote.ValidityDate, TotalValue: total,
 			})
 		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ValidityDate < result[j].ValidityDate })
+	return result, nil
+}
+
+// QuotesExpiringSoon — GET /reports/quotes-expiring-soon?within_days=&assigned_to=&company_tag=
+// (Sales Manager/Admin, route-gated). FR-CRM-096.
+func (h *ReportHandler) QuotesExpiringSoon(c *fiber.Ctx) error {
+	result, err := h.fetchQuotesExpiringSoon(c)
+	if err != nil {
+		return utils.Internal(c, "Failed to compute quotes expiring soon")
 	}
 	return utils.OK(c, result)
 }
@@ -342,14 +450,14 @@ type contractStuckRow struct {
 	DaysInStatus int    `json:"days_in_status"`
 }
 
-// ContractsStuck — GET /reports/contracts-stuck?min_days=
-// (Sales Manager/Admin, route-gated). FR-CRM-097. Contracts sitting in
-// Draft or Sent for at least min_days (default 14) without being signed.
-// Contract has no start/end date to track true "expiration" by (only
-// signed_date, set once actually signed) — this instead surfaces
-// contracts stalling before signature, the contract-side equivalent of
-// StalledDeals above.
-func (h *ReportHandler) ContractsStuck(c *fiber.Ctx) error {
+// fetchContractsStuck — shared by ContractsStuck (JSON) and its CSV export.
+// FR-CRM-097. Contracts sitting in Draft or Sent for at least min_days
+// (default 14) without being signed. Contract has no start/end date to
+// track true "expiration" by (only signed_date, set once actually signed) —
+// this instead surfaces contracts stalling before signature, the
+// contract-side equivalent of StalledDeals above. Sorted by days_in_status
+// DESC so the longest-stalled contract leads.
+func (h *ReportHandler) fetchContractsStuck(c *fiber.Ctx) ([]contractStuckRow, error) {
 	minDays := 14
 	if v := c.Query("min_days"); v != "" {
 		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
@@ -365,6 +473,13 @@ func (h *ReportHandler) ContractsStuck(c *fiber.Ctx) error {
 		Joins("JOIN companies ON companies.id = deals.company_id").
 		Where("contracts.status IN ('draft', 'sent') AND contracts.updated_at <= ? AND deals.deleted_at IS NULL", cutoff)
 
+	if v := c.Query("assigned_to"); v != "" {
+		query = query.Where("deals.assigned_to = ?", v)
+	}
+	if v := c.Query("company_tag"); v != "" {
+		query = query.Where("companies.tags && ARRAY[?]::text[]", v)
+	}
+
 	var rows []struct {
 		ContractID  uint
 		DealID      uint
@@ -374,7 +489,7 @@ func (h *ReportHandler) ContractsStuck(c *fiber.Ctx) error {
 		UpdatedAt   time.Time
 	}
 	if err := query.Scan(&rows).Error; err != nil {
-		return utils.Internal(c, "Failed to compute contracts stuck")
+		return nil, err
 	}
 
 	result := make([]contractStuckRow, 0, len(rows))
@@ -384,6 +499,17 @@ func (h *ReportHandler) ContractsStuck(c *fiber.Ctx) error {
 			CompanyName: r.CompanyName, Status: r.Status,
 			DaysInStatus: int(time.Since(r.UpdatedAt).Hours() / 24),
 		})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].DaysInStatus > result[j].DaysInStatus })
+	return result, nil
+}
+
+// ContractsStuck — GET /reports/contracts-stuck?min_days=&assigned_to=&company_tag=
+// (Sales Manager/Admin, route-gated). FR-CRM-097.
+func (h *ReportHandler) ContractsStuck(c *fiber.Ctx) error {
+	result, err := h.fetchContractsStuck(c)
+	if err != nil {
+		return utils.Internal(c, "Failed to compute contracts stuck")
 	}
 	return utils.OK(c, result)
 }
@@ -398,17 +524,22 @@ type projectAtRiskRow struct {
 	DaysOverdue   int    `json:"days_overdue"`
 }
 
-// ProjectsAtRisk — GET /reports/projects-at-risk (Sales Manager/Admin,
-// route-gated). FR-CRM-098. Projects whose target_end_date has already
-// passed but aren't Completed or Cancelled — the delivery-side equivalent
-// of StalledDeals, for whoever owns customer-delivery visibility (§3.7,
-// FR-CRM-071).
-func (h *ReportHandler) ProjectsAtRisk(c *fiber.Ctx) error {
+// fetchProjectsAtRisk — shared by ProjectsAtRisk (JSON) and its CSV export.
+// FR-CRM-098. Projects whose target_end_date has already passed but aren't
+// Completed or Cancelled — the delivery-side equivalent of StalledDeals, for
+// whoever owns customer-delivery visibility (§3.7, FR-CRM-071). No
+// assigned_to filter — Project has no owner/assignee field, only a Company
+// FK. Sorted by days_overdue DESC so the most overdue project leads.
+func (h *ReportHandler) fetchProjectsAtRisk(c *fiber.Ctx) ([]projectAtRiskRow, error) {
 	query := h.DB.Table("projects").
 		Select(`projects.id as project_id, projects.name, projects.company_id, companies.name as company_name,
 			projects.status, projects.target_end_date`).
 		Joins("JOIN companies ON companies.id = projects.company_id").
 		Where("projects.target_end_date IS NOT NULL AND projects.target_end_date < ? AND projects.status NOT IN ('Completed', 'Cancelled') AND projects.deleted_at IS NULL", time.Now())
+
+	if v := c.Query("company_tag"); v != "" {
+		query = query.Where("companies.tags && ARRAY[?]::text[]", v)
+	}
 
 	var rows []struct {
 		ProjectID     uint
@@ -419,7 +550,7 @@ func (h *ReportHandler) ProjectsAtRisk(c *fiber.Ctx) error {
 		TargetEndDate time.Time
 	}
 	if err := query.Scan(&rows).Error; err != nil {
-		return utils.Internal(c, "Failed to compute projects at risk")
+		return nil, err
 	}
 
 	result := make([]projectAtRiskRow, 0, len(rows))
@@ -429,6 +560,17 @@ func (h *ReportHandler) ProjectsAtRisk(c *fiber.Ctx) error {
 			TargetEndDate: r.TargetEndDate.Format("2006-01-02"),
 			DaysOverdue:   int(time.Since(r.TargetEndDate).Hours() / 24),
 		})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].DaysOverdue > result[j].DaysOverdue })
+	return result, nil
+}
+
+// ProjectsAtRisk — GET /reports/projects-at-risk?company_tag= (Sales
+// Manager/Admin, route-gated). FR-CRM-098.
+func (h *ReportHandler) ProjectsAtRisk(c *fiber.Ctx) error {
+	result, err := h.fetchProjectsAtRisk(c)
+	if err != nil {
+		return utils.Internal(c, "Failed to compute projects at risk")
 	}
 	return utils.OK(c, result)
 }
