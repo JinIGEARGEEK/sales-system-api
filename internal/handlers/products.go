@@ -179,6 +179,20 @@ func (h *ProductHandler) AddForCompany(c *fiber.Ctx) error {
 	if !models.IsValidCustomerProductStatus(form.Status) {
 		return utils.ValidationError(c, "status is invalid", map[string][]string{"status": {"invalid"}})
 	}
+	// source_deal_id was previously trusted as-is with no check that it exists
+	// or belongs to this Company — a caller could link a new CustomerProduct
+	// to any Deal ID in the system, including another Company's. The picker
+	// that sets this (AddCustomerProductModal.vue) only offers Deals already
+	// scoped to the current company client-side; enforce that server-side too.
+	if form.SourceDealID != nil {
+		var sourceDeal models.Deal
+		if err := h.DB.First(&sourceDeal, *form.SourceDealID).Error; err != nil {
+			return utils.ValidationError(c, "source_deal_id not found", map[string][]string{"source_deal_id": {"not_found"}})
+		}
+		if sourceDeal.CompanyID != company.ID {
+			return utils.ValidationError(c, "source_deal_id does not belong to this company", map[string][]string{"source_deal_id": {"invalid"}})
+		}
+	}
 
 	actorID := middleware.CurrentUserID(c)
 	record := models.CustomerProduct{
