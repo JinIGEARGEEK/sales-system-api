@@ -232,6 +232,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	tasks.Patch("/bulk-mark-done", taskH.BulkMarkDone)
 	tasks.Patch("/bulk-reassign", taskH.BulkReassign)
 	tasks.Patch("/:id/toggle", taskH.Toggle)
+	tasks.Patch("/:id", taskH.Update)
 	tasks.Delete("/:id", taskH.Delete)
 
 	// Products — any authenticated role manages the shared catalog.
