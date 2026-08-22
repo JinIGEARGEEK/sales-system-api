@@ -116,9 +116,10 @@ func (h *ContractHandler) Upload(c *fiber.Ctx) error {
 
 // ExportPDF — GET /contracts/:id/export-pdf. Renders a plain (unbranded, same
 // style as QuoteHandler.ExportPDF) PDF: party details (Company legal
-// name/address/tax ID, Contact name/role), Deal info, the linked Quote's line
-// items/total (if quote_id is set), status, and a signature-line placeholder.
-// Read-only, same access level as List (no CanWrite check).
+// name/address/tax ID, Contact name/role), Deal info, the linked Quote's
+// scope_of_work and line items/total (if quote_id is set), status, and a
+// signature-line placeholder. Read-only, same access level as List (no
+// CanWrite check).
 func (h *ContractHandler) ExportPDF(c *fiber.Ctx) error {
 	var contract models.Contract
 	if err := h.DB.First(&contract, c.Params("id")).Error; err != nil {
@@ -172,6 +173,14 @@ func (h *ContractHandler) ExportPDF(c *fiber.Ctx) error {
 	pdf.Ln(4)
 
 	if quote != nil {
+		if quote.ScopeOfWork != "" {
+			pdf.SetFont("Arial", "B", 11)
+			pdf.Cell(0, 6, "Scope of Work")
+			pdf.Ln(7)
+			pdf.SetFont("Arial", "", 10)
+			pdf.MultiCell(0, 5, quote.ScopeOfWork, "", "L", false)
+			pdf.Ln(4)
+		}
 		utils.RenderLineItemsTable(pdf, quote.Items)
 		pdf.Ln(16)
 	} else {
