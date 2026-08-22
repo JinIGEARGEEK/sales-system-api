@@ -136,6 +136,36 @@ func validateProbabilityAndLostReason(c *fiber.Ctx, db *gorm.DB, form dealForm) 
 	return nil
 }
 
+// isWinningForm reports whether the submitted form is setting this Deal to
+// Won (by stage or by status directly) — the trigger for FR-CRM-045's
+// signed-contract precondition. Mirrors isLosingForm's resolution.
+func isWinningForm(db *gorm.DB, form dealForm) bool {
+	return utils.IsWonStage(db, form.Stage) || form.Status == models.DealStatusWon
+}
+
+// validateContractSignedBeforeWon enforces FR-CRM-045 ("configurable, not
+// hard-enforced by default" — so it's a no-op unless an Admin has turned it
+// on via AppSettings). Once enabled, a Deal can only move into Won if it
+// already has at least one Contract with status Signed. dealID is 0 for a
+// brand-new Deal being created directly in a Won stage/status — which can
+// never have an existing Contract yet, so the same Count query correctly
+// blocks that case too, with no special-casing needed.
+func validateContractSignedBeforeWon(c *fiber.Ctx, db *gorm.DB, dealID uint) error {
+	settings := utils.GetAppSettings(db)
+	if !settings.RequireSignedContractBeforeWon {
+		return nil
+	}
+	var count int64
+	db.Model(&models.Contract{}).Where("deal_id = ? AND status = ?", dealID, models.ContractStatusSigned).Count(&count)
+	if count == 0 {
+		_ = utils.ValidationError(c, "a signed contract is required before marking this deal Won", map[string][]string{
+			"stage": {"requires_signed_contract"},
+		})
+		return utils.ErrHandled
+	}
+	return nil
+}
+
 // validateDealValueAndDate checks the two dealForm fields that previously had
 // no format/range validation at all: Value (must be non-negative — a client
 // bug or bad import row supplying a negative number would silently corrupt
@@ -214,6 +244,13 @@ func (h *DealHandler) Create(c *fiber.Ctx) error {
 	if err := validateProbabilityAndLostReason(c, h.DB, form); err != nil {
 		return nil
 	}
+	if isWinningForm(h.DB, form) {
+		// dealID 0 — a brand-new Deal can't have a Contract yet, so this only
+		// ever matters (and always blocks) when the toggle is enabled.
+		if err := validateContractSignedBeforeWon(c, h.DB, 0); err != nil {
+			return nil
+		}
+	}
 	if err := h.validateStageAndChannel(c, form); err != nil {
 		return nil
 	}
@@ -284,6 +321,16 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	}
 	if err := validateProbabilityAndLostReason(c, h.DB, form); err != nil {
 		return nil
+	}
+	// Only check on the actual transition into Won, not on every subsequent
+	// save of a deal that's already Won — the frontend's Overview form
+	// resubmits the deal's current stage/status on every save (even an
+	// unrelated field edit), and deal.Status here is still the pre-mutation
+	// value, so this only fires once per Won transition.
+	if isWinningForm(h.DB, form) && deal.Status != models.DealStatusWon {
+		if err := validateContractSignedBeforeWon(c, h.DB, deal.ID); err != nil {
+			return nil
+		}
 	}
 	if err := h.validateStageAndChannel(c, form); err != nil {
 		return nil
@@ -494,6 +541,15 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	deal.Stage = form.Stage
 	switch {
 	case isWon:
+		// Only check on the actual transition into Won, not on every
+		// re-affirming move within the Won stage (e.g. dragging the card to a
+		// different position within the same Won column) — deal.Status here
+		// is still the pre-mutation value.
+		if deal.Status != models.DealStatusWon {
+			if err := validateContractSignedBeforeWon(c, h.DB, deal.ID); err != nil {
+				return nil
+			}
+		}
 		deal.Status = models.DealStatusWon
 		// Hook point: FR-CRM-064 auto-creates/updates a CustomerProduct(status: Active)
 		// per Product on this Deal's accepted Quote — deferred until Quotes have a

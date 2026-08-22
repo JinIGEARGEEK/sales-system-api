@@ -130,6 +130,62 @@ func TestSettingsUpdate_SetsUpdatedAt(t *testing.T) {
 	assert.True(t, out.Data.UpdatedAt.After(before), "updated_at must advance past the PATCH")
 }
 
+// TestSettingsUpdate_RequireSignedContractBeforeWon guards FR-CRM-045's
+// toggle: it's optional on PATCH (same convention as
+// lead_scoring_mql_threshold — added after quarterly_sales_target/
+// annual_revenue_goal were already an established "both required" pair), a
+// real change writes an audit entry, and omitting it on a later PATCH leaves
+// the current value in place rather than silently resetting it to false.
+func TestSettingsUpdate_RequireSignedContractBeforeWon(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	// app_settings is a singleton row never truncated between tests (see
+	// TestSettingsUpdate_NoAuditLogWhenUnchanged's comment) — another test in
+	// this suite (including deal_contract_gate_test.go's raw-DB toggles) may
+	// have already left require_signed_contract_before_won at either value,
+	// so force a known false baseline first rather than assuming the PATCH
+	// below is a real change.
+	require.NoError(t, db.Model(&models.AppSettings{}).Where("id = 1").
+		Update("require_signed_contract_before_won", false).Error)
+	// This test deliberately leaves the toggle enabled to verify it persists
+	// across an omitted-field PATCH — restore it afterward so it doesn't leak
+	// into whatever test runs next in this same suite binary.
+	t.Cleanup(func() {
+		require.NoError(t, db.Model(&models.AppSettings{}).Where("id = 1").
+			Update("require_signed_contract_before_won", false).Error)
+	})
+
+	enable := testutil.AuthRequest(t, http.MethodPatch, "/api/v1/admin/settings", map[string]interface{}{
+		"quarterly_sales_target":             5432100,
+		"annual_revenue_goal":                20123400,
+		"require_signed_contract_before_won": true,
+	}, admin.ID, admin.Role)
+	var out struct {
+		Data struct {
+			RequireSignedContractBeforeWon bool `json:"require_signed_contract_before_won"`
+		} `json:"data"`
+	}
+	resp := doJSON(t, app, enable, &out)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.True(t, out.Data.RequireSignedContractBeforeWon)
+
+	var entries []models.AuditLogEntry
+	require.NoError(t, db.Where("entity_type = ? AND entity_id = ? AND action = ?", "settings", 1, "updated").
+		Order("created_at DESC").Limit(1).Find(&entries).Error)
+	require.Len(t, entries, 1)
+	assert.EqualValues(t, true, entries[0].After["require_signed_contract_before_won"])
+
+	// Omit it on a follow-up PATCH — must stay true, not reset to false.
+	omit := testutil.AuthRequest(t, http.MethodPatch, "/api/v1/admin/settings", map[string]interface{}{
+		"quarterly_sales_target": 6432100,
+		"annual_revenue_goal":    21123400,
+	}, admin.ID, admin.Role)
+	resp2 := doJSON(t, app, omit, &out)
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+	assert.True(t, out.Data.RequireSignedContractBeforeWon, "omitting the field on PATCH must leave the current value in place")
+}
+
 // TestDashboardSummary_AnnualRevenueProgressRatio guards
 // annual_revenue_progress_ratio's derivation (annual_revenue_actual ÷
 // annual_revenue_goal) and that annual_revenue_actual only counts Won Deal

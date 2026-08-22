@@ -27,8 +27,14 @@ type AppSettings struct {
 	// or exceeds this value is classified "mql". Lives here rather than a new
 	// singleton table since it's one more Admin-tunable number, same shape as
 	// the two fields above.
-	LeadScoringMqlThreshold int       `gorm:"not null;default:50" json:"lead_scoring_mql_threshold"`
-	UpdatedAt               time.Time `json:"updated_at"`
+	LeadScoringMqlThreshold int `gorm:"not null;default:50" json:"lead_scoring_mql_threshold"`
+	// RequireSignedContractBeforeWon — FR-CRM-045: "configurable, not
+	// hard-enforced by default," so it defaults false. When true,
+	// DealHandler blocks a Deal from moving into Won (via Create, Update, or
+	// UpdateStage) unless it already has at least one Contract with
+	// status Signed.
+	RequireSignedContractBeforeWon bool      `gorm:"not null;default:false" json:"require_signed_contract_before_won"`
+	UpdatedAt                      time.Time `json:"updated_at"`
 }
 
 func (AppSettings) TableName() string { return "app_settings" }
@@ -36,8 +42,9 @@ func (AppSettings) TableName() string { return "app_settings" }
 // DefaultAppSettings is the seed row inserted on first run if app_settings is
 // empty — mirrors DefaultPipelineStages/DefaultLeadSourceOptions.
 var DefaultAppSettings = AppSettings{
-	ID:                      1,
-	QuarterlySalesTarget:    3000000,
-	AnnualRevenueGoal:       12000000,
-	LeadScoringMqlThreshold: 50,
+	ID:                             1,
+	QuarterlySalesTarget:           3000000,
+	AnnualRevenueGoal:              12000000,
+	LeadScoringMqlThreshold:        50,
+	RequireSignedContractBeforeWon: false,
 }
