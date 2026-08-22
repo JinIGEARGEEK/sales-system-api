@@ -187,6 +187,17 @@ func (h *ProductHandler) AddForCompany(c *fiber.Ctx) error {
 	if record.Status == "" {
 		record.Status = models.CustomerProductInterested
 	}
+	// StartDate was previously parsed into `form` but never applied here, so
+	// every manually-created record silently persisted Go's zero-value time
+	// instead of what the client sent (or "today"). Default to now when the
+	// client omits it, matching the create-time-optional field in the UI.
+	if form.StartDate == nil {
+		record.StartDate = time.Now()
+	} else if parsed, err := time.Parse(time.RFC3339, *form.StartDate); err == nil {
+		record.StartDate = parsed
+	} else {
+		return utils.ValidationError(c, "start_date is invalid", map[string][]string{"start_date": {"invalid"}})
+	}
 	record.CreatedBy = &actorID
 	record.UpdatedBy = &actorID
 	if err := h.DB.Create(&record).Error; err != nil {
