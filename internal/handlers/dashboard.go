@@ -76,18 +76,6 @@ func periodStart(period string) (time.Time, bool) {
 	}
 }
 
-// appSettings loads the AppSettings singleton row once so both
-// quarterlySalesTarget and annualRevenueGoal below don't each issue their own
-// query, falling back to the original hardcoded defaults if the row is
-// somehow missing (e.g. seed hasn't run yet).
-func (h *DashboardHandler) appSettings() models.AppSettings {
-	var settings models.AppSettings
-	if err := h.DB.First(&settings, 1).Error; err != nil {
-		return models.DefaultAppSettings
-	}
-	return settings
-}
-
 // currentQuarterTarget resolves the actual target to use for THIS calendar
 // quarter's pipeline_coverage_ratio (FR-CRM-092): a SalesTarget row for the
 // current (year, quarter) if an Admin has set one, else the flat
@@ -263,7 +251,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	// Loaded synchronously up front (one cheap query) rather than after
 	// wg.Wait() below, since annualRevenueTrend needs settings.AnnualRevenueGoal
 	// and runs inside that same concurrent block.
-	settings := h.appSettings()
+	settings := utils.GetAppSettings(h.DB)
 
 	// These 5 base aggregates plus the 7 breakdown/trend/target helpers below
 	// are all independent read-only queries — run them concurrently instead

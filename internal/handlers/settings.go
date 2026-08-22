@@ -20,29 +20,16 @@ func NewSettingsHandler(db *gorm.DB) *SettingsHandler {
 	return &SettingsHandler{DB: db}
 }
 
-// get loads the singleton row (ID=1), falling back to DefaultAppSettings if
-// it's somehow missing (e.g. seed hasn't run yet) rather than erroring.
-func (h *SettingsHandler) get() (models.AppSettings, error) {
-	var settings models.AppSettings
-	if err := h.DB.First(&settings, 1).Error; err != nil {
-		return models.DefaultAppSettings, err
-	}
-	return settings, nil
-}
-
 // Get — GET /admin/settings.
 func (h *SettingsHandler) Get(c *fiber.Ctx) error {
-	settings, err := h.get()
-	if err != nil {
-		return utils.Internal(c, "Failed to load settings")
-	}
-	return utils.OK(c, settings)
+	return utils.OK(c, utils.GetAppSettings(h.DB))
 }
 
 type settingsForm struct {
-	QuarterlySalesTarget    *int64 `json:"quarterly_sales_target"`
-	AnnualRevenueGoal       *int64 `json:"annual_revenue_goal"`
-	LeadScoringMqlThreshold *int64 `json:"lead_scoring_mql_threshold"`
+	QuarterlySalesTarget           *int64 `json:"quarterly_sales_target"`
+	AnnualRevenueGoal              *int64 `json:"annual_revenue_goal"`
+	LeadScoringMqlThreshold        *int64 `json:"lead_scoring_mql_threshold"`
+	RequireSignedContractBeforeWon *bool  `json:"require_signed_contract_before_won"`
 }
 
 // requireNonNegative validates one required *int64 form field, writing the
@@ -71,10 +58,7 @@ func requireNonNegative(c *fiber.Ctx, field string, value *int64) bool {
 // (this is a single singleton row, not a per-field partial-update resource —
 // same convention as the original quarterly_sales_target-only form).
 func (h *SettingsHandler) Update(c *fiber.Ctx) error {
-	settings, err := h.get()
-	if err != nil {
-		return utils.Internal(c, "Failed to load settings")
-	}
+	settings := utils.GetAppSettings(h.DB)
 
 	var form settingsForm
 	if err := c.BodyParser(&form); err != nil {
@@ -97,17 +81,31 @@ func (h *SettingsHandler) Update(c *fiber.Ctx) error {
 	}
 
 	oldQuarterlyTarget, oldAnnualGoal, oldMqlThreshold := settings.QuarterlySalesTarget, settings.AnnualRevenueGoal, settings.LeadScoringMqlThreshold
-	before := models.JSONMap{"quarterly_sales_target": oldQuarterlyTarget, "annual_revenue_goal": oldAnnualGoal, "lead_scoring_mql_threshold": oldMqlThreshold}
+	oldRequireSignedContract := settings.RequireSignedContractBeforeWon
+	before := models.JSONMap{
+		"quarterly_sales_target": oldQuarterlyTarget, "annual_revenue_goal": oldAnnualGoal,
+		"lead_scoring_mql_threshold": oldMqlThreshold, "require_signed_contract_before_won": oldRequireSignedContract,
+	}
 
 	settings.QuarterlySalesTarget = *form.QuarterlySalesTarget
 	settings.AnnualRevenueGoal = *form.AnnualRevenueGoal
 	if form.LeadScoringMqlThreshold != nil {
 		settings.LeadScoringMqlThreshold = int(*form.LeadScoringMqlThreshold)
 	}
-	after := models.JSONMap{"quarterly_sales_target": settings.QuarterlySalesTarget, "annual_revenue_goal": settings.AnnualRevenueGoal, "lead_scoring_mql_threshold": settings.LeadScoringMqlThreshold}
+	// Optional on PATCH for the same reason lead_scoring_mql_threshold is —
+	// added after quarterly_sales_target/annual_revenue_goal were already an
+	// established "both required" pair.
+	if form.RequireSignedContractBeforeWon != nil {
+		settings.RequireSignedContractBeforeWon = *form.RequireSignedContractBeforeWon
+	}
+	after := models.JSONMap{
+		"quarterly_sales_target": settings.QuarterlySalesTarget, "annual_revenue_goal": settings.AnnualRevenueGoal,
+		"lead_scoring_mql_threshold": settings.LeadScoringMqlThreshold, "require_signed_contract_before_won": settings.RequireSignedContractBeforeWon,
+	}
 
-	changed := oldQuarterlyTarget != settings.QuarterlySalesTarget || oldAnnualGoal != settings.AnnualRevenueGoal || oldMqlThreshold != settings.LeadScoringMqlThreshold
-	err = utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error { return tx.Save(&settings).Error },
+	changed := oldQuarterlyTarget != settings.QuarterlySalesTarget || oldAnnualGoal != settings.AnnualRevenueGoal ||
+		oldMqlThreshold != settings.LeadScoringMqlThreshold || oldRequireSignedContract != settings.RequireSignedContractBeforeWon
+	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error { return tx.Save(&settings).Error },
 		changed, "settings", settings.ID, "updated", before, after, middleware.CurrentUserID(c))
 	if err != nil {
 		return utils.Internal(c, "Failed to update settings")
