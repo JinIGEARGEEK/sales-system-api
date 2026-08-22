@@ -49,8 +49,13 @@ type QuoteItem struct {
 // Quote — api-system-spec.md §7.4.
 type Quote struct {
 	HardDeleteModel
-	DealID       uint        `gorm:"not null;index" json:"deal_id"`
-	Items        JSONItems   `gorm:"type:jsonb" json:"items"`
+	DealID uint      `gorm:"not null;index" json:"deal_id"`
+	Items  JSONItems `gorm:"type:jsonb" json:"items"`
+	// ScopeOfWork is a free-text narrative describing the overall engagement
+	// (deliverables/phases/terms) — separate from each line item's own
+	// Description, which stays a short per-item label. Optional; rendered as
+	// a wrapped paragraph above the line-items table in ExportPDF.
+	ScopeOfWork  string      `json:"scope_of_work"`
 	ValidityDate *string     `json:"validity_date"`
 	Status       QuoteStatus `gorm:"type:varchar(16);default:'draft'" json:"status"`
 	FileName     *string     `json:"file_name,omitempty"`

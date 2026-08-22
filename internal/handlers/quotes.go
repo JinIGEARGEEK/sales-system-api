@@ -67,6 +67,7 @@ func withEffectiveStatus(q models.Quote) models.Quote {
 
 type quoteForm struct {
 	Items        []models.QuoteItem `json:"items"`
+	ScopeOfWork  string             `json:"scope_of_work"`
 	ValidityDate *string            `json:"validity_date"`
 	Status       models.QuoteStatus `json:"status"`
 }
@@ -111,7 +112,7 @@ func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 
 	quote := models.Quote{
 		DealID: deal.ID, Items: models.JSONItems(snapshotQuoteItems(h.DB, form.Items)),
-		ValidityDate: form.ValidityDate, Status: form.Status,
+		ScopeOfWork: form.ScopeOfWork, ValidityDate: form.ValidityDate, Status: form.Status,
 	}
 	if quote.Status == "" {
 		quote.Status = models.QuoteStatusDraft
@@ -174,6 +175,12 @@ func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	if form.Items != nil {
 		quote.Items = models.JSONItems(snapshotQuoteItems(h.DB, form.Items))
 	}
+	// Unconditional, unlike Items/ValidityDate/Status above — a plain string
+	// field can't distinguish "omitted" from "explicitly cleared to empty" via
+	// BodyParser alone, and the frontend always sends the current value either
+	// way (same as Task.Update's Title/Description), so there's no partial-PUT
+	// case this would break.
+	quote.ScopeOfWork = form.ScopeOfWork
 	if form.ValidityDate != nil {
 		quote.ValidityDate = form.ValidityDate
 	}
@@ -238,6 +245,15 @@ func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 	}
 	pdf.Cell(0, 6, fmt.Sprintf("Status: %s", quote.EffectiveStatus()))
 	pdf.Ln(10)
+
+	if quote.ScopeOfWork != "" {
+		pdf.SetFont("Arial", "B", 11)
+		pdf.Cell(0, 6, "Scope of Work")
+		pdf.Ln(7)
+		pdf.SetFont("Arial", "", 10)
+		pdf.MultiCell(0, 5, quote.ScopeOfWork, "", "L", false)
+		pdf.Ln(4)
+	}
 
 	utils.RenderLineItemsTable(pdf, quote.Items)
 
