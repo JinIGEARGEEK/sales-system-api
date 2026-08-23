@@ -89,6 +89,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.NotificationLog{},
 		&models.AppSettings{},
 		&models.SalesTarget{},
+		&models.DocumentSequence{},
 	); err != nil {
 		return err
 	}

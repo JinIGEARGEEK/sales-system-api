@@ -70,6 +70,52 @@ type quoteForm struct {
 	ScopeOfWork  string             `json:"scope_of_work"`
 	ValidityDate *string            `json:"validity_date"`
 	Status       models.QuoteStatus `json:"status"`
+	// The rest are all optional/additive (quotation-builder rebuild) — a
+	// caller that omits them entirely (any pre-existing client) behaves
+	// exactly as before: zero-value CreditDays/WhtRate/DiscountTotal, empty
+	// PriceType (defaulted below), VatEnabled/WhtEnabled left at whatever
+	// the existing row already has on Update, or their model defaults on
+	// Create.
+	ReferenceNumber *string               `json:"reference_number"`
+	IssueDate       *string               `json:"issue_date"`
+	CreditDays      *int                  `json:"credit_days"`
+	PriceType       models.QuotePriceType `json:"price_type"`
+	VatEnabled      *bool                 `json:"vat_enabled"`
+	WhtEnabled      *bool                 `json:"wht_enabled"`
+	WhtRate         *float64              `json:"wht_rate"`
+	DiscountTotal   *float64              `json:"discount_total"`
+	Notes           *string               `json:"notes"`
+	InternalNotes   *string               `json:"internal_notes"`
+}
+
+// validateQuoteForm runs the checks shared by Create and Update: status enum,
+// price_type enum (only when explicitly provided — both are optional-on-PUT
+// the same way settingsForm's lead_scoring_mql_threshold is, see settings.go),
+// and non-negative CreditDays/WhtRate/DiscountTotal. Writes the 422 response
+// itself and returns false on failure, mirroring requireNonNegative's
+// convention in settings.go.
+func validateQuoteForm(c *fiber.Ctx, form quoteForm) bool {
+	if form.Status != "" && !models.IsValidQuoteStatus(form.Status) {
+		_ = utils.ValidationError(c, "status is invalid", map[string][]string{"status": {"invalid"}})
+		return false
+	}
+	if form.PriceType != "" && !models.IsValidQuotePriceType(form.PriceType) {
+		_ = utils.ValidationError(c, "price_type is invalid", map[string][]string{"price_type": {"invalid"}})
+		return false
+	}
+	if form.CreditDays != nil && *form.CreditDays < 0 {
+		_ = utils.ValidationError(c, "credit_days must be non-negative", map[string][]string{"credit_days": {"must be >= 0"}})
+		return false
+	}
+	if form.WhtRate != nil && *form.WhtRate < 0 {
+		_ = utils.ValidationError(c, "wht_rate must be non-negative", map[string][]string{"wht_rate": {"must be >= 0"}})
+		return false
+	}
+	if form.DiscountTotal != nil && *form.DiscountTotal < 0 {
+		_ = utils.ValidationError(c, "discount_total must be non-negative", map[string][]string{"discount_total": {"must be >= 0"}})
+		return false
+	}
+	return true
 }
 
 // snapshotQuoteItems fills Description/Price from the referenced Product for
@@ -104,20 +150,52 @@ func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
-	if form.Status != "" && !models.IsValidQuoteStatus(form.Status) {
-		return utils.ValidationError(c, "status is invalid", map[string][]string{
-			"status": {"invalid"},
-		})
+	if !validateQuoteForm(c, form) {
+		return nil
 	}
 
 	quote := models.Quote{
 		DealID: deal.ID, Items: models.JSONItems(snapshotQuoteItems(h.DB, form.Items)),
 		ScopeOfWork: form.ScopeOfWork, ValidityDate: form.ValidityDate, Status: form.Status,
+		ReferenceNumber: form.ReferenceNumber, IssueDate: form.IssueDate,
+		PriceType: form.PriceType, Notes: form.Notes, InternalNotes: form.InternalNotes,
 	}
 	if quote.Status == "" {
 		quote.Status = models.QuoteStatusDraft
 	}
-	if err := h.DB.Create(&quote).Error; err != nil {
+	if quote.PriceType == "" {
+		quote.PriceType = models.QuotePriceTypeExclTax
+	}
+	if form.CreditDays != nil {
+		quote.CreditDays = *form.CreditDays
+	}
+	if form.VatEnabled != nil {
+		quote.VatEnabled = *form.VatEnabled
+	} else {
+		quote.VatEnabled = true
+	}
+	if form.WhtEnabled != nil {
+		quote.WhtEnabled = *form.WhtEnabled
+	}
+	if form.WhtRate != nil {
+		quote.WhtRate = *form.WhtRate
+	}
+	if form.DiscountTotal != nil {
+		quote.DiscountTotal = *form.DiscountTotal
+	}
+
+	// Number generation shares the Create transaction: a failed insert (e.g.
+	// a DB constraint error) must roll the sequence increment back too, or a
+	// retried create after a failed save would burn numbers.
+	err = h.DB.Transaction(func(tx *gorm.DB) error {
+		number, err := utils.NextDocumentNumber(tx, "QT", time.Now())
+		if err != nil {
+			return err
+		}
+		quote.Number = &number
+		return tx.Create(&quote).Error
+	})
+	if err != nil {
 		return utils.Internal(c, "Failed to create quote")
 	}
 	return utils.Created(c, withEffectiveStatus(quote))
@@ -144,9 +222,18 @@ func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 	name := fh.Filename
 	quote := models.Quote{
 		DealID: deal.ID, Items: models.JSONItems{}, Status: models.QuoteStatusDraft,
+		PriceType: models.QuotePriceTypeExclTax, VatEnabled: true,
 		FileName: &name, FileURL: &fileURL, FileSize: &size, UploadedAt: &now,
 	}
-	if err := h.DB.Create(&quote).Error; err != nil {
+	err = h.DB.Transaction(func(tx *gorm.DB) error {
+		number, err := utils.NextDocumentNumber(tx, "QT", now)
+		if err != nil {
+			return err
+		}
+		quote.Number = &number
+		return tx.Create(&quote).Error
+	})
+	if err != nil {
 		return utils.Internal(c, "Failed to create quote")
 	}
 	return utils.Created(c, withEffectiveStatus(quote))
@@ -166,10 +253,8 @@ func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
-	if form.Status != "" && !models.IsValidQuoteStatus(form.Status) {
-		return utils.ValidationError(c, "status is invalid", map[string][]string{
-			"status": {"invalid"},
-		})
+	if !validateQuoteForm(c, form) {
+		return nil
 	}
 
 	if form.Items != nil {
@@ -179,13 +264,38 @@ func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	// field can't distinguish "omitted" from "explicitly cleared to empty" via
 	// BodyParser alone, and the frontend always sends the current value either
 	// way (same as Task.Update's Title/Description), so there's no partial-PUT
-	// case this would break.
+	// case this would break. Same reasoning applies to ReferenceNumber/
+	// IssueDate/Notes/InternalNotes below — pointers, but the frontend always
+	// resends them, so unconditional assignment (not "only if non-nil") is
+	// correct: it lets a rep explicitly clear one back to empty.
 	quote.ScopeOfWork = form.ScopeOfWork
+	quote.ReferenceNumber = form.ReferenceNumber
+	quote.IssueDate = form.IssueDate
+	quote.Notes = form.Notes
+	quote.InternalNotes = form.InternalNotes
 	if form.ValidityDate != nil {
 		quote.ValidityDate = form.ValidityDate
 	}
 	if form.Status != "" {
 		quote.Status = form.Status
+	}
+	if form.PriceType != "" {
+		quote.PriceType = form.PriceType
+	}
+	if form.CreditDays != nil {
+		quote.CreditDays = *form.CreditDays
+	}
+	if form.VatEnabled != nil {
+		quote.VatEnabled = *form.VatEnabled
+	}
+	if form.WhtEnabled != nil {
+		quote.WhtEnabled = *form.WhtEnabled
+	}
+	if form.WhtRate != nil {
+		quote.WhtRate = *form.WhtRate
+	}
+	if form.DiscountTotal != nil {
+		quote.DiscountTotal = *form.DiscountTotal
 	}
 
 	if err := h.DB.Save(&quote).Error; err != nil {
@@ -230,19 +340,51 @@ func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 
 	pdf.SetFont("Arial", "B", 16)
 	pdf.Cell(0, 10, "Quotation")
+	if quote.Number != nil {
+		pdf.Cell(0, 10, fmt.Sprintf("  %s", *quote.Number))
+	}
 	pdf.Ln(12)
 
 	pdf.SetFont("Arial", "", 11)
 	pdf.Cell(0, 6, fmt.Sprintf("Deal: %s", deal.Title))
 	pdf.Ln(6)
-	pdf.Cell(0, 6, fmt.Sprintf("Company: %s", company.Name))
+	// Same party-info block Contract's export already renders (name/address/
+	// tax ID) — previously missing here, closing that gap as part of this
+	// rebuild rather than leaving Quote's PDF thinner than Contract's.
+	pdf.Cell(0, 6, fmt.Sprintf("Company: %s", strOrDefault(company.LegalName, company.Name)))
 	pdf.Ln(6)
-	pdf.Cell(0, 6, fmt.Sprintf("Contact: %s", contact.Name))
-	pdf.Ln(6)
-	if quote.ValidityDate != nil {
-		pdf.Cell(0, 6, fmt.Sprintf("Valid Until: %s", *quote.ValidityDate))
+	if company.Address != nil && *company.Address != "" {
+		pdf.Cell(0, 6, fmt.Sprintf("Address: %s", *company.Address))
 		pdf.Ln(6)
 	}
+	if company.TaxID != nil && *company.TaxID != "" {
+		pdf.Cell(0, 6, fmt.Sprintf("Tax ID: %s", *company.TaxID))
+		pdf.Ln(6)
+	}
+	pdf.Cell(0, 6, fmt.Sprintf("Contact: %s", contact.Name))
+	pdf.Ln(6)
+	if quote.ReferenceNumber != nil && *quote.ReferenceNumber != "" {
+		pdf.Cell(0, 6, fmt.Sprintf("Reference No.: %s", *quote.ReferenceNumber))
+		pdf.Ln(6)
+	}
+	if quote.IssueDate != nil {
+		pdf.Cell(0, 6, fmt.Sprintf("Date: %s", *quote.IssueDate))
+		pdf.Ln(6)
+	}
+	if quote.CreditDays > 0 {
+		pdf.Cell(0, 6, fmt.Sprintf("Credit: %d days", quote.CreditDays))
+		pdf.Ln(6)
+	}
+	if quote.ValidityDate != nil {
+		pdf.Cell(0, 6, fmt.Sprintf("Due Date: %s", *quote.ValidityDate))
+		pdf.Ln(6)
+	}
+	priceTypeLabel := "Prices exclude tax"
+	if quote.PriceType == models.QuotePriceTypeInclTax {
+		priceTypeLabel = "Prices include tax"
+	}
+	pdf.Cell(0, 6, priceTypeLabel)
+	pdf.Ln(6)
 	pdf.Cell(0, 6, fmt.Sprintf("Status: %s", quote.EffectiveStatus()))
 	pdf.Ln(10)
 
@@ -255,7 +397,39 @@ func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 		pdf.Ln(4)
 	}
 
-	utils.RenderLineItemsTable(pdf, quote.Items)
+	utils.RenderQuoteItemsTable(pdf, quote.Items)
+
+	// Discount total / VAT / WHT / grand total — same formula as
+	// utils.ComputeQuoteTotals so this PDF and the edit page's live totals
+	// never disagree.
+	totals := utils.ComputeQuoteTotals(quote.Items, quote.DiscountTotal, quote.VatEnabled, quote.WhtEnabled, quote.WhtRate)
+	pdf.SetFont("Arial", "", 10)
+	if quote.DiscountTotal > 0 {
+		pdf.Ln(1)
+		pdf.CellFormat(165, 7, "Discount", "0", 0, "R", false, 0, "")
+		pdf.CellFormat(30, 7, fmt.Sprintf("-%.2f", quote.DiscountTotal), "0", 1, "R", false, 0, "")
+	}
+	if quote.VatEnabled {
+		pdf.CellFormat(165, 7, "VAT (7%)", "0", 0, "R", false, 0, "")
+		pdf.CellFormat(30, 7, fmt.Sprintf("%.2f", totals.Vat), "0", 1, "R", false, 0, "")
+	}
+	if quote.WhtEnabled {
+		pdf.CellFormat(165, 7, fmt.Sprintf("Withholding Tax (%.1f%%)", quote.WhtRate), "0", 0, "R", false, 0, "")
+		pdf.CellFormat(30, 7, fmt.Sprintf("-%.2f", totals.Wht), "0", 1, "R", false, 0, "")
+	}
+	pdf.SetFont("Arial", "B", 11)
+	pdf.CellFormat(165, 8, "Grand Total", "0", 0, "R", false, 0, "")
+	pdf.CellFormat(30, 8, fmt.Sprintf("%.2f", totals.GrandTotal), "0", 1, "R", false, 0, "")
+	pdf.Ln(6)
+
+	// Notes prints; InternalNotes deliberately never reaches this PDF.
+	if quote.Notes != nil && *quote.Notes != "" {
+		pdf.SetFont("Arial", "B", 10)
+		pdf.Cell(0, 6, "Notes")
+		pdf.Ln(6)
+		pdf.SetFont("Arial", "", 10)
+		pdf.MultiCell(0, 5, *quote.Notes, "", "L", false)
+	}
 
 	var buf bytes.Buffer
 	if err := pdf.Output(&buf); err != nil {

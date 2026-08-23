@@ -32,6 +32,30 @@ func IsValidQuoteStatus(s QuoteStatus) bool {
 	return false
 }
 
+// QuotePriceType records whether Quote.Items' Price values are meant to be
+// read as tax-exclusive or tax-inclusive — display/PDF concern only, doesn't
+// change how ComputeQuoteTotals adds VAT (a quote entered "incl_tax" is
+// expected to already have VAT baked into its item prices by whoever typed
+// them in; this is a labeling/expectation field, not a second computation
+// path).
+type QuotePriceType string
+
+const (
+	QuotePriceTypeExclTax QuotePriceType = "excl_tax"
+	QuotePriceTypeInclTax QuotePriceType = "incl_tax"
+)
+
+var ValidQuotePriceTypes = []QuotePriceType{QuotePriceTypeExclTax, QuotePriceTypeInclTax}
+
+func IsValidQuotePriceType(t QuotePriceType) bool {
+	for _, v := range ValidQuotePriceTypes {
+		if v == t {
+			return true
+		}
+	}
+	return false
+}
+
 // QuoteItem is stored as a JSON array on Quote.Items (api-system-spec.md §7.4).
 // ProductID is optional: when set on incoming create/update requests, the
 // handler snapshots that Product's current Name/Price into Description/Price
@@ -44,6 +68,12 @@ type QuoteItem struct {
 	Qty         float64 `json:"qty"`
 	Price       float64 `json:"price"`
 	ProductID   *uint   `json:"product_id,omitempty"`
+	// DiscountPercent (0-100) reduces this item's own line total —
+	// independent of Quote.DiscountTotal, which is a further flat-amount
+	// discount applied once across the whole quote's subtotal. Defaults to
+	// 0 (no discount), so every item created before this field existed
+	// behaves exactly as before.
+	DiscountPercent float64 `json:"discount_percent,omitempty"`
 }
 
 // Quote — api-system-spec.md §7.4.
@@ -51,6 +81,18 @@ type Quote struct {
 	HardDeleteModel
 	DealID uint      `gorm:"not null;index" json:"deal_id"`
 	Items  JSONItems `gorm:"type:jsonb" json:"items"`
+	// Number is a generated, immutable document number (e.g. "QT2026080004")
+	// assigned once at Create time via utils.NextDocumentNumber — never
+	// user-edited afterward. See internal/utils/document_number.go. A
+	// pointer, not a plain string with "not null": AutoMigrate ADD COLUMN
+	// NOT NULL on a table that already has rows would fail outright on any
+	// pre-existing database (same class of hazard database.go already
+	// avoids for other columns) — every Quote row created going forward
+	// always gets one, but rows from before this field existed stay nil
+	// rather than requiring a backfill. A unique index tolerates any number
+	// of NULLs in Postgres, so this doesn't relax uniqueness for quotes that
+	// do have a Number.
+	Number *string `gorm:"uniqueIndex" json:"number,omitempty"`
 	// ScopeOfWork is a free-text narrative describing the overall engagement
 	// (deliverables/phases/terms) — separate from each line item's own
 	// Description, which stays a short per-item label. Optional; rendered as
@@ -62,27 +104,65 @@ type Quote struct {
 	FileURL      *string     `json:"file_url,omitempty"`
 	FileSize     *int64      `json:"file_size,omitempty"`
 	UploadedAt   *time.Time  `json:"uploaded_at,omitempty"`
+	// ReferenceNumber is free-text, user-entered (e.g. the customer's own PO
+	// number) — unrelated to Number above, which this system generates.
+	ReferenceNumber *string `json:"reference_number,omitempty"`
+	// IssueDate is the quote's "as of" date (rendered as "วันที่" in the
+	// quotation-builder reference) — parsed the same permissive way as
+	// ValidityDate via ParseFlexDate.
+	IssueDate *string `json:"issue_date,omitempty"`
+	// CreditDays is purely informational context for ValidityDate (which
+	// already serves as the actual due date/"ครบกำหนด") — how many days of
+	// credit were granted, not itself used in any date arithmetic here.
+	CreditDays int            `gorm:"not null;default:0" json:"credit_days"`
+	PriceType  QuotePriceType `gorm:"type:varchar(16);default:'excl_tax'" json:"price_type"`
+	// VatEnabled toggles Thailand's fixed 7% VAT in ComputeQuoteTotals — no
+	// separate rate field, since 7% is the statutory rate, not something a
+	// quote should be able to override.
+	VatEnabled bool `gorm:"not null;default:true" json:"vat_enabled"`
+	// WhtEnabled/WhtRate: withholding tax varies by service type in Thailand
+	// (commonly 3% or 5%), so unlike VAT it needs its own rate field. Only
+	// meaningful when WhtEnabled is true.
+	WhtEnabled bool    `gorm:"not null;default:false" json:"wht_enabled"`
+	WhtRate    float64 `gorm:"not null;default:0" json:"wht_rate"`
+	// DiscountTotal is a flat currency amount subtracted once from the
+	// items' summed (already-per-item-discounted) subtotal — independent of
+	// each QuoteItem's own DiscountPercent above.
+	DiscountTotal float64 `gorm:"not null;default:0" json:"discount_total"`
+	// Notes prints on the exported PDF (payment terms, validity terms,
+	// etc.) — InternalNotes deliberately never does; see ExportPDF, which
+	// only ever reads Notes.
+	Notes         *string `json:"notes,omitempty"`
+	InternalNotes *string `json:"internal_notes,omitempty"`
 }
 
 func (Quote) TableName() string { return "quotes" }
 
-// ParseValidityDate parses a Quote.ValidityDate value permissively (RFC3339
-// timestamp — how the frontend serializes it — falling back to a bare date),
+// ParseFlexDate parses a permissively-formatted date/timestamp value — RFC3339
+// (how the frontend serializes a Date) falling back to a bare "2006-01-02" —
 // returning ok=false for a malformed or empty value rather than an error, so
-// every caller (EffectiveStatus below, ReportHandler.QuotesExpiringSoon)
-// treats "can't parse it" as "skip it" instead of each re-implementing the
-// same two-format fallback.
-func ParseValidityDate(validityDate *string) (t time.Time, ok bool) {
-	if validityDate == nil || *validityDate == "" {
+// every caller treats "can't parse it" as "skip it" instead of each
+// re-implementing the same two-format fallback. Shared by ValidityDate and
+// IssueDate (and anything else on Quote that needs the same leniency).
+func ParseFlexDate(value *string) (t time.Time, ok bool) {
+	if value == nil || *value == "" {
 		return time.Time{}, false
 	}
-	if t, err := time.Parse(time.RFC3339, *validityDate); err == nil {
+	if t, err := time.Parse(time.RFC3339, *value); err == nil {
 		return t, true
 	}
-	if t, err := time.Parse("2006-01-02", *validityDate); err == nil {
+	if t, err := time.Parse("2006-01-02", *value); err == nil {
 		return t, true
 	}
 	return time.Time{}, false
+}
+
+// ParseValidityDate is ParseFlexDate specialized to ValidityDate — kept as a
+// named wrapper since EffectiveStatus/ReportHandler.QuotesExpiringSoon
+// already call it by this name; new callers needing the same leniency for a
+// different field (e.g. IssueDate) should call ParseFlexDate directly.
+func ParseValidityDate(validityDate *string) (t time.Time, ok bool) {
+	return ParseFlexDate(validityDate)
 }
 
 // EffectiveStatus returns QuoteStatusExpired when this Quote is Sent and its
