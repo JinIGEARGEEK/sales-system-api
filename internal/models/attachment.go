@@ -22,6 +22,10 @@ const (
 	AttachmentRelatedDeal    AttachmentRelatedType = "deal"
 	AttachmentRelatedCompany AttachmentRelatedType = "company"
 	AttachmentRelatedProject AttachmentRelatedType = "project"
+	// AttachmentRelatedQuote backs the Quote editor's attachments section
+	// (quotation-builder rebuild) — reuses this same generic model/handler
+	// rather than a Quote-specific attachments table.
+	AttachmentRelatedQuote AttachmentRelatedType = "quote"
 )
 
 // Attachment — api-system-spec.md §8.6. Exactly one of FileURL/ExternalURL is
