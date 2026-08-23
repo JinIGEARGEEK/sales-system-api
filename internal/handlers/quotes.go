@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/go-pdf/fpdf"
@@ -202,7 +203,14 @@ func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 }
 
 // Upload — POST /deals/:dealId/quotes/upload. Uploads a PDF quote in place of
-// line items — sets file_name/file_url/file_size/uploaded_at, leaves items empty.
+// line items — sets file_name/file_url/file_size/uploaded_at. If the PDF
+// looks like a FlowAccount quotation export, best-effort extraction
+// (utils.ExtractFlowAccountQuote) also pre-fills items/scope_of_work/
+// reference_number/issue_date/vat/wht/notes from it — see
+// ExtractionStatus/ExtractionWarnings on the response. Extraction is purely
+// additive and never fatal: a PDF that isn't a FlowAccount export, or one
+// extraction can't make sense of, still uploads exactly as before with
+// Items left empty, ExtractionStatus "failed", and no error surfaced.
 func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 	deal, err := dealForSubResource(c, h.DB, c.Params("dealId"))
 	if err != nil {
@@ -213,6 +221,18 @@ func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.BadRequest(c, "Missing file")
 	}
+
+	// Read the file into memory for extraction before SaveUpload consumes
+	// it — best-effort: any failure here (can't open, can't read) just
+	// means extraction is skipped, not that the upload itself fails.
+	var extraction *utils.FlowAccountExtraction
+	if f, openErr := fh.Open(); openErr == nil {
+		if data, readErr := io.ReadAll(f); readErr == nil {
+			extraction, _ = utils.ExtractFlowAccountQuote(data)
+		}
+		f.Close()
+	}
+
 	fileURL, size, err := utils.SaveUpload(c, fh)
 	if err != nil {
 		return utils.RespondUploadError(c, err)
@@ -224,6 +244,37 @@ func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 		DealID: deal.ID, Items: models.JSONItems{}, Status: models.QuoteStatusDraft,
 		PriceType: models.QuotePriceTypeExclTax, VatEnabled: true,
 		FileName: &name, FileURL: &fileURL, FileSize: &size, UploadedAt: &now,
+	}
+	if extraction != nil {
+		status := extraction.Status()
+		quote.ExtractionStatus = &status
+		quote.ExtractionWarnings = extraction.Warnings
+		if extraction.ReferenceNumber != "" {
+			quote.ReferenceNumber = &extraction.ReferenceNumber
+		}
+		if extraction.IssueDate != nil {
+			issueDate := extraction.IssueDate.Format("2006-01-02")
+			quote.IssueDate = &issueDate
+		}
+		if extraction.ScopeOfWork != "" {
+			quote.ScopeOfWork = extraction.ScopeOfWork
+		}
+		if extraction.Notes != "" {
+			quote.Notes = &extraction.Notes
+		}
+		quote.VatEnabled = extraction.VatEnabled
+		quote.WhtEnabled = extraction.WhtEnabled
+		quote.WhtRate = extraction.WhtRate
+		if len(extraction.Items) > 0 {
+			items := make(models.JSONItems, len(extraction.Items))
+			for i, it := range extraction.Items {
+				items[i] = models.QuoteItem{Description: it.Description, Qty: it.Qty, Price: it.Price, DiscountPercent: it.DiscountPercent}
+			}
+			quote.Items = items
+		}
+	} else {
+		failed := "failed"
+		quote.ExtractionStatus = &failed
 	}
 	err = h.DB.Transaction(func(tx *gorm.DB) error {
 		number, err := utils.NextDocumentNumber(tx, "QT", now)
