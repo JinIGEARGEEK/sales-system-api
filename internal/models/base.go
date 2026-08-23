@@ -18,6 +18,13 @@ type AuditedModel struct {
 	DeletedBy *uint          `json:"deleted_by,omitempty"`
 }
 
+// SetCreatedBy/SetUpdatedBy/SetDeletedBy let generic code (handlers.OptionHandler)
+// stamp actor-tracking fields on any AuditedModel-embedding resource without a
+// type switch over every concrete type.
+func (m *AuditedModel) SetCreatedBy(id *uint) { m.CreatedBy = id }
+func (m *AuditedModel) SetUpdatedBy(id *uint) { m.UpdatedBy = id }
+func (m *AuditedModel) SetDeletedBy(id *uint) { m.DeletedBy = id }
+
 // SimpleModel is for resources whose spec shape only has created_at (no soft-delete columns).
 type SimpleModel struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`

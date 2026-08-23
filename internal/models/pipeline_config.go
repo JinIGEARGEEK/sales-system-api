@@ -32,6 +32,13 @@ type LeadSourceOption struct {
 
 func (LeadSourceOption) TableName() string { return "lead_source_options" }
 
+// GetName/SetName/GetActive/SetActive satisfy handlers.OptionRow so
+// LeadSourceHandler's CRUD lives in the shared generic handler.
+func (o *LeadSourceOption) GetName() string  { return o.Name }
+func (o *LeadSourceOption) SetName(n string) { o.Name = n }
+func (o *LeadSourceOption) GetActive() bool  { return o.IsActive }
+func (o *LeadSourceOption) SetActive(a bool) { o.IsActive = a }
+
 // DefaultPipelineStages is the hardcoded stage list being retired — seeded
 // verbatim (same order, same names) on first run so existing Deals validate
 // unchanged. Kept here (not in database package) so handlers/seed code share

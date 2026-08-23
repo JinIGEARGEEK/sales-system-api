@@ -6,86 +6,53 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/models"
 )
 
-// IsActivePipelineStage reports whether name matches an active PipelineStage
-// row — the DB-backed replacement for the old hardcoded DealStage whitelist.
-// Empty name is allowed through (unset stage falls back to its model default).
+// isActiveOption is the shared body behind every IsActiveX below — each one
+// is a DB-backed replacement for what used to be a hardcoded/frontend-only
+// whitelist, and all of them boil down to "does an active row with this name
+// exist in T's table". Empty name is always allowed through: the field each
+// one guards is optional, so an unset value shouldn't fail validation.
+func isActiveOption[T any](db *gorm.DB, name string) bool {
+	if name == "" {
+		return true
+	}
+	var count int64
+	db.Model(new(T)).Where("name = ? AND is_active = ?", name, true).Count(&count)
+	return count > 0
+}
+
+// IsActivePipelineStage reports whether name matches an active PipelineStage row.
 func IsActivePipelineStage(db *gorm.DB, name string) bool {
-	if name == "" {
-		return true
-	}
-	var count int64
-	db.Model(&models.PipelineStage{}).Where("name = ? AND is_active = ?", name, true).Count(&count)
-	return count > 0
+	return isActiveOption[models.PipelineStage](db, name)
 }
 
-// IsActiveLeadSource reports whether name matches an active LeadSourceOption
-// row — the DB-backed replacement for the old hardcoded LeadSource whitelist.
-// Empty name is allowed through (channel/source is optional on Deal/Lead).
+// IsActiveLeadSource reports whether name matches an active LeadSourceOption row.
 func IsActiveLeadSource(db *gorm.DB, name string) bool {
-	if name == "" {
-		return true
-	}
-	var count int64
-	db.Model(&models.LeadSourceOption{}).Where("name = ? AND is_active = ?", name, true).Count(&count)
-	return count > 0
+	return isActiveOption[models.LeadSourceOption](db, name)
 }
 
-// IsActiveIndustry reports whether name matches an active IndustryOption
-// row — the DB-backed replacement for the old frontend-only INDUSTRY_OPTIONS
-// whitelist. Empty name is allowed through (Industry has no NOT NULL
-// constraint at the DB level).
+// IsActiveIndustry reports whether name matches an active IndustryOption row.
 func IsActiveIndustry(db *gorm.DB, name string) bool {
-	if name == "" {
-		return true
-	}
-	var count int64
-	db.Model(&models.IndustryOption{}).Where("name = ? AND is_active = ?", name, true).Count(&count)
-	return count > 0
+	return isActiveOption[models.IndustryOption](db, name)
 }
 
-// IsActiveCompanySize reports whether name matches an active
-// CompanySizeOption row. Empty name is allowed through — Size is optional.
+// IsActiveCompanySize reports whether name matches an active CompanySizeOption row.
 func IsActiveCompanySize(db *gorm.DB, name string) bool {
-	if name == "" {
-		return true
-	}
-	var count int64
-	db.Model(&models.CompanySizeOption{}).Where("name = ? AND is_active = ?", name, true).Count(&count)
-	return count > 0
+	return isActiveOption[models.CompanySizeOption](db, name)
 }
 
-// IsActiveRevenueSize reports whether name matches an active
-// RevenueSizeOption row. Empty name is allowed through — RevenueSize is optional.
+// IsActiveRevenueSize reports whether name matches an active RevenueSizeOption row.
 func IsActiveRevenueSize(db *gorm.DB, name string) bool {
-	if name == "" {
-		return true
-	}
-	var count int64
-	db.Model(&models.RevenueSizeOption{}).Where("name = ? AND is_active = ?", name, true).Count(&count)
-	return count > 0
+	return isActiveOption[models.RevenueSizeOption](db, name)
 }
 
-// IsActiveJobTitle reports whether name matches an active JobTitleOption
-// row. Empty name is allowed through — Contact.RoleTitle is optional.
+// IsActiveJobTitle reports whether name matches an active JobTitleOption row.
 func IsActiveJobTitle(db *gorm.DB, name string) bool {
-	if name == "" {
-		return true
-	}
-	var count int64
-	db.Model(&models.JobTitleOption{}).Where("name = ? AND is_active = ?", name, true).Count(&count)
-	return count > 0
+	return isActiveOption[models.JobTitleOption](db, name)
 }
 
-// IsActiveProductCategory reports whether name matches an active
-// ProductCategoryOption row. Empty name is allowed through — Category is
-// optional.
+// IsActiveProductCategory reports whether name matches an active ProductCategoryOption row.
 func IsActiveProductCategory(db *gorm.DB, name string) bool {
-	if name == "" {
-		return true
-	}
-	var count int64
-	db.Model(&models.ProductCategoryOption{}).Where("name = ? AND is_active = ?", name, true).Count(&count)
-	return count > 0
+	return isActiveOption[models.ProductCategoryOption](db, name)
 }
 
 // IsWonStage and IsLostStage report whether stage should be treated as the

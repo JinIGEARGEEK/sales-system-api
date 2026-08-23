@@ -154,3 +154,32 @@ func TestQuoteUpdate_PersistsNewFieldsAndAllowsClearingOptionalOnes(t *testing.T
 	assert.Equal(t, models.QuotePriceTypeInclTax, reloaded.PriceType)
 	assert.Nil(t, reloaded.ReferenceNumber, "omitted reference_number must be cleared, not left untouched")
 }
+
+// TestQuoteGet_ReturnsQuoteById guards the new GET /quotes/:id endpoint,
+// added so the quotation-builder rebuild's full-page Quote editor (reached
+// by direct link, with no parent Deal already loaded client-side) can load
+// a single Quote without needing its Deal id known in advance.
+func TestQuoteGet_ReturnsQuoteById(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	deal := seedDeal(t, db, nil)
+
+	quote := &models.Quote{DealID: deal.ID, Items: models.JSONItems{}, Status: models.QuoteStatusDraft}
+	require.NoError(t, db.Create(quote).Error)
+
+	var fetched quoteEnvelope
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/quotes/"+itoa(quote.ID), nil, admin.ID, admin.Role)
+	resp := doJSON(t, app, req, &fetched)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, quote.ID, fetched.Data.ID)
+	assert.Equal(t, deal.ID, fetched.Data.DealID)
+}
+
+func TestQuoteGet_404sForUnknownID(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/quotes/999999", nil, admin.ID, admin.Role)
+	resp := doJSON(t, app, req, nil)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}

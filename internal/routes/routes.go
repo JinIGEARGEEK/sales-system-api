@@ -59,12 +59,48 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	dashboardH := handlers.NewDashboardHandler(db)
 	attachmentH := handlers.NewAttachmentHandler(db)
 	pipelineStageH := handlers.NewPipelineStageHandler(db)
-	leadSourceH := handlers.NewLeadSourceHandler(db)
-	industryOptionH := handlers.NewIndustryOptionHandler(db)
-	companySizeOptionH := handlers.NewCompanySizeOptionHandler(db)
-	revenueSizeOptionH := handlers.NewRevenueSizeOptionHandler(db)
-	jobTitleOptionH := handlers.NewJobTitleOptionHandler(db)
-	productCategoryOptionH := handlers.NewProductCategoryOptionHandler(db)
+	leadSourceH := handlers.NewOptionHandler[models.LeadSourceOption](db, handlers.OptionMessages{
+		ListFailed:       "Failed to list lead sources",
+		NotFound:         "Lead source not found",
+		ConflictMessage:  "Source name already in use",
+		UpdateFailed:     "Failed to update lead source",
+		DeactivateFailed: "Failed to deactivate lead source",
+	})
+	industryOptionH := handlers.NewOptionHandler[models.IndustryOption](db, handlers.OptionMessages{
+		ListFailed:       "Failed to list industries",
+		NotFound:         "Industry not found",
+		ConflictMessage:  "Industry name already in use",
+		UpdateFailed:     "Failed to update industry",
+		DeactivateFailed: "Failed to deactivate industry",
+	})
+	companySizeOptionH := handlers.NewOptionHandler[models.CompanySizeOption](db, handlers.OptionMessages{
+		ListFailed:       "Failed to list company sizes",
+		NotFound:         "Company size not found",
+		ConflictMessage:  "Size name already in use",
+		UpdateFailed:     "Failed to update company size",
+		DeactivateFailed: "Failed to deactivate company size",
+	})
+	revenueSizeOptionH := handlers.NewOptionHandler[models.RevenueSizeOption](db, handlers.OptionMessages{
+		ListFailed:       "Failed to list revenue sizes",
+		NotFound:         "Revenue size not found",
+		ConflictMessage:  "Revenue size name already in use",
+		UpdateFailed:     "Failed to update revenue size",
+		DeactivateFailed: "Failed to deactivate revenue size",
+	})
+	jobTitleOptionH := handlers.NewOptionHandler[models.JobTitleOption](db, handlers.OptionMessages{
+		ListFailed:       "Failed to list job titles",
+		NotFound:         "Job title not found",
+		ConflictMessage:  "Job title already in use",
+		UpdateFailed:     "Failed to update job title",
+		DeactivateFailed: "Failed to deactivate job title",
+	})
+	productCategoryOptionH := handlers.NewOptionHandler[models.ProductCategoryOption](db, handlers.OptionMessages{
+		ListFailed:       "Failed to list product categories",
+		NotFound:         "Product category not found",
+		ConflictMessage:  "Category name already in use",
+		UpdateFailed:     "Failed to update product category",
+		DeactivateFailed: "Failed to deactivate product category",
+	})
 	leadScoringCriteriaH := handlers.NewLeadScoringCriteriaHandler(db)
 	notificationRuleH := handlers.NewNotificationRuleHandler(db)
 	notificationLogH := handlers.NewNotificationLogHandler(db)
@@ -213,6 +249,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	tags.Delete("/:id", bulkRoles, tagH.Delete)
 
 	// Quotes / Payments / Contracts (top-level, non-nested routes)
+	authed.Get("/quotes/:id", quoteH.Get)
 	authed.Put("/quotes/:id", quoteH.Update)
 	authed.Delete("/quotes/:id", quoteH.Delete)
 	authed.Get("/quotes/:id/export-pdf", quoteH.ExportPDF)

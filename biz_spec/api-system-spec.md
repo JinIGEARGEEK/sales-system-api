@@ -239,6 +239,7 @@ interface Company {
   name: string
   industry: string
   size: string
+  revenue_size: string   // Admin-configurable revenue bracket, distinct from headcount `size` — see §8.8
   website: string
   tags: string[]        // Tag.name values
   notes: string
@@ -251,9 +252,9 @@ interface Company {
 | Method | Path | Status | Description |
 |---|---|---|---|
 | `GET` | `/companies` | 🟢 | Filters: `status`, `tag`, `industry`, `search` (name). Backs `pages/crm/companies/index.vue`. |
-| `POST` | `/companies` | 🟢 | Create. |
+| `POST` | `/companies` | 🟢 | Create. `industry`/`size`/`revenue_size` are each validated against their own Admin-configurable option list (§8.8) — an inactive or unrecognized value is a `422` on that field. All three are optional (empty string passes). |
 | `GET` | `/companies/:id` | 🟢 | Single company — `pages/crm/companies/[id].vue`'s Overview tab. |
-| `PUT` | `/companies/:id` | 🟢 | Update. |
+| `PUT` | `/companies/:id` | 🟢 | Update. Same `industry`/`size`/`revenue_size` validation as `POST`. |
 | `DELETE` | `/companies/:id` | 🟢 | Sets `status: 'archived'` (soft delete, §1.6) — never a hard delete, since Deals/Contacts/Payments reference `company_id`. |
 | `POST` | `/companies/import` | 🟢 | Bulk import — see §6.2. `FR-CRM-014`. |
 
@@ -664,6 +665,47 @@ interface SalesTarget {
 | `DELETE` | `/admin/sales-targets/:id` | Admin | Reverts that period back to the flat `quarterly_sales_target / 4` fallback — safe and reversible (re-`POST` the same period to restore the override). |
 
 Every write here also invalidates `GET /dashboard/summary`'s response cache (§9) — a `SalesTarget` change affects `pipeline_coverage_ratio`/`quarterly_sales_target` without ever touching the `deals` table, so nothing else would surface the change promptly otherwise.
+
+---
+
+### 8.8 Admin-configurable picklists (lead sources, industries, sizes, job titles, product categories)
+
+A recurring shape across the schema: a field that used to be either a hardcoded enum or unconstrained free text (`Lead.source`/`Deal.channel`, `Company.industry`, `Company.size`, `Company.revenue_size`, `Contact.role_title`, `Product.category`) is now backed by its own Admin-managed picklist table instead. Every one of these tables is the same shape:
+
+```ts
+interface OptionRow {   // LeadSourceOption / IndustryOption / CompanySizeOption /
+  id: number             // RevenueSizeOption / JobTitleOption / ProductCategoryOption
+  name: string            // unique per table
+  is_active: boolean      // default true
+  created_at: string
+  updated_at: string
+  created_by: number | null
+  updated_by: number | null
+  deleted_by: number | null   // set on Delete; the row is never hard-deleted
+}
+```
+
+| Resource | List/Create/Update/Delete base path | Guards |
+|---|---|---|
+| Lead/Deal source | `/admin/lead-sources` | `Lead.source`, `Deal.channel` |
+| Industry | `/admin/industries` | `Company.industry` |
+| Company size (headcount) | `/admin/company-sizes` | `Company.size` |
+| Company revenue size | `/admin/revenue-sizes` | `Company.revenue_size` |
+| Contact job title | `/admin/job-titles` | `Contact.role_title` |
+| Product category | `/admin/product-categories` | `Product.category` |
+
+For each resource above:
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `<base>` | any authenticated | Returns every row, active and inactive, ordered by `name` ascending — the Admin screen needs inactive rows too so they can be re-activated. |
+| `POST` | `<base>` | Admin | Body: `{ name: string, is_active?: boolean }`. `name` is required; omitting `is_active` defaults it to `true`. A duplicate `name` is a `422`. |
+| `PATCH` | `<base>/:id` | Admin | Same body as `POST` — `name` stays required on every request (not a partial-update field), `is_active` is only touched when present in the body. |
+| `DELETE` | `<base>/:id` | Admin | Soft-delete: flips `is_active: false` (and stamps `deleted_by`) rather than removing the row, so historical Lead/Company/Contact/Product rows that already reference the now-retired name keep resolving it. |
+
+Each guarded field's own validation (the "Guards" column above) treats an empty value as valid (the field itself is optional) but rejects a non-empty value that doesn't match an *active* row in its picklist — a `422` on that field, same as any other validation error (§1.5). Deactivating an option here has no effect on rows that already carry that value; it only blocks new writes from picking an inactive or unrecognized name.
+
+Every table ships with a first-run seed (`cmd/api/main.go`'s `seedPipelineConfig`, only runs when the table is empty) so `industry`/`size`/`revenue_size`/etc. all validate against *something* out of the box. Industry's seed is carried over verbatim from the old frontend-only `INDUSTRY_OPTIONS` constant to keep existing data valid post-migration; the rest (company size, revenue size, job title, product category, lead source) had no prior hardcoded list, so their seeds are starting points an Admin is expected to tune rather than fixed business rules.
 
 ---
 

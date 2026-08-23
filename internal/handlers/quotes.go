@@ -44,6 +44,19 @@ func (h *QuoteHandler) List(c *fiber.Ctx) error {
 	return utils.OK(c, withEffectiveStatuses(quotes))
 }
 
+// Get — GET /quotes/:id. Added for the quotation-builder rebuild's full-page
+// Quote editor, reached by direct link/URL rather than always arriving with
+// a known parent Deal already loaded (unlike the modal flow List already
+// served). Read-only, same access level as List/ExportPDF (no CanWrite
+// check) — only Update enforces Deal ownership.
+func (h *QuoteHandler) Get(c *fiber.Ctx) error {
+	var quote models.Quote
+	if err := h.DB.First(&quote, c.Params("id")).Error; err != nil {
+		return utils.NotFound(c, "Quote not found")
+	}
+	return utils.OK(c, withEffectiveStatus(quote))
+}
+
 // withEffectiveStatuses overrides each Quote's Status field with its
 // EffectiveStatus() before serialization — so a Sent quote past its
 // ValidityDate reports "expired" to callers — without mutating anything in

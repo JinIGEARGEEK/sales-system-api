@@ -12,6 +12,13 @@ type JobTitleOption struct {
 
 func (JobTitleOption) TableName() string { return "job_title_options" }
 
+// GetName/SetName/GetActive/SetActive satisfy handlers.OptionRow so
+// JobTitleOptionHandler's CRUD lives in the shared generic handler.
+func (o *JobTitleOption) GetName() string  { return o.Name }
+func (o *JobTitleOption) SetName(n string) { o.Name = n }
+func (o *JobTitleOption) GetActive() bool  { return o.IsActive }
+func (o *JobTitleOption) SetActive(a bool) { o.IsActive = a }
+
 // DefaultJobTitleOptions is seeded on first run — a starting point an Admin
 // is expected to tune, not a fixed business rule (there was no prior
 // hardcoded list to preserve, same framing as DefaultCompanySizeOptions).
