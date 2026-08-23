@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"github.com/lib/pq"
+)
 
 type QuoteStatus string
 
@@ -134,6 +138,20 @@ type Quote struct {
 	// only ever reads Notes.
 	Notes         *string `json:"notes,omitempty"`
 	InternalNotes *string `json:"internal_notes,omitempty"`
+	// ExtractionStatus/ExtractionWarnings record the outcome of best-effort
+	// field extraction from an uploaded FlowAccount PDF (Upload handler,
+	// utils.ExtractFlowAccountQuote) — nil/empty for every Quote created the
+	// normal line-item way, since extraction never runs for those. "ok": every
+	// field extraction looked for was found and self-consistent. "partial":
+	// some fields extracted, ExtractionWarnings lists what's missing/suspect
+	// (e.g. a recomputed total that doesn't match the PDF's printed one) —
+	// the rep should double-check those before Sending. "failed": the upload
+	// still succeeded and the file is still attached, but the PDF didn't look
+	// like a FlowAccount export at all (or had no readable text layer), so
+	// nothing was pre-filled. A pointer for the same AutoMigrate-hazard
+	// reason as Number above — existing rows never had this column.
+	ExtractionStatus   *string        `gorm:"type:varchar(16)" json:"extraction_status,omitempty"`
+	ExtractionWarnings pq.StringArray `gorm:"type:text[]" json:"extraction_warnings,omitempty"`
 }
 
 func (Quote) TableName() string { return "quotes" }
