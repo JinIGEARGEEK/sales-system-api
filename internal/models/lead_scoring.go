@@ -2,10 +2,13 @@ package models
 
 // LeadScoringCriterion is an Admin-configurable weighted rule used to compute
 // a Lead's Score (FR-CRM-006). Field/MatchValue are matched against the Lead
-// row being scored ("source" -> Lead.Source, "has_company_name" -> non-empty
-// Lead.CompanyName) — kept as plain strings rather than a fixed enum so new
-// match fields can be added without a schema change, same trade-off
-// PipelineStage/LeadSourceOption make for their own config values.
+// row being scored ("source" -> Lead.Source, "has_company_name" -> non-nil
+// Lead.CompanyID — the Field key predates 2026-08-24's switch from a
+// free-text CompanyName to a real Company FK and was kept as-is so existing
+// seeded/Admin-configured rows keep matching) — kept as plain strings rather
+// than a fixed enum so new match fields can be added without a schema
+// change, same trade-off PipelineStage/LeadSourceOption make for their own
+// config values.
 type LeadScoringCriterion struct {
 	AuditedModel
 	Name       string `gorm:"not null;uniqueIndex" json:"name"`

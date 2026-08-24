@@ -1,6 +1,7 @@
 package database
 
 import (
+	"errors"
 	"fmt"
 
 	"gorm.io/driver/postgres"
@@ -94,7 +95,23 @@ func AutoMigrate(db *gorm.DB) error {
 		return err
 	}
 
-	return backfillCompanyDomains(db)
+	if err := backfillCompanyDomains(db); err != nil {
+		return err
+	}
+
+	// Lead.CompanyID (FK) replaces the old free-text CompanyName column —
+	// backfill every existing Lead's link from that text BEFORE dropping the
+	// column, same ordering constraint as the username/sku drops above (this
+	// one just can't happen at the top since it needs the data first).
+	if err := backfillLeadCompanyIDs(db); err != nil {
+		return err
+	}
+	if db.Migrator().HasColumn(&models.Lead{}, "company_name") {
+		if err := db.Migrator().DropColumn(&models.Lead{}, "company_name"); err != nil {
+			return fmt.Errorf("drop legacy company_name column: %w", err)
+		}
+	}
+	return nil
 }
 
 // backfillCompanyDomains populates the new Company.Domain column (added
@@ -114,6 +131,55 @@ func backfillCompanyDomains(db *gorm.DB) error {
 		}
 		if err := db.Model(&models.Company{}).Where("id = ?", co.ID).Update("domain", domain).Error; err != nil {
 			return fmt.Errorf("backfill domain for company %d: %w", co.ID, err)
+		}
+	}
+	return nil
+}
+
+// backfillLeadCompanyIDs links every pre-existing Lead's old free-text
+// company_name to a real Company via the new CompanyID column, run once
+// (per row) as part of the 2026-08-24 migration off free-text company_name
+// entirely. Reads company_name via raw SQL rather than models.Lead, since
+// that field no longer exists on the struct by the time this runs — the
+// column itself is still physically present (AutoMigrate never drops
+// columns, so it's there to read right up until the DropColumn call after
+// this) — but couldn't be read through GORM's usual model-scan path.
+// Idempotent and cheap to re-run: WHERE company_id IS NULL means every row
+// this successfully processes drops out of the query on the next run.
+func backfillLeadCompanyIDs(db *gorm.DB) error {
+	if !db.Migrator().HasColumn(&models.Lead{}, "company_name") {
+		return nil // already dropped by a prior run — nothing left to read
+	}
+
+	type leadCompanyName struct {
+		ID          uint
+		CompanyName string
+	}
+	var rows []leadCompanyName
+	if err := db.Table("leads").
+		Select("id, company_name").
+		Where("company_id IS NULL AND company_name IS NOT NULL AND company_name <> ''").
+		Find(&rows).Error; err != nil {
+		return fmt.Errorf("load leads for company_id backfill: %w", err)
+	}
+
+	for _, row := range rows {
+		var company models.Company
+		// Same case/whitespace-insensitive match as stores/companies.ts's
+		// findByName getter on the frontend — reuse an existing Company
+		// rather than creating a near-duplicate for a differently-cased or
+		// padded spelling of the same name.
+		err := db.Where("LOWER(TRIM(name)) = LOWER(TRIM(?))", row.CompanyName).First(&company).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			company = models.Company{Name: row.CompanyName, Status: models.StatusActive}
+			if err := db.Create(&company).Error; err != nil {
+				return fmt.Errorf("create company %q for lead %d backfill: %w", row.CompanyName, row.ID, err)
+			}
+		} else if err != nil {
+			return fmt.Errorf("look up company %q for lead %d backfill: %w", row.CompanyName, row.ID, err)
+		}
+		if err := db.Model(&models.Lead{}).Where("id = ?", row.ID).Update("company_id", company.ID).Error; err != nil {
+			return fmt.Errorf("backfill company_id for lead %d: %w", row.ID, err)
 		}
 	}
 	return nil
