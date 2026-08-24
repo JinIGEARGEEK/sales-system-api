@@ -1,10 +1,10 @@
 # API System Specification — I GEAR GEEK Sales CRM
 
 **Companion document to:** `feature-spec.md` (business requirements), `user-story.md` (role acceptance criteria), `design-system.md` (frontend conventions)
-**Purpose:** The contract for the backend API this frontend is built against. This frontend (`sales-system`) is currently **100% client-side mock data** (Pinia stores seeded from `constants/mockData/`, see `design-system.md` §8) — no real HTTP calls exist yet beyond the `axios` plugin scaffold (`plugins/axios.ts`) and the `useMutateApi`/`useFetchApi` composables (`composables/utils/useAPI.ts`). This document specifies the API a **separate backend repo/project** must implement so this frontend can be wired up for real, resource by resource, without changing its existing conventions.
-**Audience:** Backend engineering team / AI coding agent implementing the API in another repository.
-**Version:** 1.1 (adds Thai role/use-case summary)
-**Date:** 2026-08-14
+**Purpose:** The contract for this backend API. This document was originally written when the frontend (`sales-system`) was still 100% client-side mock data with no real backend at all — that's no longer the state of either repo (20+ merged PRs, a working Go/Fiber API, and a frontend wired up against it resource by resource). It's kept up to date as a living reference for the current contract rather than as a forward-looking build spec.
+**Audience:** Backend/frontend engineers (and AI coding agents) working against this API.
+**Version:** 1.2 (Lead `company_id` FK, rebuilt Quote shape + FlowAccount PDF extraction, Admin Configuration endpoints, missing bulk endpoints, Company field additions — see `CHANGELOG.md`)
+**Date:** 2026-08-24
 
 > **Status legend** (mirrors `feature-spec.md`'s legend, applied per endpoint):
 > 🟢 **Required now** — replaces an existing mock Pinia store; needed to take this frontend off mock data as-is.
@@ -205,25 +205,36 @@ type LeadSource = 'Referral' | 'Website' | 'Event' | 'Ads' | 'Other'
 interface Lead {
   id: number
   name: string
-  company_name: string
+  company_id: number | null   // Company.id — replaces the old free-text company_name (2026-08-24)
   email: string
   phone: string
   source: LeadSource
   status: LeadStatus
   notes: string
   assigned_to: number | null   // User.id
+  tags: string[]
+  converted_deal_id: number | null   // set once this Lead has been converted; prevents double-conversion
+  score: number                       // FR-CRM-006 — sum of matching active LeadScoringCriterion weights
+  classification: 'none' | 'mql' | 'sql'   // FR-CRM-007 — derived from score, or "sql" set manually by a rep
   created_at: string
 }
 ```
 
+> `company_id` is nullable — a Lead can still exist with no Company picked yet, same as the old free-text `company_name` was optional. Existing rows were backfilled from their old `company_name` text at migration time (exact case-insensitive match against Companies, or a newly created Company when no match existed).
+
 | Method | Path | Status | Description |
 |---|---|---|---|
-| `GET` | `/leads` | 🟢 | Filters: `status`, `source`, `assigned_to`, `search` (name/company_name/email). Backs `pages/crm/leads/index.vue`. |
-| `POST` | `/leads` | 🟢 | Create. `email`, if supplied, must be a syntactically valid address (not domain-restricted like staff `User.email` — a Lead's email belongs to an external contact) — `422` otherwise. Empty is fine; the field stays optional. |
+| `GET` | `/leads` | 🟢 | Filters: `status`, `source`, `assigned_to` (`unassigned` for `assigned_to IS NULL`), `company_id` (exact match), `exclude_converted=true`, `search` (name/email/**the joined Company's name**), `sort` (including `sort=company_name`, resolved via a join since it isn't a real column). Backs `pages/crm/leads/index.vue`. |
+| `POST` | `/leads` | 🟢 | Create. `email`, if supplied, must be a syntactically valid address (not domain-restricted like staff `User.email` — a Lead's email belongs to an external contact) — `422` otherwise. Empty is fine; the field stays optional. `source` must be an active `LeadSourceOption` (§8.8). If `assigned_to` is omitted, the backend auto-assigns to whichever active Sales Rep currently has the fewest open Leads+Deals (round-robin by load). `classification` accepts only an explicit `"sql"` as a manual override — any other value defers to the auto-computed `score`/`classification` result. |
 | `GET` | `/leads/:id` | 🟢 | Single lead. |
-| `PUT` | `/leads/:id` | 🟢 | Update (including status transitions). Same `email` validation as Create. |
-| `DELETE` | `/leads/:id` | 🟢 | Delete. |
-| `POST` | `/leads/:id/convert` | 🟢 | Converts a Qualified Lead into a Deal (and Company/Contact if new) — `FR-CRM-004`. Body: `{ company_id?: number, contact_id?: number, deal: { title, value, stage, ... } }` — if `company_id`/`contact_id` omitted, backend creates them from the Lead's `company_name`/`email`/`phone`. Response: `{ data: { deal: Deal, company: Company, contact: Contact } }`. |
+| `PUT` | `/leads/:id` | 🟢 | Update (including status transitions). Same `email`/`source` validation as Create. Omitting `classification` leaves an existing manual `"sql"` override in place rather than letting it fall back to the auto-computed value. |
+| `DELETE` | `/leads/:id` | 🟢 | Soft-delete (§1.6) — recoverable via Trash/Restore below. |
+| `GET` | `/leads/trash` | 🟢 | Sales Manager/Admin only. List soft-deleted leads, paginated like `GET /leads`. |
+| `POST` | `/leads/:id/restore` | 🟢 | Sales Manager/Admin only. Clears `deleted_at`/`deleted_by`. |
+| `PATCH` | `/leads/bulk-reassign` | 🟢 | Sales Manager/Admin only. Body: `{ ids: number[], assigned_to: number \| null }`. |
+| `PATCH` | `/leads/bulk-tag` | 🟢 | Sales Manager/Admin only. Body: `{ ids: number[], tags: string[], mode: 'set' \| 'add' }` — `"set"` replaces each Lead's tags outright, `"add"` merges into the existing set. |
+| `PATCH` | `/leads/bulk-archive` | 🟢 | Sales Manager/Admin only. Soft-deletes every listed Lead in one transaction (same effect as Delete, batched). |
+| `POST` | `/leads/:id/convert` | 🟢 | Converts a Qualified Lead into a Deal (and Company/Contact if new) — `FR-CRM-004`. Body: `{ company_id?: number, contact_id?: number, deal: { title, value, stage, channel, ... } }`. Company resolution order: an explicit `company_id` in the request always wins; otherwise the Lead's own `company_id` is reused (falling back to creating a fresh Company only if that Company has since been soft-deleted); otherwise (a Lead with no Company at all) a new blank Company is created. `contact_id` omitted creates one from the Lead's `name`/`email`/`phone`. Any Attachments on the Lead are carried over to the new Deal. Response: `{ data: { deal: Deal, company: Company, contact: Contact } }`. |
 
 ---
 
@@ -239,14 +250,20 @@ interface Company {
   name: string
   industry: string
   size: string
+  revenue_size: string
   website: string
   tags: string[]        // Tag.name values
   notes: string
   status: ActiveArchivedStatus
+  legal_name: string | null   // registered legal entity name — used on Contract PDF exports
+  address: string | null      // registered address — used on Contract PDF exports
+  tax_id: string | null       // used on Contract PDF exports
   created_at: string
   updated_at: string
 }
 ```
+
+> `industry`/`size`/`revenue_size` should be validated against the Admin-configurable option lists in §8.8 (`IndustryOption`/`CompanySizeOption`/`RevenueSizeOption`) rather than free text.
 
 | Method | Path | Status | Description |
 |---|---|---|---|
@@ -343,13 +360,18 @@ interface Deal {
 
 | Method | Path | Status | Description |
 |---|---|---|---|
-| `GET` | `/deals` | 🟢 | Filters: `stage`, `status`, `company_id`, `assigned_to`, `business_unit`, `channel`, `search` (title). Backs both `pages/crm/deals/index.vue` (Kanban) and the dashboard's `filteredDeals`. |
-| `POST` | `/deals` | 🟢 | Create. `value` must be ≥ 0; `expected_close_date`, if supplied, must parse as either a plain `YYYY-MM-DD` date or a full ISO 8601 timestamp (the two shapes the frontend actually sends) — `422` otherwise on either field. |
+| `GET` | `/deals` | 🟢 | Filters: `stage`, `status`, `company_id`, `assigned_to`, `business_unit`, `channel`, `search` (title). `sort=company_name` resolved via a join (Deal has no such column). Backs both `pages/crm/deals/index.vue` (Kanban) and the dashboard's `filteredDeals`. |
+| `POST` | `/deals` | 🟢 | Create. `value` must be ≥ 0; `expected_close_date`, if supplied, must parse as either a plain `YYYY-MM-DD` date or a full ISO 8601 timestamp (the two shapes the frontend actually sends) — `422` otherwise on either field. `stage`/`channel` must be an active `PipelineStage`/`LeadSourceOption` (§8.8); `probability`, if supplied, must be 0–100; `lost_reason` is required once `stage`/`status` moves to Lost. |
 | `GET` | `/deals/:id` | 🟢 | Single deal — `pages/crm/deals/[id].vue` Overview tab. |
-| `PUT` | `/deals/:id` | 🟢 | Full update. Same `value`/`expected_close_date` validation as Create. |
+| `PUT` | `/deals/:id` | 🟢 | Full update. Same validation as Create. |
 | `PATCH` | `/deals/:id/stage` | 🟢 | Body: `{ stage: DealStage }`. Dedicated endpoint for the Kanban drag-and-drop (`CrmPipelineBoard`'s `@move`) so the backend can also update `status` (open/won/lost) and fire `FR-CRM-064`'s auto Customer-Product creation (§8.2) in one transaction when stage becomes `Won`. |
-| `DELETE` | `/deals/:id` | 🟢 | Delete. |
-| `PATCH` | `/deals/:id/reassign` | 🔜 | Body: `{ assigned_to: number }`. Separate from the general `PUT` so the backend can append to an owner-history log — `FR-CRM-025`/`M-8`, not built in the frontend yet. |
+| `DELETE` | `/deals/:id` | 🟢 | Soft-delete (§1.6) — recoverable via Trash/Restore below. |
+| `GET` | `/deals/trash` | 🟢 | Sales Manager/Admin only. List soft-deleted deals, paginated like `GET /deals`. |
+| `POST` | `/deals/:id/restore` | 🟢 | Sales Manager/Admin only. |
+| `PATCH` | `/deals/:id/reassign` | 🟢 | Sales Manager/Admin only. Body: `{ assigned_to: number }`. |
+| `PATCH` | `/deals/bulk-reassign` | 🟢 | Sales Manager/Admin only. Body: `{ ids: number[], assigned_to: number \| null }`. |
+| `PATCH` | `/deals/bulk-tag` | 🟢 | Sales Manager/Admin only. Body: `{ ids: number[], tags: string[], mode: 'set' \| 'add' }`. |
+| `PATCH` | `/deals/bulk-archive` | 🟢 | Sales Manager/Admin only. Soft-deletes every listed Deal in one transaction. |
 
 ### 7.2 Activities
 
@@ -409,33 +431,58 @@ type QuoteStatus = 'draft' | 'sent' | 'accepted' | 'rejected'
 // validity_date has passed (Quote.EffectiveStatus) — see quotes-expiring-soon
 // (§8.4) for the forward-looking mirror of this same check.
 
+type QuotePriceType = 'excl_tax' | 'incl_tax'   // display/PDF concern only — doesn't change how VAT is computed
+
 interface QuoteItem {
   description: string
   qty: number
   price: number
+  product_id?: number       // when set, the backend snapshots that Product's current name/price into
+                             // description/price at save time — later Product edits don't retroactively
+                             // change a saved quote
+  discount_percent?: number // 0-100, reduces this item's own line total; independent of Quote.discount_total
 }
 
 interface Quote {
   id: number
   deal_id: number
+  number: string | null          // generated, immutable document number (e.g. "QT2026080004"), assigned once at Create
+  scope_of_work: string          // free-text engagement narrative, printed above the line-items table on export
   items: QuoteItem[]
+  reference_number: string | null  // free-text, user-entered (e.g. the customer's own PO number)
+  issue_date: string | null        // the quote's "as of" date
   validity_date: string | null
+  credit_days: number
+  price_type: QuotePriceType
+  vat_enabled: boolean            // Thailand's fixed 7% VAT — no separate rate field, 7% is statutory
+  wht_enabled: boolean            // withholding tax — varies by service type, so has its own rate
+  wht_rate: number
+  discount_total: number          // flat currency amount, subtracted once from the items' summed subtotal
+  notes: string | null            // prints on the exported PDF (payment terms, validity terms, etc.)
+  internal_notes: string | null   // never printed on the exported PDF
   status: QuoteStatus | 'expired'
   file_name?: string
   file_url?: string
   file_size?: number
   uploaded_at?: string
+  extraction_status?: 'ok' | 'partial' | 'failed'   // see note below — only set on PDF-uploaded quotes
+  extraction_warnings?: string[]
 }
 ```
+
+> **FlowAccount PDF extraction.** `POST /deals/:dealId/quotes/upload` attempts best-effort field extraction from an uploaded FlowAccount quotation PDF, pre-filling `number`/`scope_of_work`/`items`/dates/totals instead of leaving the Quote fully blank. `extraction_status`/`extraction_warnings` are `nil`/empty for every Quote created the normal line-item way (extraction never runs for those) — they're only set on the upload path:
+> - `"ok"` — every field extraction looked for was found and self-consistent.
+> - `"partial"` — some fields extracted; `extraction_warnings` lists what's missing or suspect (e.g. a recomputed total that doesn't match the PDF's printed one) — the rep should double-check those before Sending.
+> - `"failed"` — the upload still succeeds and the file is still attached, but the PDF didn't look like a FlowAccount export at all (or had no readable text layer), so nothing was pre-filled.
 
 | Method | Path | Status | Description |
 |---|---|---|---|
 | `GET` | `/deals/:dealId/quotes` | 🟢 | List quotes for a Deal. `status` on each row reflects `EffectiveStatus` (may report `expired`), not necessarily the raw stored value. |
-| `POST` | `/deals/:dealId/quotes` | 🟢 | Create a line-item quote. |
-| `POST` | `/deals/:dealId/quotes/upload` | 🟢 | Upload a PDF quote in place of line items (§6.1) — sets `file_name/file_url/file_size/uploaded_at`, leaves `items` empty. |
-| `PUT` | `/quotes/:id` | 🟢 | Update status/items/validity_date. |
+| `POST` | `/deals/:dealId/quotes` | 🟢 | Create a line-item quote. `number` is always server-generated — not client-settable. |
+| `POST` | `/deals/:dealId/quotes/upload` | 🟢 | Upload a PDF quote (§6.1) — sets `file_name/file_url/file_size/uploaded_at` and attempts FlowAccount field extraction (see above), setting `extraction_status`/`extraction_warnings` and pre-filling whatever fields it could read; `items` stays empty only if extraction found none. |
+| `PUT` | `/quotes/:id` | 🟢 | Update status/items and every other field above (`number` excepted — immutable after Create). |
 | `DELETE` | `/quotes/:id` | 🟢 | Delete. |
-| `GET` | `/quotes/:id/export-pdf` | 🟢 | `FR-CRM-042` — returns a generated PDF (`github.com/go-pdf/fpdf`): line items table, Deal/Company/Contact header, validity date, status. Read-only, same access level as List (no `CanWrite` ownership check). |
+| `GET` | `/quotes/:id/export-pdf` | 🟢 | `FR-CRM-042` — returns a generated PDF (`github.com/go-pdf/fpdf`): document number, scope of work, line items table (with per-item discount and tax/WHT totals), Deal/Company/Contact header, validity date, status, and `notes` (never `internal_notes`). Read-only, same access level as List (no `CanWrite` ownership check). |
 
 ### 7.5 Payments
 
@@ -490,7 +537,7 @@ interface Task {
 
 ## 8. Planned entities
 
-This section was originally written with nothing built on either side. That's no longer true for every subsection: §8.2 (Products/Customer-Products), §8.3 (Projects), and §8.5 (Audit log) now have real backend handlers **and** frontend pages/stores/interfaces consuming them — treat those as 🟢 **Required now**, kept here rather than moved up only to avoid re-plumbing every cross-reference into them. §8.1 (Contracts) and §8.4 (Reports) remain 🔜 **Planned** in full — no page, store, or interface for either exists in the frontend yet. They're specified here so the backend can be built ahead of or alongside the frontend work, per `feature-spec.md` §3.5/§3.7/§3.8. Do not treat their absence from the frontend today as "not needed" — `feature-spec.md` calls §3.7 (Products/Projects) "the core addition" to this CRM.
+This section was originally written with nothing built on either side. That's no longer true for any of it: every subsection (§8.1 Contracts, §8.2 Products/Customer-Products, §8.3 Projects, §8.4 Reports, §8.5 Audit log, §8.6 Admin Settings, §8.7 Sales Targets, §8.8 Admin Configuration) now has real backend handlers **and** frontend pages/stores/interfaces consuming them — treat all of it as 🟢 **Required now**, kept under "Planned entities" as a section heading rather than moved up only to avoid re-plumbing every cross-reference into it.
 
 ### 8.1 Contracts (`FR-CRM-043`–`045`)
 
@@ -500,9 +547,12 @@ type ContractStatus = 'draft' | 'sent' | 'signed' | 'expired'
 interface Contract {
   id: number
   deal_id: number
+  quote_id: number | null   // the Quote a Contract's PDF pulls line items/total from — optional,
+                              // a Contract can be drafted before a Quote is finalized
   status: ContractStatus
   signed_file_url: string | null
   signed_date: string | null
+  created_at: string
 }
 ```
 
@@ -510,8 +560,9 @@ interface Contract {
 |---|---|---|
 | `GET` | `/deals/:dealId/contracts` | List. |
 | `POST` | `/deals/:dealId/contracts` | Create. |
-| `PUT` | `/contracts/:id` | Update status. |
+| `PUT` | `/contracts/:id` | Update status/`quote_id`. |
 | `POST` | `/contracts/:id/upload` | Upload the signed document (§6.1) → sets `signed_file_url`/`signed_date`. |
+| `GET` | `/contracts/:id/export-pdf` | Returns a generated PDF pulling line items/total from the linked Quote (if any), Deal/Company header, and Company `legal_name`/`address`/`tax_id` (§4) as the registered party details. |
 
 ### 8.2 Product Catalog & Customer-Product tracking (`FR-CRM-060`–`066`)
 
@@ -664,6 +715,99 @@ interface SalesTarget {
 | `DELETE` | `/admin/sales-targets/:id` | Admin | Reverts that period back to the flat `quarterly_sales_target / 4` fallback — safe and reversible (re-`POST` the same period to restore the override). |
 
 Every write here also invalidates `GET /dashboard/summary`'s response cache (§9) — a `SalesTarget` change affects `pipeline_coverage_ratio`/`quarterly_sales_target` without ever touching the `deals` table, so nothing else would surface the change promptly otherwise.
+
+### 8.8 Admin Configuration (option lists, lead scoring, notifications)
+
+🟢 **Required now** — fully implemented and routed (Admin only, `adminOnly` middleware) but previously undocumented here. Replaces several enums/lists that used to be hardcoded (`DealStage`, `LeadSource`) or unconstrained free text (`Company.industry/size/revenue_size`, `Contact.role_title`, Product category) with Admin-editable, DB-backed option rows — every Create/Update endpoint elsewhere in this spec that references one of these values (Lead/Deal `source`/`channel`, Deal `stage`, Contact `role_title`, etc.) validates against the corresponding active row here rather than a fixed Go enum.
+
+Every option-list resource below (`PipelineStage`, `LeadSourceOption`, `IndustryOption`, `CompanySizeOption`, `RevenueSizeOption`, `JobTitleOption`, `ProductCategoryOption`) shares the same shape and endpoint pattern:
+
+```ts
+interface PipelineStage {          // the only one with extra fields — see note below
+  id: number
+  name: string                     // unique
+  sort_order: number
+  is_active: boolean
+  is_won_stage: boolean            // this stage's Deals auto-transition status to "won"
+  is_lost_stage: boolean           // this stage's Deals auto-transition status to "lost", require lost_reason
+  created_at: string
+}
+
+interface OptionRow {              // LeadSourceOption / IndustryOption / CompanySizeOption /
+  id: number                       // RevenueSizeOption / JobTitleOption / ProductCategoryOption
+  name: string                     // unique
+  is_active: boolean
+  created_at: string
+}
+```
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` / `POST` | `/admin/pipeline-stages` | List / create a `PipelineStage`. Seeded on first run from the previously hardcoded `DealStage` enum (`Lead, Qualified, Proposal Sent, Negotiation, Won, Lost`) so existing Deals validate unchanged. |
+| `PATCH` / `DELETE` | `/admin/pipeline-stages/:id` | Update (including `is_active`/`sort_order`/`is_won_stage`/`is_lost_stage`) / delete. |
+| `GET` / `POST` | `/admin/lead-sources` | List / create a `LeadSourceOption` — shared by `Lead.source` and `Deal.channel`. Seeded from the retired `LeadSource` enum (`Referral, Website, Event, Ads, Other`). |
+| `PATCH` / `DELETE` | `/admin/lead-sources/:id` | Update / delete. |
+| `GET` / `POST` | `/admin/industries` | List / create an `IndustryOption` for `Company.industry`. Seeded from the frontend's retired `INDUSTRY_OPTIONS` constant. |
+| `PATCH` / `DELETE` | `/admin/industries/:id` | Update / delete. |
+| `GET` / `POST` | `/admin/company-sizes` | List / create a `CompanySizeOption` for `Company.size`. No prior hardcoded list — the seeded rows (`1-10` … `1000+`) are a tunable starting point, not a fixed business rule. |
+| `PATCH` / `DELETE` | `/admin/company-sizes/:id` | Update / delete. |
+| `GET` / `POST` | `/admin/revenue-sizes` | List / create a `RevenueSizeOption` for `Company.revenue_size`. Same "tunable starting point" framing as company-sizes. |
+| `PATCH` / `DELETE` | `/admin/revenue-sizes/:id` | Update / delete. |
+| `GET` / `POST` | `/admin/job-titles` | List / create a `JobTitleOption` for `Contact.role_title`. |
+| `PATCH` / `DELETE` | `/admin/job-titles/:id` | Update / delete. |
+| `GET` / `POST` | `/admin/product-categories` | List / create a `ProductCategoryOption` for `Product.category`. |
+| `PATCH` / `DELETE` | `/admin/product-categories/:id` | Update / delete. |
+
+**Lead scoring criteria** (`FR-CRM-006`) — weighted rules summed into `Lead.score`:
+
+```ts
+interface LeadScoringCriterion {
+  id: number
+  name: string
+  field: string          // e.g. "source", "has_company_name", "has_phone" — matched against the scored Lead
+  match_value: string    // compared against `field`'s value on the Lead (e.g. a specific LeadSource name)
+  weight: number          // added to Lead.score when this criterion matches
+  is_active: boolean
+  created_at: string
+}
+```
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` / `POST` | `/admin/lead-scoring-criteria` | List / create. |
+| `PATCH` / `DELETE` | `/admin/lead-scoring-criteria/:id` | Update / delete. |
+
+**Workflow notification rules** (`FR-CRM-100`–`102`) — Admin-configurable thresholds for the in-app "this needs attention" notifications (a Deal idle in-stage, a Quote about to expire, a Contract stuck unsigned):
+
+```ts
+type NotificationEntityType = 'deal' | 'quote' | 'contract'
+type NotificationRecipientRole = 'owner' | 'owner_and_managers'
+
+interface NotificationRule {
+  id: number
+  name: string
+  entity_type: NotificationEntityType
+  threshold_days: number   // "deal": days idle in its current stage. "quote": days until validity_date.
+                             // "contract": days sitting Draft/Sent without being signed.
+  recipient_role: NotificationRecipientRole
+  is_active: boolean
+  created_at: string
+}
+
+interface NotificationLogEntry {
+  id: number
+  rule_id: number
+  entity_id: number
+  context: string          // the Deal's stage at the time of firing (for "deal" rules); "" otherwise
+  notified_at: string
+}
+```
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` / `POST` | `/admin/notification-rules` | Admin | List / create a `NotificationRule`. |
+| `PATCH` / `DELETE` | `/admin/notification-rules/:id` | Admin | Update / delete. |
+| `GET` | `/notification-log` | any authenticated | Recent rule firings for the caller's own entities (per-row ownership scoping happens inside the handler, not a role gate) — powers an in-app notification feed. |
 
 ---
 

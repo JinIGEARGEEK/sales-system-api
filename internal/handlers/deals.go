@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -30,17 +29,8 @@ func (h *DealHandler) List(c *fiber.Ctx) error {
 	query.Count(&total)
 
 	var deals []models.Deal
-	// "company_name" is a special case (Deal has no such column — it's the
-	// related Company's name), handled by a join below since it can't go
-	// through ApplySort's plain-column allow-list.
-	if sortField := strings.TrimPrefix(c.Query("sort"), "-"); sortField == "company_name" {
-		dir := "ASC"
-		if strings.HasPrefix(c.Query("sort"), "-") {
-			dir = "DESC"
-		}
-		query = query.Joins("JOIN companies ON companies.id = deals.company_id").
-			Order("companies.name " + dir).
-			Select("deals.*")
+	if joined, ok := utils.ApplyCompanyNameSort(query, "deals", c.Query("sort")); ok {
+		query = joined
 	} else {
 		query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "title": true, "value": true}, "-created_at")
 	}

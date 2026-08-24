@@ -69,9 +69,10 @@ func (h *LeadHandler) List(c *fiber.Ctx) error {
 	// The related Company's name is needed for either a "search" match or a
 	// "company_name" sort — join once, up front, whenever either is in
 	// play, rather than duplicating the join per use like deals.go/
-	// contacts.go's sort-only special case does (Lead didn't have that
-	// existing search behavior to preserve until this free-text ->
-	// company_id migration, so it isn't bound by their same precedent).
+	// contacts.go's sort-only special case does (see utils.ApplyCompanyNameSort,
+	// which those two now share; Lead can't reuse it here since it also needs
+	// the join for "search" and needs LEFT JOIN rather than that helper's
+	// INNER JOIN — see its doc comment for why).
 	// LEFT JOIN, not JOIN: a Lead with no company_id at all (still allowed)
 	// must not silently disappear from an otherwise-unfiltered list.
 	needsCompanyJoin := sortField == "company_name" || search != ""
