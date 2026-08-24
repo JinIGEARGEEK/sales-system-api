@@ -2,6 +2,7 @@ package utils
 
 import (
 	"math"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -9,12 +10,12 @@ import (
 
 // ListMeta mirrors the frontend's ApiResponse<T> list envelope — api-system-spec.md §1.3.
 type ListMeta struct {
-	Page      int  `json:"page"`
-	PerPage   int  `json:"per_page"`
+	Page      int   `json:"page"`
+	PerPage   int   `json:"per_page"`
 	Total     int64 `json:"total"`
-	TotalPage int  `json:"total_page"`
-	Next      *int `json:"next"`
-	Prev      *int `json:"prev"`
+	TotalPage int   `json:"total_page"`
+	Next      *int  `json:"next"`
+	Prev      *int  `json:"prev"`
 }
 
 func OK(c *fiber.Ctx, data interface{}) error {
@@ -107,4 +108,36 @@ func orDefault(v, def string) string {
 		return def
 	}
 	return v
+}
+
+// ApplyCompanyNameSort handles the "company_name" sort special case shared by
+// every resource that belongs to a Company but has no such column of its own
+// (Deal, Contact) — the real column lives on the joined companies table, so
+// it can't go through ApplySort's plain allow-list. table is the caller's own
+// table name (e.g. "deals"), used both to build the FK join condition
+// (table.company_id) and to re-narrow the SELECT list back to the caller's
+// own columns afterward — without that, SELECT * would also pull the joined
+// companies.* columns, which Find can't scan into the caller's model.
+//
+// Returns the query unchanged, and false, when sortParam doesn't request
+// "company_name" — callers fall back to their own ApplySort call in that
+// case. Note this always uses an INNER JOIN: it's only reachable for
+// resources where the FK is NOT NULL (Deal.CompanyID, Contact.CompanyID), so
+// a row can never disappear from the join. Lead's sort-by-company_name case
+// is intentionally NOT unified here — Lead.CompanyID is nullable and the join
+// is also needed for its "search" filter, so leads.go keeps its own LEFT JOIN
+// handling rather than forcing this INNER-JOIN-only helper to cover both.
+func ApplyCompanyNameSort(query *gorm.DB, table, sortParam string) (*gorm.DB, bool) {
+	sortField := strings.TrimPrefix(sortParam, "-")
+	if sortField != "company_name" {
+		return query, false
+	}
+	dir := "ASC"
+	if strings.HasPrefix(sortParam, "-") {
+		dir = "DESC"
+	}
+	query = query.Joins("JOIN companies ON companies.id = " + table + ".company_id").
+		Order("companies.name " + dir).
+		Select(table + ".*")
+	return query, true
 }

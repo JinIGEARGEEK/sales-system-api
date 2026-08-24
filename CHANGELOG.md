@@ -1,0 +1,49 @@
+# Changelog
+
+Notable changes to this API, newest first. Dates are merge dates on `main`. See `biz_spec/api-system-spec.md` for the current contract these changes feed into.
+
+Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
+
+## 2026-08-24 — Lead `company_id` FK
+
+Replaced `Lead.company_name` (free text) with `Lead.company_id`, a nullable FK to `Company` — matches how `Deal`/`Contact` already reference their Company, closes a dedupe gap on `POST /leads/:id/convert`. Existing rows backfilled by case-insensitive name match, or a new Company created when none matched. Spec: §3.
+
+## 2026-08-23 — FlowAccount quote PDF extraction
+
+`POST /deals/:dealId/quotes/upload` now attempts best-effort field extraction from an uploaded FlowAccount quotation PDF, pre-filling the new quote's number/scope-of-work/items/dates/totals instead of leaving it blank. Adds `Quote.extraction_status` (`ok`/`partial`/`failed`) and `extraction_warnings`. Spec: §7.4.
+
+## 2026-08-23 — Quote builder rebuild
+
+Rebuilt `Quote`/`QuoteItem` with document numbering, scope of work, reference number, issue/credit-day fields, price type, VAT/WHT, per-item and whole-quote discounts, and separate customer-facing vs. internal notes. Spec: §7.4.
+
+## 2026-08-22 — Contract-signed-before-Won gate, source-deal-id validation fixes, Task priority + CustomerProduct fields
+
+`FR-CRM-045`: a Deal can't move to `Won` unless it has a signed Contract. Fixed a validation gap on `CustomerProduct.source_deal_id`. Added priority to Task and additional fields to CustomerProduct.
+
+## 2026-08-21 — Admin-configurable option lists, lead scoring, notifications, reports
+
+Replaced hardcoded/free-text `Company.industry`/`size`/`revenue_size`, `Contact.role_title`, and Product category with Admin-editable option lists (`/admin/industries`, `/admin/company-sizes`, `/admin/revenue-sizes`, `/admin/job-titles`, `/admin/product-categories`). Added `LeadScoringCriterion`-driven `Lead.score`/`classification` (`FR-CRM-006`/`007`), a `sales-cycle` report, and the `NotificationRule`/`NotificationLog` workflow-automation engine (`FR-CRM-100`–`102`). Added six new `/reports/*` endpoints plus CSV export/sort/filter support across all reports. Spec: §8.4, §8.8.
+
+## 2026-08-20 — Sales targets, annual revenue goal, Task bulk actions
+
+Added per-quarter `SalesTarget` overrides (`FR-CRM-092`) and `AppSettings.annual_revenue_goal` (`FR-CRM-091`) feeding the dashboard. Added `PATCH /tasks/bulk-mark-done` and `/tasks/bulk-reassign`. Spec: §7.6, §8.6, §8.7, §9.
+
+## 2026-08-19 — RBAC gaps, upload-serving security fixes, govulncheck CVE fix, perf/security pass
+
+Closed several RBAC enforcement gaps, fixed unauthenticated access to `/uploads`, patched a `fasthttp` CVE flagged by `govulncheck`, and general performance/security hardening.
+
+## 2026-08-17 — Deal forecasting, configurable pipeline stages, Quote expiration, sales quota
+
+Added `Deal.probability` and `Quote.EffectiveStatus`-derived `expired` state, admin-configurable `PipelineStage`/`LeadSourceOption` (replacing the hardcoded `DealStage`/`LeadSource` enums), `AppSettings.quarterly_sales_target`, Quote↔Product linking, CSV export, and extended soft-delete trash/restore to Companies and Contacts.
+
+## 2026-08-16 — Products/Projects/Contracts backend, Attachments, bulk actions
+
+Finished the Products/Customer-Products (§8.2) and Projects (§8.3) backend, added Contract PDF export, an Attachments API, auto-convert Leads to Deals from a pipeline drag, and Deal/Lead bulk actions + trash.
+
+## 2026-08-14/15 — Auth hardening, Railway deploy, integration tests
+
+Company-email-only authentication (dropped username), forced password change on Admin-assigned passwords, Railway deploy support, first integration test suite, and initial `README.md`.
+
+## Earlier
+
+Initial backend build: Auth/Users, Leads, Companies, Contacts, Deals, Activities, Tags, Quotes (initial line-item shape), Payments, Tasks, Audit log, Dashboard aggregate — per `biz_spec/api-system-spec.md`'s original build order (§11).
