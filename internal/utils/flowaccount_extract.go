@@ -115,7 +115,7 @@ func ExtractFlowAccountQuote(pdfBytes []byte) (*FlowAccountExtraction, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open pdf: %w", err)
 	}
-	defer doc.Close()
+	defer func() { _ = doc.Close() }()
 
 	var raw strings.Builder
 	for n := 0; n < doc.NumPage(); n++ {
