@@ -106,7 +106,8 @@ func TestLeadConvert_CarriesAttachments(t *testing.T) {
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 
-	lead := &models.Lead{Name: "Jordan Lee", CompanyName: "Acme Corp", Source: models.LeadSourceWebsite, Status: models.LeadStatusQualified}
+	company := seedCompany(t, db)
+	lead := &models.Lead{Name: "Jordan Lee", CompanyID: &company.ID, Source: models.LeadSourceWebsite, Status: models.LeadStatusQualified}
 	require.NoError(t, db.Create(lead).Error)
 
 	createReq := testutil.AuthRequest(t, http.MethodPost, "/api/v1/attachments", map[string]interface{}{

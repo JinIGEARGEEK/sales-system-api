@@ -46,11 +46,14 @@ type leadSourceConversion struct {
 }
 
 // fetchLeadSourceConversion — shared by LeadSourceConversion (JSON) and
-// LeadSourceConversionExport (CSV). FR-CRM-054, FR-CRM-055 (rep filter). Lead
-// has no Company FK (only a free-text company_name), so there's no
-// company_tag filter here — that only applies to Deal-based reports. Sorted
-// by Total DESC so the sources actually driving pipeline volume lead the
-// list, not whichever the GROUP BY happens to emit first.
+// LeadSourceConversionExport (CSV). FR-CRM-054, FR-CRM-055 (rep filter).
+// No company_tag filter here — that only applies to Deal-based reports.
+// Lead gained a real Company FK (CompanyID) 2026-08-24, replacing the old
+// free-text company_name, so a company_tag filter joined through it would
+// now be feasible; just not added here since this report's filter set
+// wasn't otherwise in scope for that change. Sorted by Total DESC so the
+// sources actually driving pipeline volume lead the list, not whichever the
+// GROUP BY happens to emit first.
 func (h *ReportHandler) fetchLeadSourceConversion(c *fiber.Ctx) ([]leadSourceConversion, error) {
 	query := h.DB.Model(&models.Lead{})
 	if v := c.Query("assigned_to"); v != "" {

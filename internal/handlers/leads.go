@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"errors"
 	"net/mail"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -41,7 +43,8 @@ func NewLeadHandler(db *gorm.DB) *LeadHandler {
 	return &LeadHandler{DB: db}
 }
 
-// List — GET /leads. Filters: status, source, assigned_to, search (name/company_name/email).
+// List — GET /leads. Filters: status, source, assigned_to, company_id
+// (exact match), search (name/email/company name).
 func (h *LeadHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := h.DB.Model(&models.Lead{})
@@ -57,19 +60,55 @@ func (h *LeadHandler) List(c *fiber.Ctx) error {
 	} else if v != "" {
 		query = query.Where("assigned_to = ?", v)
 	}
-	if v := c.Query("search"); v != "" {
-		like := "%" + v + "%"
-		query = query.Where("name ILIKE ? OR company_name ILIKE ? OR email ILIKE ?", like, like, like)
+	if v := c.Query("company_id"); v != "" {
+		query = query.Where("leads.company_id = ?", v)
+	}
+
+	sortField := strings.TrimPrefix(c.Query("sort"), "-")
+	search := c.Query("search")
+	// The related Company's name is needed for either a "search" match or a
+	// "company_name" sort — join once, up front, whenever either is in
+	// play, rather than duplicating the join per use like deals.go/
+	// contacts.go's sort-only special case does (Lead didn't have that
+	// existing search behavior to preserve until this free-text ->
+	// company_id migration, so it isn't bound by their same precedent).
+	// LEFT JOIN, not JOIN: a Lead with no company_id at all (still allowed)
+	// must not silently disappear from an otherwise-unfiltered list.
+	needsCompanyJoin := sortField == "company_name" || search != ""
+	if needsCompanyJoin {
+		query = query.Joins("LEFT JOIN companies ON companies.id = leads.company_id")
+	}
+	if search != "" {
+		like := "%" + search + "%"
+		query = query.Where("leads.name ILIKE ? OR leads.email ILIKE ? OR companies.name ILIKE ?", like, like, like)
 	}
 	if c.Query("exclude_converted") == "true" {
 		query = query.Where("converted_deal_id IS NULL")
 	}
 
 	var total int64
+	// Count() before the Select below — a plain COUNT(*) works fine against
+	// the join as-is; it's only Find() that needs the column list narrowed
+	// (see below), and applying that narrowing here too would break Count()
+	// against Postgres ("column leads.* does not exist").
 	query.Count(&total)
 
 	var leads []models.Lead
-	query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true, "company_name": true}, "-created_at")
+	if needsCompanyJoin {
+		// Narrows the joined query back to Lead's own columns for Find()
+		// below — without it, SELECT * would also pull every joined
+		// companies.* column, which Find can't scan into models.Lead.
+		query = query.Select("leads.*")
+	}
+	if sortField == "company_name" {
+		dir := "ASC"
+		if strings.HasPrefix(c.Query("sort"), "-") {
+			dir = "DESC"
+		}
+		query = query.Order("companies.name " + dir)
+	} else {
+		query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true}, "-created_at")
+	}
 	if err := query.Limit(perPage).Offset(offset).Find(&leads).Error; err != nil {
 		return utils.Internal(c, "Failed to list leads")
 	}
@@ -77,14 +116,14 @@ func (h *LeadHandler) List(c *fiber.Ctx) error {
 }
 
 type leadForm struct {
-	Name        string            `json:"name"`
-	CompanyName string            `json:"company_name"`
-	Email       string            `json:"email"`
-	Phone       string            `json:"phone"`
-	Source      models.LeadSource `json:"source"`
-	Status      models.LeadStatus `json:"status"`
-	Notes       string            `json:"notes"`
-	AssignedTo  *uint             `json:"assigned_to"`
+	Name       string            `json:"name"`
+	CompanyID  *uint             `json:"company_id"`
+	Email      string            `json:"email"`
+	Phone      string            `json:"phone"`
+	Source     models.LeadSource `json:"source"`
+	Status     models.LeadStatus `json:"status"`
+	Notes      string            `json:"notes"`
+	AssignedTo *uint             `json:"assigned_to"`
 	// Classification — FR-CRM-007. Only "sql" is honored as an explicit
 	// manual override (a rep marking a Lead "sales-ready"); any other value
 	// (including empty) falls back to the auto-computed mql/none result from
@@ -126,7 +165,7 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 	}
 
 	lead := models.Lead{
-		Name: form.Name, CompanyName: form.CompanyName, Email: form.Email, Phone: form.Phone,
+		Name: form.Name, CompanyID: form.CompanyID, Email: form.Email, Phone: form.Phone,
 		Source: form.Source, Status: form.Status, Notes: form.Notes, AssignedTo: form.AssignedTo,
 	}
 	if lead.Status == "" {
@@ -144,7 +183,10 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 // computeLeadScore sums the Weight of every active LeadScoringCriterion that
 // matches this Lead (FR-CRM-006). Unknown Field values never match — new
 // match fields are additive, not something existing rows accidentally start
-// matching.
+// matching. "has_company_name" keeps its original Field key (it's an
+// Admin-configurable, already-seeded criterion row — renaming the key would
+// silently stop matching for anyone's existing config) even though it now
+// checks CompanyID rather than the free-text CompanyName it's named after.
 func (h *LeadHandler) computeLeadScore(lead models.Lead) (int, error) {
 	var criteria []models.LeadScoringCriterion
 	if err := h.DB.Where("is_active = ?", true).Find(&criteria).Error; err != nil {
@@ -158,7 +200,7 @@ func (h *LeadHandler) computeLeadScore(lead models.Lead) (int, error) {
 				score += cr.Weight
 			}
 		case "has_company_name":
-			if lead.CompanyName != "" {
+			if lead.CompanyID != nil {
 				score += cr.Weight
 			}
 		case "has_phone":
@@ -297,7 +339,7 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 		return nil
 	}
 
-	lead.Name, lead.CompanyName, lead.Email, lead.Phone = form.Name, form.CompanyName, form.Email, form.Phone
+	lead.Name, lead.CompanyID, lead.Email, lead.Phone = form.Name, form.CompanyID, form.Email, form.Phone
 	lead.Source, lead.Status, lead.Notes, lead.AssignedTo = form.Source, form.Status, form.Notes, form.AssignedTo
 
 	// A general-purpose Update PUT doesn't necessarily resend classification
@@ -473,12 +515,40 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 	var deal models.Deal
 
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
-		if req.CompanyID != nil {
+		switch {
+		case req.CompanyID != nil:
+			// Explicit override from the Convert form always wins, even if
+			// it differs from whatever Company the Lead itself was already
+			// linked to.
 			if err := tx.First(&company, *req.CompanyID).Error; err != nil {
 				return err
 			}
-		} else {
-			company = models.Company{Name: lead.CompanyName, Status: models.StatusActive}
+		case lead.CompanyID != nil:
+			// The normal case since 2026-08-24: the Lead was already linked
+			// to a real Company (via the create/edit combobox), so reuse it
+			// directly instead of creating a fresh duplicate from its name —
+			// closes the dedupe gap this convert path used to have. Unlike
+			// an explicit req.CompanyID above (a caller mistake, worth
+			// failing loudly on), this id was never caller-supplied on this
+			// request — if the Company it points to has since been
+			// soft-deleted, fall back to creating a fresh one rather than
+			// failing the whole conversion over a Company the rep never
+			// chose here in the first place.
+			if err := tx.First(&company, *lead.CompanyID).Error; err != nil {
+				if !errors.Is(err, gorm.ErrRecordNotFound) {
+					return err
+				}
+				company = models.Company{Status: models.StatusActive}
+				if err := tx.Create(&company).Error; err != nil {
+					return err
+				}
+			}
+		default:
+			// Rare going forward (every new Lead picks/creates a Company via
+			// the frontend combobox), but a Lead can still reach here with no
+			// Company at all — preserves the old fallback behavior rather
+			// than newly requiring one at convert time.
+			company = models.Company{Status: models.StatusActive}
 			if err := tx.Create(&company).Error; err != nil {
 				return err
 			}
