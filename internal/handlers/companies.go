@@ -142,10 +142,7 @@ func (h *CompanyHandler) Delete(c *fiber.Ctx) error {
 		return utils.NotFound(c, "Company not found")
 	}
 	actorID := middleware.CurrentUserID(c)
-	if err := h.DB.Model(&company).Update("deleted_by", actorID).Error; err != nil {
-		return utils.Internal(c, "Failed to delete company")
-	}
-	if err := h.DB.Delete(&company).Error; err != nil {
+	if err := utils.GenericSoftDelete(h.DB, &company, actorID); err != nil {
 		return utils.Internal(c, "Failed to delete company")
 	}
 	return utils.NoContent(c)

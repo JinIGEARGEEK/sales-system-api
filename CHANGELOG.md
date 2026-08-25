@@ -4,6 +4,10 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-08-25 — Auth session revocation, object storage abstraction, import batching, mailer TLS hardening
+
+`POST /auth/logout` and deactivating a User now actually invalidate that user's existing JWT immediately (`User.token_version`, checked against the token's embedded value on every request), instead of a stateless no-op that left a token valid for its full `JWT_EXPIRY_HOURS` lifetime regardless. Introduced `utils.Storage` (`LocalStorage`/`S3Storage`/`MemoryStorage`) abstracting Quote/Contract/Attachment upload storage per `biz_spec/s3-migration-plan.md` — defaults to local disk (`STORAGE_BACKEND=local`, unchanged behavior), `STORAGE_BACKEND=s3` + `S3_*` vars switches to S3-compatible object storage. `POST /companies/import` and `/contacts/import` now preload existing-record matches in a handful of batched queries and run as one transaction instead of a SELECT-then-write per row, and cap a single import at 5,000 rows. `Company`/`Contact`/`Deal`/`Lead`/`User` deletes now stamp `deleted_by` and soft-delete atomically in one transaction (`utils.GenericSoftDelete`) rather than as two separate non-atomic writes. `internal/utils/mailer.go` now requires and verifies TLS (implicit or STARTTLS) rather than falling back to a plaintext connection. Added `X-Request-ID` correlation between access logs and error logs (`requestid` middleware). Batched the Task due-date reminder's per-task assignee/related-record lookups.
+
 ## 2026-08-24 — Lead `company_id` FK
 
 Replaced `Lead.company_name` (free text) with `Lead.company_id`, a nullable FK to `Company` — matches how `Deal`/`Contact` already reference their Company, closes a dedupe gap on `POST /leads/:id/convert`. Existing rows backfilled by case-insensitive name match, or a new Company created when none matched. Spec: §3.

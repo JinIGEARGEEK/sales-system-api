@@ -63,4 +63,5 @@ func ResetForTests() {
 		mustChangeCache.Delete(key)
 		return true
 	})
+	resetAuthCacheForTests()
 }

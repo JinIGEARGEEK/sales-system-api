@@ -12,11 +12,12 @@ import (
 )
 
 type AttachmentHandler struct {
-	DB *gorm.DB
+	DB      *gorm.DB
+	Storage utils.Storage
 }
 
-func NewAttachmentHandler(db *gorm.DB) *AttachmentHandler {
-	return &AttachmentHandler{DB: db}
+func NewAttachmentHandler(db *gorm.DB, storage utils.Storage) *AttachmentHandler {
+	return &AttachmentHandler{DB: db, Storage: storage}
 }
 
 // List — GET /attachments. Filters: related_type+related_id (required together), category.
@@ -66,10 +67,11 @@ func (h *AttachmentHandler) Create(c *fiber.Ctx) error {
 			})
 		}
 
-		fileURL, size, err := utils.SaveUpload(c, fh)
+		key, size, err := h.Storage.Save(fh)
 		if err != nil {
 			return utils.RespondUploadError(c, err)
 		}
+		fileURL := "/uploads/" + key
 		mimeType := fh.Header.Get("Content-Type")
 
 		attachment := models.Attachment{

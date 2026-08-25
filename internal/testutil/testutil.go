@@ -207,7 +207,9 @@ func App(t *testing.T) (*fiber.App, *gorm.DB) {
 	require.NoError(t, TruncateAll(testDB), "truncate tables before test")
 
 	app := fiber.New()
-	routes.Setup(app, testDB, testCfg)
+	// MemoryStorage — no real disk or bucket needed for the suite to pass;
+	// see utils.Storage's doc.
+	routes.Setup(app, testDB, testCfg, utils.NewMemoryStorage())
 	return app, testDB
 }
 
@@ -267,7 +269,9 @@ func CreateUser(t *testing.T, db *gorm.DB, role models.Role) *models.User {
 func Token(t *testing.T, userID uint, role models.Role) string {
 	t.Helper()
 	cfg := Config()
-	tok, err := utils.GenerateToken(cfg.JWTSecret, cfg.JWTExpiryHr, userID, role)
+	// tokenVersion 0 matches models.User's default — every test user is
+	// freshly created and never logged out/deactivated before this runs.
+	tok, err := utils.GenerateToken(cfg.JWTSecret, cfg.JWTExpiryHr, userID, role, 0)
 	require.NoError(t, err)
 	return tok
 }

@@ -52,7 +52,7 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 		return utils.Unauthorized(c, "Invalid email or password")
 	}
 
-	token, err := utils.GenerateToken(h.Cfg.JWTSecret, h.Cfg.JWTExpiryHr, user.ID, user.Role)
+	token, err := utils.GenerateToken(h.Cfg.JWTSecret, h.Cfg.JWTExpiryHr, user.ID, user.Role, user.TokenVersion)
 	if err != nil {
 		return utils.Internal(c, "Failed to generate token")
 	}
@@ -71,9 +71,20 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 	})
 }
 
-// Logout — POST /auth/logout. No server-side blocklist for v1 (stateless JWT);
-// the frontend clears localStorage regardless per §1.2.
+// Logout — POST /auth/logout. Bumps the caller's token_version so the token
+// just used (and any other still-valid token issued to this user) fails
+// RequireAuth's check from now on — the closest a stateless JWT gets to a
+// real server-side revocation without a full token blocklist. The frontend
+// also clears localStorage regardless per §1.2; this covers the case where a
+// still-live token leaked or is reused after "logout" (shared machine, a
+// captured token, an Admin needing an account's sessions killed — see Update).
 func (h *AuthHandler) Logout(c *fiber.Ctx) error {
+	userID := middleware.CurrentUserID(c)
+	if err := h.DB.Model(&models.User{}).Where("id = ?", userID).
+		UpdateColumn("token_version", gorm.Expr("token_version + 1")).Error; err != nil {
+		return utils.Internal(c, "Failed to log out")
+	}
+	middleware.InvalidateAuthCache(userID)
 	return c.SendStatus(fiber.StatusNoContent)
 }
 

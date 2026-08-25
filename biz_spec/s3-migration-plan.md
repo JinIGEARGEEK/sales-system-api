@@ -1,10 +1,19 @@
 # Object storage migration plan — local disk → S3-compatible
 
-**Status: planned, not implemented.** This document is the design for moving
-`Quote`/`Contract`/`Attachment` file storage off local disk. No code in this
-repo implements it yet — see the "File uploads" step under "Deploying to
-Railway" and the "Notes for contributors" section in [README.md](../README.md)
-for the current (local-disk) behavior this replaces.
+**Status: `Storage` interface and both backends implemented; not yet
+activated in any real deployment.** `internal/utils/storage.go` has the
+`Storage` interface, `LocalStorage`, `S3Storage` (via `aws-sdk-go-v2`), and a
+`MemoryStorage` for tests, matching the design below — the 3 handlers
+(`AttachmentHandler`/`QuoteHandler`/`ContractHandler`) and the `/uploads/:key`
+route all go through it, and `config.Config`/`cmd/api/main.go` have the
+`STORAGE_BACKEND`/`S3_*` fields with the fail-fast validation this doc
+specifies. Still defaults to `STORAGE_BACKEND=local` — the same local-disk
+behavior described below is unchanged until an operator sets `S3_*` env vars
+against a real bucket, since "Open decisions" below (provider, bucket,
+credentials) still need an actual account provisioned, which is outside what
+code in this repo can do. See the "File uploads" step under "Deploying to
+Railway" and the "Notes for contributors" section in
+[README.md](../README.md) for where things stand today.
 
 ## Why
 
@@ -136,35 +145,50 @@ deny-by-default checks already in `cmd/api/main.go`:
 
 ## Migration steps (in order)
 
-1. **Add `internal/utils/storage.go`** — the `Storage` interface,
+1. ✅ **Add `internal/utils/storage.go`** — the `Storage` interface,
    `LocalStorage`, and `S3Storage` implementations. `LocalStorage` is
    `SaveUpload`'s existing logic moved into a type, not rewritten — low risk.
-2. **Add `aws-sdk-go-v2` + `aws-sdk-go-v2/service/s3` to `go.mod`.**
-3. **Extend `config.Config`/`config.Load()`** with the `STORAGE_BACKEND`/`S3_*`
-   fields and the fail-fast checks above.
-4. **Wire a `Storage` instance through `cmd/api/main.go` → `routes.Setup` →
+2. ✅ **Add `aws-sdk-go-v2` + `aws-sdk-go-v2/service/s3` to `go.mod`.**
+3. ✅ **Extend `config.Config`/`config.Load()`** with the `STORAGE_BACKEND`/`S3_*`
+   fields and the fail-fast checks above (the `local`-outside-`development`
+   hard failure was deliberately *not* added — see `main.go`'s
+   `newStorageBackend` doc comment — since this app's only current
+   deployment is already running on local storage today; revisit once S3 is
+   actually provisioned there).
+4. ✅ **Wire a `Storage` instance through `cmd/api/main.go` → `routes.Setup` →
    the 3 handlers** (`AttachmentHandler`, `QuoteHandler`, `ContractHandler`
    each gain a `Storage` field, set in their `New*Handler` constructors —
    same pattern `DB *gorm.DB` already uses).
-5. **Replace `app.Static("/uploads", ...)`** in `routes.go` with a handler
+5. ✅ **Replace `app.Static("/uploads", ...)`** in `routes.go` with a handler
    that extracts the key from the URL, calls `Storage.Open(key)`, and streams
    the result — still behind the same `app.Use("/uploads",
-   middleware.RequireAuth(cfg))` gate.
-6. **Delete `utils.SaveUpload`/`RespondUploadError`** as free functions once
-   nothing calls them (or keep `RespondUploadError`'s error-mapping logic,
-   since it's backend-agnostic — only the save/open mechanics differ).
-7. **Existing local files**: given Railway's filesystem is already wiped on
+   middleware.RequireAuth(cfg, db))` gate.
+6. ✅ **`utils.SaveUpload` was replaced** by `Storage.Save` on the injected
+   backend; `RespondUploadError` kept as-is since its error-mapping is
+   backend-agnostic.
+7. ⬜ **Existing local files**: given Railway's filesystem is already wiped on
    every redeploy, there is almost certainly nothing on production disk worth
    migrating by the time this ships — confirm that assumption before writing
-   a one-off backfill script, rather than building one speculatively.
+   a one-off backfill script, rather than building one speculatively. Not
+   done — no-op until someone confirms this is still true right before
+   flipping `STORAGE_BACKEND` to `s3` in production.
+
+**What's left before this is actually durable in production:** provision a
+bucket/credentials (see "Open decisions" below — that part needs a human, not
+code), set `STORAGE_BACKEND=s3` and the `S3_*` vars on the Railway service,
+and smoke-test an upload/download against the real bucket. `S3Storage` itself
+compiles and follows the AWS SDK's documented usage but has not been
+exercised against a live bucket from this environment (no credentials
+available here) — treat the first real deploy with `STORAGE_BACKEND=s3` as a
+verification step, not a formality.
 
 ## Testing strategy
 
-- **Unit-level**: a third `Storage` implementation, `MemoryStorage` (an
-  `io.ReadCloser`-backed `map[string][]byte`), satisfies the interface with
-  no real I/O — use it as the default in `internal/testutil` so the existing
-  integration suite (`tests/upload_serving_test.go` et al.) doesn't need real
-  disk or a real bucket to pass.
+- ✅ **Unit-level**: `MemoryStorage` (a `map[string][]byte`-backed
+  implementation) satisfies the interface with no real I/O and is what
+  `internal/testutil.App` wires up by default — the integration suite
+  (`tests/upload_serving_test.go` et al.) passes against it without real disk
+  or a bucket.
 - **Integration-level (optional, higher confidence)**: add a `minio/minio`
   service container to `.github/workflows/ci.yml` (same pattern as the
   existing `postgres` service) and one dedicated test that runs `S3Storage`

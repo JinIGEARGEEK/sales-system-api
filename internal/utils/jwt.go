@@ -11,13 +11,18 @@ import (
 type Claims struct {
 	UserID uint        `json:"user_id"`
 	Role   models.Role `json:"role"`
+	// TokenVersion snapshots models.User.TokenVersion at issuance time.
+	// RequireAuth rejects the token once it no longer matches the DB value —
+	// see models.User.TokenVersion's doc for why (logout/forced-logout).
+	TokenVersion int `json:"token_version"`
 	jwt.RegisteredClaims
 }
 
-func GenerateToken(secret string, expiryHours int, userID uint, role models.Role) (string, error) {
+func GenerateToken(secret string, expiryHours int, userID uint, role models.Role, tokenVersion int) (string, error) {
 	claims := Claims{
-		UserID: userID,
-		Role:   role,
+		UserID:       userID,
+		Role:         role,
+		TokenVersion: tokenVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(expiryHours) * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

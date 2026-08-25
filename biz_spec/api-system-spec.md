@@ -64,7 +64,7 @@ These apply to every endpoint below unless a section says otherwise.
 | Method | Path | Auth | Status | Description |
 |---|---|---|---|---|
 | `POST` | `/auth/login` | none | 🟢 | Body: `{ email: string, password: string }` (frontend field names, see `pages/login.vue`). Returns `{ access_token: string, user: User }`. Rate-limited — see above. |
-| `POST` | `/auth/logout` | Bearer | 🟢 | Invalidates the token server-side if using a blocklist; frontend clears `localStorage` regardless (`useAuth().removeAccessToken()`). |
+| `POST` | `/auth/logout` | Bearer | 🟢 | Invalidates the token server-side by bumping `User.token_version` — every token issued to this user before now (not just the one used to call this) fails the next request's auth check. Frontend also clears `localStorage` regardless (`useAuth().removeAccessToken()`). A User being deactivated has the same effect, checked on every request. |
 | `GET` | `/auth/me` | Bearer | 🟢 | Returns the current `User` (§2.1). Used to hydrate `stores/user.ts` on load instead of trusting client state alone. |
 | `POST` | `/auth/change-password` | Bearer | 🟢 | Body: `{ current_password: string, new_password: string, confirm_password: string }`. Verifies `current_password`, requires `new_password === confirm_password` and at least 8 characters and different from the current password, then clears `must_change_password`. Returns the updated `User`. This is the only way to satisfy a `PASSWORD_CHANGE_REQUIRED` block (see the note above the status table), so it stays reachable even while that block is active. |
 
