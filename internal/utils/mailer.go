@@ -55,7 +55,7 @@ func SendMail(cfg *config.Config, to, subject, body string) error {
 	if err != nil {
 		return fmt.Errorf("connect to SMTP server: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if cfg.SMTPUsername != "" {
 		auth := smtp.PlainAuth("", cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPHost)
@@ -103,15 +103,15 @@ func dialSMTP(cfg *config.Config) (*smtp.Client, error) {
 	}
 	client, err := smtp.NewClient(conn, cfg.SMTPHost)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	if ok, _ := client.Extension("STARTTLS"); !ok {
-		client.Close()
+		_ = client.Close()
 		return nil, fmt.Errorf("SMTP server at %s does not offer STARTTLS — refusing to send credentials/mail in cleartext", addr)
 	}
 	if err := client.StartTLS(tlsConfig); err != nil {
-		client.Close()
+		_ = client.Close()
 		return nil, fmt.Errorf("STARTTLS handshake: %w", err)
 	}
 	return client, nil

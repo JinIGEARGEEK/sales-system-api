@@ -107,7 +107,7 @@ func (s *LocalStorage) Save(fh *multipart.FileHeader) (string, int64, error) {
 	if err != nil {
 		return "", 0, err
 	}
-	defer dest.Close()
+	defer func() { _ = dest.Close() }()
 	if _, err := io.Copy(dest, src); err != nil {
 		return "", 0, err
 	}
