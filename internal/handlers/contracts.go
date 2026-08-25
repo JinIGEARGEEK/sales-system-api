@@ -14,11 +14,12 @@ import (
 )
 
 type ContractHandler struct {
-	DB *gorm.DB
+	DB      *gorm.DB
+	Storage utils.Storage
 }
 
-func NewContractHandler(db *gorm.DB) *ContractHandler {
-	return &ContractHandler{DB: db}
+func NewContractHandler(db *gorm.DB, storage utils.Storage) *ContractHandler {
+	return &ContractHandler{DB: db, Storage: storage}
 }
 
 // List — GET /deals/:dealId/contracts.
@@ -99,10 +100,11 @@ func (h *ContractHandler) Upload(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.BadRequest(c, "Missing file")
 	}
-	fileURL, _, err := utils.SaveUpload(c, fh)
+	key, _, err := h.Storage.Save(fh)
 	if err != nil {
 		return utils.RespondUploadError(c, err)
 	}
+	fileURL := "/uploads/" + key
 
 	now := time.Now()
 	contract.SignedFileURL = &fileURL

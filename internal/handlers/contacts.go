@@ -131,10 +131,7 @@ func (h *ContactHandler) Delete(c *fiber.Ctx) error {
 		return utils.NotFound(c, "Contact not found")
 	}
 	actorID := middleware.CurrentUserID(c)
-	if err := h.DB.Model(&contact).Update("deleted_by", actorID).Error; err != nil {
-		return utils.Internal(c, "Failed to delete contact")
-	}
-	if err := h.DB.Delete(&contact).Error; err != nil {
+	if err := utils.GenericSoftDelete(h.DB, &contact, actorID); err != nil {
 		return utils.Internal(c, "Failed to delete contact")
 	}
 	return utils.NoContent(c)

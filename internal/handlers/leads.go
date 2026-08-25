@@ -374,10 +374,7 @@ func (h *LeadHandler) Delete(c *fiber.Ctx) error {
 		return utils.Forbidden(c, "Not authorized to delete this lead")
 	}
 	actorID := middleware.CurrentUserID(c)
-	if err := h.DB.Model(&lead).Update("deleted_by", actorID).Error; err != nil {
-		return utils.Internal(c, "Failed to delete lead")
-	}
-	if err := h.DB.Delete(&lead).Error; err != nil {
+	if err := utils.GenericSoftDelete(h.DB, &lead, actorID); err != nil {
 		return utils.Internal(c, "Failed to delete lead")
 	}
 	return utils.NoContent(c)

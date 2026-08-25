@@ -362,10 +362,7 @@ func (h *DealHandler) Delete(c *fiber.Ctx) error {
 		return utils.Forbidden(c, "Not authorized to delete this deal")
 	}
 	actorID := middleware.CurrentUserID(c)
-	if err := h.DB.Model(&deal).Update("deleted_by", actorID).Error; err != nil {
-		return utils.Internal(c, "Failed to delete deal")
-	}
-	if err := h.DB.Delete(&deal).Error; err != nil {
+	if err := utils.GenericSoftDelete(h.DB, &deal, actorID); err != nil {
 		return utils.Internal(c, "Failed to delete deal")
 	}
 	return utils.NoContent(c)

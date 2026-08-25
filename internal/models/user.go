@@ -32,6 +32,12 @@ type User struct {
 	// POST /auth/change-password — see middleware.RequirePasswordChanged.
 	MustChangePassword bool       `gorm:"default:false;not null" json:"must_change_password"`
 	LatestLogin        *time.Time `json:"latest_login"`
+	// TokenVersion is embedded in every JWT issued to this user (see
+	// utils.GenerateToken/Claims) and compared against the DB value on every
+	// request (middleware.RequireAuth). Bumping it — on logout, or an Admin
+	// forcing one — instantly invalidates every previously-issued token for
+	// this user without needing a server-side token blocklist.
+	TokenVersion int `gorm:"default:0;not null" json:"-"`
 }
 
 func (User) TableName() string { return "users" }

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"gorm.io/gorm"
 
 	"github.com/igeargeek/sales-system-api/internal/config"
@@ -33,6 +36,11 @@ func main() {
 		}
 	}
 
+	storageBackend, err := newStorageBackend(cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	db, err := database.Connect(cfg)
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
@@ -51,7 +59,16 @@ func main() {
 		ErrorHandler: apiErrorHandler,
 	})
 	app.Use(recover.New())
-	app.Use(logger.New())
+	// requestid before logger so every access-log line carries the same ID
+	// apiErrorHandler logs below — without this there was no way to
+	// correlate an access-log entry with the corresponding server-side error
+	// log line for the same request when debugging a production incident.
+	// Echoes/generates X-Request-ID; the response header lets a client (or
+	// this API's own frontend) report it back for support purposes too.
+	app.Use(requestid.New())
+	app.Use(logger.New(logger.Config{
+		Format: "${time} ${status} - ${latency} ${method} ${path} reqid=${locals:requestid}\n",
+	}))
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: cfg.CORSOrigins,
 	}))
@@ -62,7 +79,7 @@ func main() {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	routes.Setup(app, db, cfg)
+	routes.Setup(app, db, cfg, storageBackend)
 
 	// Background job: emails a Task's assignee once its due date has passed.
 	// Safe to run even without SMTP configured — see internal/utils/mailer.go.
@@ -70,6 +87,38 @@ func main() {
 	notifier.StartWorkflowRuleReminders(db, cfg)
 
 	log.Fatal(app.Listen(":" + cfg.Port))
+}
+
+// newStorageBackend builds the Storage implementation config.StorageBackend
+// selects — see biz_spec/s3-migration-plan.md. Fails fast on a missing S3_*
+// var when STORAGE_BACKEND=s3 rather than booting and only discovering the
+// gap on the first upload attempt, mirroring the JWT_SECRET/CORS_ORIGINS
+// checks above. Deliberately does NOT reject STORAGE_BACKEND=local outside
+// development the way the plan's "Config" section suggests — this app's
+// only current deployment target already runs on local storage today, and
+// making that a hard boot failure would take down that existing deployment
+// the moment this ships, not just warn about it. Revisit once S3 is actually
+// provisioned there.
+func newStorageBackend(cfg *config.Config) (utils.Storage, error) {
+	switch cfg.StorageBackend {
+	case "", "local":
+		return utils.NewLocalStorage(utils.UploadDir), nil
+	case "s3":
+		missing := map[string]string{
+			"S3_BUCKET":            cfg.S3Bucket,
+			"S3_REGION":            cfg.S3Region,
+			"S3_ACCESS_KEY_ID":     cfg.S3AccessKeyID,
+			"S3_SECRET_ACCESS_KEY": cfg.S3SecretAccessKey,
+		}
+		for name, v := range missing {
+			if v == "" {
+				return nil, fmt.Errorf("STORAGE_BACKEND=s3 requires %s to be set", name)
+			}
+		}
+		return utils.NewS3Storage(context.Background(), cfg.S3Bucket, cfg.S3Region, cfg.S3Endpoint, cfg.S3AccessKeyID, cfg.S3SecretAccessKey, cfg.S3ForcePathStyle)
+	default:
+		return nil, fmt.Errorf("unknown STORAGE_BACKEND %q (expected \"local\" or \"s3\")", cfg.StorageBackend)
+	}
 }
 
 // apiErrorHandler guarantees every error — including a panic caught by
@@ -88,7 +137,8 @@ func apiErrorHandler(c *fiber.Ctx, err error) error {
 	// return a generic message instead. 4xx messages (e.g. Fiber's own
 	// "Cannot GET /x") are safe to pass through as-is.
 	if code >= fiber.StatusInternalServerError {
-		log.Printf("unhandled error on %s %s: %v", c.Method(), c.Path(), err)
+		reqID, _ := c.Locals("requestid").(string)
+		log.Printf("unhandled error on %s %s (reqid=%s): %v", c.Method(), c.Path(), reqID, err)
 		message = "Internal server error"
 	}
 	return utils.ErrorResponse(c, code, "INTERNAL_ERROR", message)

@@ -173,6 +173,11 @@ func (h *UserHandler) Update(c *fiber.Ctx) error {
 		return utils.Internal(c, "Failed to update user")
 	}
 	middleware.InvalidateMustChangePassword(user.ID)
+	// IsActive may have just flipped to false (or a password reset above
+	// should force existing sessions to re-authenticate) — drop the cached
+	// auth state so RequireAuth re-reads it on this user's very next request
+	// rather than up to authCacheTTL later.
+	middleware.InvalidateAuthCache(user.ID)
 	return utils.OK(c, user)
 }
 
@@ -184,15 +189,18 @@ func (h *UserHandler) Delete(c *fiber.Ctx) error {
 	}
 
 	actorID := middleware.CurrentUserID(c)
-	if err := h.DB.Model(&user).Updates(map[string]interface{}{
-		"is_active":  false,
-		"deleted_by": actorID,
-	}).Error; err != nil {
-		return utils.Internal(c, "Failed to deactivate user")
-	}
-	if err := h.DB.Delete(&user).Error; err != nil {
+	if err := h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&user).Updates(map[string]interface{}{
+			"is_active":  false,
+			"deleted_by": actorID,
+		}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&user).Error
+	}); err != nil {
 		return utils.Internal(c, "Failed to delete user")
 	}
+	middleware.InvalidateAuthCache(user.ID)
 	return utils.NoContent(c)
 }
 

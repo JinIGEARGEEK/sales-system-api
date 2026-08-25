@@ -29,11 +29,12 @@ func dealForSubResource(c *fiber.Ctx, db *gorm.DB, dealIDParam string) (*models.
 }
 
 type QuoteHandler struct {
-	DB *gorm.DB
+	DB      *gorm.DB
+	Storage utils.Storage
 }
 
-func NewQuoteHandler(db *gorm.DB) *QuoteHandler {
-	return &QuoteHandler{DB: db}
+func NewQuoteHandler(db *gorm.DB, storage utils.Storage) *QuoteHandler {
+	return &QuoteHandler{DB: db, Storage: storage}
 }
 
 // List — GET /deals/:dealId/quotes.
@@ -233,10 +234,11 @@ func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 		f.Close()
 	}
 
-	fileURL, size, err := utils.SaveUpload(c, fh)
+	key, size, err := h.Storage.Save(fh)
 	if err != nil {
 		return utils.RespondUploadError(c, err)
 	}
+	fileURL := "/uploads/" + key
 
 	now := time.Now()
 	name := fh.Filename

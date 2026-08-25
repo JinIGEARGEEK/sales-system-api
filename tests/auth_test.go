@@ -149,6 +149,55 @@ func TestRequirePasswordChanged_BlocksOtherRoutes(t *testing.T) {
 	assert.Equal(t, http.StatusOK, meResp.StatusCode, "/auth/me must stay reachable so the frontend can detect the forced-change state")
 }
 
+// TestLogout_InvalidatesExistingToken proves POST /auth/logout does more than
+// a client-side localStorage clear: the exact token just used to log out (and
+// any other still-valid token issued to this user before now) must fail
+// RequireAuth immediately afterward — see models.User.TokenVersion.
+func TestLogout_InvalidatesExistingToken(t *testing.T) {
+	app, db := testutil.App(t)
+	user := testutil.CreateUser(t, db, models.RoleSalesRep)
+
+	me := testutil.AuthRequest(t, http.MethodGet, "/api/v1/auth/me", nil, user.ID, user.Role)
+	meResp := doJSON(t, app, me, nil)
+	require.Equal(t, http.StatusOK, meResp.StatusCode, "token must work before logout")
+
+	logout := testutil.AuthRequest(t, http.MethodPost, "/api/v1/auth/logout", nil, user.ID, user.Role)
+	logoutResp := doJSON(t, app, logout, nil)
+	require.Equal(t, http.StatusNoContent, logoutResp.StatusCode)
+
+	afterLogout := testutil.AuthRequest(t, http.MethodGet, "/api/v1/auth/me", nil, user.ID, user.Role)
+	afterResp := doJSON(t, app, afterLogout, nil)
+	assert.Equal(t, http.StatusUnauthorized, afterResp.StatusCode, "the same token must be rejected right after logout")
+}
+
+// TestDeactivatedUser_TokenRejectedImmediately proves an Admin deactivating a
+// user (PUT /users/:id with status=inactive) invalidates that user's
+// already-issued tokens right away, not just at their next login attempt —
+// otherwise a deactivated/offboarded account's token stays fully valid for
+// its whole remaining lifetime (JWT_EXPIRY_HOURS, 30 days by default).
+func TestDeactivatedUser_TokenRejectedImmediately(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	rep := testutil.CreateUser(t, db, models.RoleSalesRep)
+
+	me := testutil.AuthRequest(t, http.MethodGet, "/api/v1/auth/me", nil, rep.ID, rep.Role)
+	meResp := doJSON(t, app, me, nil)
+	require.Equal(t, http.StatusOK, meResp.StatusCode, "token must work before deactivation")
+
+	deactivate := testutil.AuthRequest(t, http.MethodPut, "/api/v1/users/"+itoa(rep.ID), map[string]string{
+		"first_name": rep.FirstName,
+		"email":      rep.Email,
+		"role":       string(rep.Role),
+		"status":     "inactive",
+	}, admin.ID, admin.Role)
+	deactivateResp := doJSON(t, app, deactivate, nil)
+	require.Equal(t, http.StatusOK, deactivateResp.StatusCode)
+
+	afterDeactivate := testutil.AuthRequest(t, http.MethodGet, "/api/v1/auth/me", nil, rep.ID, rep.Role)
+	afterResp := doJSON(t, app, afterDeactivate, nil)
+	assert.Equal(t, http.StatusUnauthorized, afterResp.StatusCode, "a deactivated user's existing token must stop working immediately")
+}
+
 // TestMe_RejectsNonHS256Alg proves the JWT algorithm-pinning fix: a token
 // forged with HS384 using the *same* secret bytes must still be rejected,
 // because utils.ParseToken pins jwt.WithValidMethods to HS256 only.

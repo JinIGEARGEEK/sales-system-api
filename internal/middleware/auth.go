@@ -19,7 +19,14 @@ const (
 // RequireAuth enforces the Bearer JWT convention in api-system-spec.md §1.2 —
 // exactly a 401 on missing/expired/invalid token, matching the frontend's
 // axios interceptor redirect-to-/login behavior.
-func RequireAuth(cfg *config.Config) fiber.Handler {
+//
+// Beyond the signature/expiry check, it also rejects a structurally-valid
+// token whose holder has since been deactivated or logged out: it compares
+// the token's embedded TokenVersion against the DB's current value (bumped by
+// Logout/deactivation — see models.User.TokenVersion) and checks IsActive.
+// Without this, a JWT stays fully valid for its whole lifetime (default 30
+// days, JWT_EXPIRY_HOURS) no matter what happens to the account afterward.
+func RequireAuth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		header := c.Get("Authorization")
 		if header == "" || !strings.HasPrefix(header, "Bearer ") {
@@ -29,6 +36,25 @@ func RequireAuth(cfg *config.Config) fiber.Handler {
 
 		claims, err := utils.ParseToken(cfg.JWTSecret, tokenString)
 		if err != nil || claims == nil {
+			return utils.Unauthorized(c, "Invalid or expired token")
+		}
+
+		state, cached := authCacheGet(claims.UserID)
+		if !cached {
+			var row struct {
+				IsActive     bool
+				TokenVersion int
+			}
+			if err := db.Model(&models.User{}).
+				Select("is_active, token_version").
+				Where("id = ?", claims.UserID).
+				Take(&row).Error; err != nil {
+				return utils.Unauthorized(c, "Invalid or expired token")
+			}
+			state = authState{isActive: row.IsActive, tokenVersion: row.TokenVersion}
+			authCacheSet(claims.UserID, state.isActive, state.tokenVersion)
+		}
+		if !state.isActive || state.tokenVersion != claims.TokenVersion {
 			return utils.Unauthorized(c, "Invalid or expired token")
 		}
 

@@ -24,6 +24,22 @@ func GenericTrash[T any](c *fiber.Ctx, db *gorm.DB, failMsg string) error {
 	return List(c, items, page, perPage, total)
 }
 
+// GenericSoftDelete stamps deleted_by and soft-deletes item in one
+// transaction. Previously every Delete handler (Company/Contact/Deal/Lead/User)
+// ran these as two separate statements — a crash or error between them left
+// deleted_by set with no deleted_at (or vice versa), and a failed second write
+// after a committed first left the row inconsistently "half deleted" with no
+// rollback. item must be a pointer to an already-loaded record (its ID is
+// used for both writes).
+func GenericSoftDelete(db *gorm.DB, item interface{}, actorID uint) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(item).Update("deleted_by", actorID).Error; err != nil {
+			return err
+		}
+		return tx.Delete(item).Error
+	})
+}
+
 // GenericRestore clears deleted_at/deleted_by on the Unscoped soft-deleted row
 // of T identified by the ":id" param. Shared by Deal/Lead's POST
 // /.../:id/restore — identical apart from the model type and messages.

@@ -29,6 +29,18 @@ type Config struct {
 	SMTPUsername string
 	SMTPPassword string
 	SMTPFrom     string
+
+	// Object storage backend for Quote/Contract/Attachment uploads — see
+	// biz_spec/s3-migration-plan.md. "local" (default) writes to disk, fine
+	// for dev/docker-compose but not durable on a stateless deploy platform;
+	// "s3" requires the S3_* fields below.
+	StorageBackend    string
+	S3Bucket          string
+	S3Region          string
+	S3Endpoint        string
+	S3AccessKeyID     string
+	S3SecretAccessKey string
+	S3ForcePathStyle  bool
 }
 
 func Load() *Config {
@@ -58,6 +70,14 @@ func Load() *Config {
 		SMTPUsername: getEnv("SMTP_USERNAME", ""),
 		SMTPPassword: getEnv("SMTP_PASSWORD", ""),
 		SMTPFrom:     getEnv("SMTP_FROM", ""),
+
+		StorageBackend:    getEnv("STORAGE_BACKEND", "local"),
+		S3Bucket:          getEnv("S3_BUCKET", ""),
+		S3Region:          getEnv("S3_REGION", ""),
+		S3Endpoint:        getEnv("S3_ENDPOINT", ""),
+		S3AccessKeyID:     getEnv("S3_ACCESS_KEY_ID", ""),
+		S3SecretAccessKey: getEnv("S3_SECRET_ACCESS_KEY", ""),
+		S3ForcePathStyle:  getEnv("S3_FORCE_PATH_STYLE", "false") == "true",
 	}
 }
 

@@ -36,8 +36,10 @@ func clientIP(c *fiber.Ctx) string {
 	return c.IP()
 }
 
-// Setup registers every route under /api/v1 — api-system-spec.md.
-func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
+// Setup registers every route under /api/v1 — api-system-spec.md. storage
+// backs Quote/Contract/Attachment uploads and the /uploads download route —
+// see biz_spec/s3-migration-plan.md and utils.Storage.
+func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storage) {
 	authH := handlers.NewAuthHandler(db, cfg)
 	userH := handlers.NewUserHandler(db)
 	leadH := handlers.NewLeadHandler(db)
@@ -47,17 +49,17 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	dealH := handlers.NewDealHandler(db)
 	activityH := handlers.NewActivityHandler(db)
 	tagH := handlers.NewTagHandler(db)
-	quoteH := handlers.NewQuoteHandler(db)
+	quoteH := handlers.NewQuoteHandler(db, storage)
 	paymentH := handlers.NewPaymentHandler(db)
 	taskH := handlers.NewTaskHandler(db)
-	contractH := handlers.NewContractHandler(db)
+	contractH := handlers.NewContractHandler(db, storage)
 	productH := handlers.NewProductHandler(db)
 	projectH := handlers.NewProjectHandler(db)
 	exportH := handlers.NewExportHandler(db)
 	reportH := handlers.NewReportHandler(db)
 	auditLogH := handlers.NewAuditLogHandler(db)
 	dashboardH := handlers.NewDashboardHandler(db)
-	attachmentH := handlers.NewAttachmentHandler(db)
+	attachmentH := handlers.NewAttachmentHandler(db, storage)
 	pipelineStageH := handlers.NewPipelineStageHandler(db)
 	leadSourceH := handlers.NewLeadSourceHandler(db)
 	industryOptionH := handlers.NewIndustryOptionHandler(db)
@@ -88,17 +90,31 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config) {
 	auth := api.Group("/auth")
 	auth.Post("/login", loginLimiter, authH.Login)
 
-	// Uploaded files (Quote PDFs, signed Contracts, Attachments) — utils.SaveUpload
-	// returns a root-level "/uploads/<name>" URL (not under /api/v1), so this is
+	// Uploaded files (Quote PDFs, signed Contracts, Attachments) — Storage.Save
+	// returns a root-level "/uploads/<key>" URL (not under /api/v1), so this is
 	// registered on app directly rather than inside the authed group below.
 	// Previously nothing served this path at all — SaveUpload's returned URLs
 	// were dead links regardless of deployment. These are business documents,
 	// so require auth (any authenticated role, matching the export/PDF
 	// endpoints' access level) rather than serving them unauthenticated.
-	app.Use("/uploads", middleware.RequireAuth(cfg))
-	app.Static("/uploads", utils.UploadDir, fiber.Static{Download: true})
+	//
+	// Streams through storage.Open rather than fiber's Static/os-backed
+	// serving — the backend may be S3 (see utils.Storage), and this keeps the
+	// same auth gate in front of a download regardless of where the bytes
+	// actually live, matching the "proxy, not presigned URLs" design in
+	// biz_spec/s3-migration-plan.md.
+	app.Use("/uploads", middleware.RequireAuth(cfg, db))
+	app.Get("/uploads/:key", func(c *fiber.Ctx) error {
+		f, err := storage.Open(c.Params("key"))
+		if err != nil {
+			return utils.NotFound(c, "File not found")
+		}
+		defer f.Close()
+		c.Set(fiber.HeaderContentDisposition, "attachment")
+		return c.SendStream(f)
+	})
 
-	authed := api.Group("", middleware.RequireAuth(cfg), middleware.RequirePasswordChanged(db))
+	authed := api.Group("", middleware.RequireAuth(cfg, db), middleware.RequirePasswordChanged(db))
 
 	authed.Post("/auth/logout", authH.Logout)
 	authed.Get("/auth/me", authH.Me)
