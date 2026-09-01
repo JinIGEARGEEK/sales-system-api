@@ -43,6 +43,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	authH := handlers.NewAuthHandler(db, cfg)
 	userH := handlers.NewUserHandler(db)
 	leadH := handlers.NewLeadHandler(db)
+	prospectH := handlers.NewProspectHandler(db)
 	companyH := handlers.NewCompanyHandler(db)
 	contactH := handlers.NewContactHandler(db)
 	importH := handlers.NewImportHandler(db)
@@ -148,6 +149,24 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	leads.Delete("/:id", leadH.Delete)
 	leads.Post("/:id/convert", leadH.Convert)
 	leads.Post("/:id/restore", bulkRoles, leadH.Restore)
+
+	// Prospects — the pre-Lead marketing funnel entity. Admin/Sales Manager get
+	// oversight visibility; Marketing owns it day-to-day. Bulk/trash/restore
+	// stay on the existing Admin/Sales-Manager-only bulkRoles, same as Leads.
+	prospectRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleMarketing, models.RoleSalesManager)
+	prospects := authed.Group("/prospects", prospectRoles)
+	prospects.Get("/", prospectH.List)
+	prospects.Post("/", prospectH.Create)
+	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
+	prospects.Get("/trash", bulkRoles, prospectH.Trash)
+	prospects.Patch("/bulk-reassign", bulkRoles, prospectH.BulkReassign)
+	prospects.Patch("/bulk-tag", bulkRoles, prospectH.BulkTag)
+	prospects.Patch("/bulk-archive", bulkRoles, prospectH.BulkArchive)
+	prospects.Get("/:id", prospectH.Get)
+	prospects.Put("/:id", prospectH.Update)
+	prospects.Delete("/:id", prospectH.Delete)
+	prospects.Post("/:id/convert", prospectH.Convert)
+	prospects.Post("/:id/restore", bulkRoles, prospectH.Restore)
 
 	// Companies
 	companies := authed.Group("/companies")

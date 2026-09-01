@@ -58,6 +58,7 @@ var tables = []string{
 	"contacts",
 	"companies",
 	"leads",
+	"prospects",
 	"users",
 }
 

@@ -46,6 +46,10 @@ type Lead struct {
 	// ConvertedDealID is set once this Lead has been converted into a Deal
 	// (nil = not yet converted). Prevents double-conversion.
 	ConvertedDealID *uint `gorm:"index" json:"converted_deal_id"`
+	// ProspectID is set when this Lead originated from a Marketing Prospect
+	// via ProspectHandler.Convert (nil for a Lead created directly) — mirrors
+	// Deal.LeadID's back-reference to its own originating record.
+	ProspectID *uint `gorm:"index" json:"prospect_id,omitempty"`
 	// Score/Classification — FR-CRM-006/007. Score is the sum of matching
 	// active LeadScoringCriterion weights, recomputed on Create/Update.
 	// Classification is derived from Score vs AppSettings.LeadScoringMqlThreshold

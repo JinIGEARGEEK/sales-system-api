@@ -26,6 +26,10 @@ const (
 	// (quotation-builder rebuild) — reuses this same generic model/handler
 	// rather than a Quote-specific attachments table.
 	AttachmentRelatedQuote AttachmentRelatedType = "quote"
+	// AttachmentRelatedProspect lets Marketing attach files before a Prospect
+	// converts to a Lead — carried over to the Lead by ProspectHandler.Convert,
+	// same as AttachmentRelatedLead is carried to a Deal.
+	AttachmentRelatedProspect AttachmentRelatedType = "prospect"
 )
 
 // Attachment — api-system-spec.md §8.6. Exactly one of FileURL/ExternalURL is
