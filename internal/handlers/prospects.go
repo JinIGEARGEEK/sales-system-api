@@ -63,6 +63,24 @@ func (h *ProspectHandler) List(c *fiber.Ctx) error {
 	return utils.List(c, prospects, page, perPage, total)
 }
 
+// rejectManualConvertedStatus enforces models.ProspectStatusConverted's own
+// doc comment: that status is set automatically by Convert (which also
+// creates the Lead and stamps ConvertedLeadID) and must never be settable
+// directly through Create/Update — otherwise a client could flip a Prospect
+// to "Converted" with no Lead ever created behind it. current is the
+// pre-request status ("" for Create, which has none yet); a client
+// harmlessly re-submitting an already-Converted record's unchanged status
+// is allowed through, only an attempted transition into Converted from
+// anything else is rejected.
+func rejectManualConvertedStatus(c *fiber.Ctx, newStatus, current models.ProspectStatus) error {
+	if newStatus != models.ProspectStatusConverted || current == models.ProspectStatusConverted {
+		return nil
+	}
+	msg := `status "Converted" can only be set via POST /prospects/:id/convert`
+	_ = utils.ValidationError(c, msg, map[string][]string{"status": {msg}})
+	return utils.ErrHandled
+}
+
 type prospectForm struct {
 	Name       string                `json:"name"`
 	CompanyID  *uint                 `json:"company_id"`
@@ -90,6 +108,9 @@ func (h *ProspectHandler) Create(c *fiber.Ctx) error {
 		return utils.ValidationError(c, "source is not a valid active lead source", map[string][]string{"source": {"invalid"}})
 	}
 	if err := validateExternalEmail(c, form.Email); err != nil {
+		return nil
+	}
+	if err := rejectManualConvertedStatus(c, form.Status, ""); err != nil {
 		return nil
 	}
 
@@ -136,6 +157,9 @@ func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 		return utils.ValidationError(c, "source is not a valid active lead source", map[string][]string{"source": {"invalid"}})
 	}
 	if err := validateExternalEmail(c, form.Email); err != nil {
+		return nil
+	}
+	if err := rejectManualConvertedStatus(c, form.Status, prospect.Status); err != nil {
 		return nil
 	}
 

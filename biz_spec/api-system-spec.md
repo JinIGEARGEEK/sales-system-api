@@ -3,8 +3,8 @@
 **Companion document to:** `feature-spec.md` (business requirements), `user-story.md` (role acceptance criteria), `design-system.md` (frontend conventions)
 **Purpose:** The contract for this backend API. This document was originally written when the frontend (`sales-system`) was still 100% client-side mock data with no real backend at all — that's no longer the state of either repo (20+ merged PRs, a working Go/Fiber API, and a frontend wired up against it resource by resource). It's kept up to date as a living reference for the current contract rather than as a forward-looking build spec.
 **Audience:** Backend/frontend engineers (and AI coding agents) working against this API.
-**Version:** 1.2 (Lead `company_id` FK, rebuilt Quote shape + FlowAccount PDF extraction, Admin Configuration endpoints, missing bulk endpoints, Company field additions — see `CHANGELOG.md`)
-**Date:** 2026-08-24
+**Version:** 1.3 (Prospect entity — pre-Lead marketing funnel, Marketing role — see `CHANGELOG.md`)
+**Date:** 2026-09-01
 
 > **Status legend** (mirrors `feature-spec.md`'s legend, applied per endpoint):
 > 🟢 **Required now** — replaces an existing mock Pinia store; needed to take this frontend off mock data as-is.
@@ -24,6 +24,7 @@
 | **เซลล์ / ผู้ดูแลลูกค้า (Sales Rep / Account Manager)** | CRUD เต็มรูปแบบบน Leads/Companies/Contacts/Deals/Activities/Tasks/Quotes/Payments ที่ตนรับผิดชอบหรือยังไม่มีผู้รับผิดชอบ อ่านข้อมูลของเพื่อนร่วมทีมได้ |
 | **หัวหน้าทีมขาย (Sales Manager)** | เหมือนเซลล์ แต่เพิ่มสิทธิ์อ่านข้อมูลของทุกคนในทีมและทุก endpoint ใน `/reports/*` รวมถึงการโยกย้าย Deal |
 | **ทีม Production (สิทธิ์จำกัด)** | เขียนได้เฉพาะ `status` และ `production_reference` ของ `Project` เท่านั้น (§8.3) — ไม่มีสิทธิ์เข้าถึง Resource อื่นใดเลย |
+| **ทีม Marketing** | เพิ่มเมื่อ 2026-09-01 สำหรับ Prospect (§3a) — CRUD เต็มรูปแบบบน Prospects ที่ตนรับผิดชอบหรือยังไม่มีผู้รับผิดชอบ ไม่มีสิทธิ์เข้าถึง Leads/Deals หรือ Resource อื่น |
 
 ### กรณีการใช้งานที่ผูกกับ Endpoint จริง (ตัวอย่าง)
 
@@ -142,6 +143,7 @@ Per `feature-spec.md` §2.2 / `user-story.md`. `FR-CRM-080` (RBAC enforcement) i
 | **Sales Rep / Account Manager** | Full CRUD on Leads/Companies/Contacts/Deals/Activities/Tasks/Quotes/Payments they're assigned to or that are unassigned; read access to teammates' records |
 | **Sales Manager** | Same as Sales Rep, plus read access to all reps' data and all `/reports/*` endpoints, plus deal reassignment |
 | **Production (limited)** | Write access to *only* `status` and `production_reference` on `Project` records (§8.3) — no access to any other resource |
+| **Marketing** | Added 2026-09-01 for the Prospect funnel (§3a) — full CRUD on Prospects they're assigned to or that are unassigned, same ownership model as Sales Rep has for Leads. No access to Leads/Deals/any other resource; Admin and Sales Manager retain oversight access to `/prospects` alongside Marketing. Not part of the original `feature-spec.md` §2.2 role table — see `internal/models/user.go`'s `RoleMarketing` doc comment. |
 
 Suggested enforcement: role on the JWT claims, checked server-side per route — not by trusting a client-sent role header.
 
@@ -216,6 +218,7 @@ interface Lead {
   converted_deal_id: number | null   // set once this Lead has been converted; prevents double-conversion
   score: number                       // FR-CRM-006 — sum of matching active LeadScoringCriterion weights
   classification: 'none' | 'mql' | 'sql'   // FR-CRM-007 — derived from score, or "sql" set manually by a rep
+  prospect_id: number | null   // Prospect.id this Lead originated from, if created via POST /prospects/:id/convert (§3a) — null for a Lead created directly
   created_at: string
 }
 ```
@@ -235,6 +238,48 @@ interface Lead {
 | `PATCH` | `/leads/bulk-tag` | 🟢 | Sales Manager/Admin only. Body: `{ ids: number[], tags: string[], mode: 'set' \| 'add' }` — `"set"` replaces each Lead's tags outright, `"add"` merges into the existing set. |
 | `PATCH` | `/leads/bulk-archive` | 🟢 | Sales Manager/Admin only. Soft-deletes every listed Lead in one transaction (same effect as Delete, batched). |
 | `POST` | `/leads/:id/convert` | 🟢 | Converts a Qualified Lead into a Deal (and Company/Contact if new) — `FR-CRM-004`. Body: `{ company_id?: number, contact_id?: number, deal: { title, value, stage, channel, ... } }`. Company resolution order: an explicit `company_id` in the request always wins; otherwise the Lead's own `company_id` is reused (falling back to creating a fresh Company only if that Company has since been soft-deleted); otherwise (a Lead with no Company at all) a new blank Company is created. `contact_id` omitted creates one from the Lead's `name`/`email`/`phone`. Any Attachments on the Lead are carried over to the new Deal. Response: `{ data: { deal: Deal, company: Company, contact: Contact } }`. |
+
+---
+
+## 3a. Prospects (`FR-CRM-105`/`106`)
+
+Added 2026-09-01. The pre-Lead marketing funnel entity — Marketing works a Prospect (an early, often loosely-qualified Company/Contact lead) before it's ready to hand off to Sales via Convert, which mirrors §3's Lead→Deal `Convert` one funnel stage earlier: Prospect → Lead, instead of Lead → Deal. Everything about this section mirrors §3 (Leads) unless called out otherwise — same filters, same bulk-action shapes, same soft-delete/Trash/Restore semantics.
+
+```ts
+type ProspectStatus = 'New' | 'Engaging' | 'Nurturing' | 'Disqualified' | 'Converted'
+type LeadSource = 'Referral' | 'Website' | 'Event' | 'Ads' | 'Other'   // same enum Lead.source uses — see §8.8
+
+interface Prospect {
+  id: number
+  name: string
+  company_id: number | null   // Company.id, same nullable-FK shape as Lead.company_id
+  email: string
+  phone: string
+  source: LeadSource
+  status: ProspectStatus
+  notes: string
+  assigned_to: number | null   // User.id — must be a Marketing/Sales Rep/Sales Manager/Admin account
+  tags: string[]
+  converted_lead_id: number | null   // set once this Prospect has been converted; prevents double-conversion
+  created_at: string
+}
+```
+
+> `ProspectStatus` is a **fixed** enum (not Admin-configurable via an option list, unlike `PipelineStage`) — mirrors how `LeadStatus` is fixed too. `"Converted"` is set **only** by `POST /prospects/:id/convert` below — Create/Update reject a client-supplied `status: "Converted"` with `422` unless the Prospect is already Converted and the request is just re-submitting that same value unchanged (so a generic "edit this record" form that resends every field as-is isn't blocked).
+
+| Method | Path | Auth | Status | Description |
+|---|---|---|---|---|
+| `GET` | `/prospects` | Admin, Marketing, Sales Manager | 🟢 | Filters: `status`, `source`, `assigned_to` (`unassigned` for `assigned_to IS NULL`), `company_id` (exact match), `exclude_converted=true`, `search` (name/email/**the joined Company's name**), `sort` (including `sort=company_name`). Same filter/sort/search shape as `GET /leads`. |
+| `POST` | `/prospects` | Admin, Marketing, Sales Manager | 🟢 | Create. `email`, if supplied, must be a syntactically valid address (same `validateExternalEmail` rule as Lead — not domain-restricted, since it belongs to an external contact). `source` must be an active `LeadSourceOption` (§8.8, same option list Lead uses). `status` defaults to `"New"` when omitted; a client-supplied `"Converted"` is rejected (`422`) — see the note above. No auto-assignment on omitted `assigned_to` (unlike Lead's round-robin) — stays unassigned until a Marketing user/Admin/Sales Manager picks one. |
+| `GET` | `/prospects/:id` | Admin, Marketing, Sales Manager | 🟢 | Single prospect. |
+| `PUT` | `/prospects/:id` | Admin, Marketing, Sales Manager | 🟢 | Update (including status transitions other than into `"Converted"` — see the note above). Same `email`/`source` validation as Create. |
+| `DELETE` | `/prospects/:id` | Admin, Marketing, Sales Manager | 🟢 | Soft-delete (§1.6) — recoverable via Trash/Restore below. |
+| `GET` | `/prospects/trash` | Sales Manager/Admin only | 🟢 | List soft-deleted prospects, paginated like `GET /prospects`. Note: narrower than the read/write role set above — Marketing does not get Trash/Restore/bulk-*, same split Lead doesn't have (Lead's bulk-*/Trash/Restore are Sales-Manager/Admin-only too, but Lead's read/write set is every Sales role, not a 3-role allowlist). |
+| `POST` | `/prospects/:id/restore` | Sales Manager/Admin only | 🟢 | Clears `deleted_at`/`deleted_by`. |
+| `PATCH` | `/prospects/bulk-reassign` | Sales Manager/Admin only | 🟢 | Body: `{ ids: number[], assigned_to: number \| null }`. |
+| `PATCH` | `/prospects/bulk-tag` | Sales Manager/Admin only | 🟢 | Body: `{ ids: number[], tags: string[], mode: 'set' \| 'add' }`. |
+| `PATCH` | `/prospects/bulk-archive` | Sales Manager/Admin only | 🟢 | Soft-deletes every listed Prospect in one transaction. |
+| `POST` | `/prospects/:id/convert` | Admin, Marketing, Sales Manager | 🟢 | Converts a Prospect into a Lead (and Company/Contact if new) — one funnel stage earlier than Lead's own Convert. Body: `{ company_id?: number, contact_id?: number, lead?: { assigned_to?: number } }`. Company resolution order: an explicit `company_id` in the request always wins; otherwise the Prospect's own `company_id` is reused (falling back to creating a fresh Company only if that Company has since been soft-deleted); otherwise (a Prospect with no Company at all) a new blank Company is created. `contact_id` omitted creates one from the Prospect's `name`/`email`/`phone`. The new Lead's `assigned_to` is `lead.assigned_to` if supplied, else falls back to the Prospect's own `assigned_to`. The new Lead's `prospect_id` back-references this Prospect (§3). Any Attachments on the Prospect are carried over to the new Lead. `409` if the Prospect has already been converted (`converted_lead_id` already set). Response: `{ data: { lead: Lead, company: Company, contact: Contact } }`. |
 
 ---
 
@@ -377,7 +422,7 @@ interface Deal {
 
 ```ts
 type ActivityType = 'call' | 'email' | 'meeting'
-type ActivityRelatedType = 'contact' | 'company' | 'deal'
+type ActivityRelatedType = 'contact' | 'company' | 'deal' | 'prospect'   // 'prospect' added 2026-09-01 for §3a
 
 interface Activity {
   id: number
@@ -509,7 +554,7 @@ interface Payment {
 
 ```ts
 type TaskStatus = 'pending' | 'done'
-type TaskRelatedType = ActivityRelatedType   // 'contact' | 'company' | 'deal'
+type TaskRelatedType = ActivityRelatedType   // 'contact' | 'company' | 'deal' | 'prospect'
 
 interface Task {
   id: number

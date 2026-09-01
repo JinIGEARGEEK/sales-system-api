@@ -80,7 +80,7 @@ Tests run against a separate `sales_system_test` database (created automatically
 
 All routes are prefixed `/api/v1`. Auth is a Bearer JWT (`Authorization: Bearer <token>`), obtained via `POST /auth/login`.
 
-Resources: Auth & Users, Leads, Companies, Contacts, Deals, Activities, Tags, Quotes, Payments, Tasks, Contracts, Products & Customer-Products, Projects, Reports, Audit log, Dashboard aggregate. See `biz_spec/api-system-spec.md` for the full endpoint list, request/response shapes, filters, and per-endpoint status (🟢 required / 🔜 planned).
+Resources: Auth & Users, Leads, Prospects, Companies, Contacts, Deals, Activities, Tags, Quotes, Payments, Tasks, Contracts, Products & Customer-Products, Projects, Reports, Audit log, Dashboard aggregate. See `biz_spec/api-system-spec.md` for the full endpoint list, request/response shapes, filters, and per-endpoint status (🟢 required / 🔜 planned).
 
 `POST /auth/login` is rate-limited to 10 attempts/minute per client IP (resolved from `X-Forwarded-For` behind Railway's proxy, falling back to the raw connection address for local/direct connections) — see `internal/routes/routes.go`.
 
@@ -92,6 +92,7 @@ Resources: Auth & Users, Leads, Companies, Contacts, Deals, Activities, Tags, Qu
 | **Sales Rep** | Full CRUD on records assigned to them or unassigned; read access to teammates' records |
 | **Sales Manager** | Same as Sales Rep, plus read access to all reps' data, all `/reports/*`, and deal reassignment |
 | **Production** | Write access to *only* `status` and `production_reference` on `Project` records |
+| **Marketing** | Full CRUD on Prospects (the pre-Lead marketing funnel — `/prospects`) they're assigned to or unassigned, same ownership model Sales Rep has for Leads. No access to Leads/Deals/any other resource. |
 
 RBAC is enforced server-side on every route — never rely on the frontend hiding a button (NFR-001).
 

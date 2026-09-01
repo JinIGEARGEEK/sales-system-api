@@ -31,6 +31,62 @@ func TestProspectCreate_LinksCompanyID(t *testing.T) {
 	assert.Equal(t, models.ProspectStatusNew, out.Data.Status, "defaults to New when omitted")
 }
 
+// TestProspectCreate_RejectsManualConvertedStatus guards
+// rejectManualConvertedStatus: ProspectStatusConverted's own doc comment says
+// it's set automatically by Convert only — a client passing
+// status: "Converted" directly to Create must not be able to fake that
+// state (no Lead behind it, ConvertedLeadID never set).
+func TestProspectCreate_RejectsManualConvertedStatus(t *testing.T) {
+	app, db := testutil.App(t)
+	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
+
+	req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/prospects", map[string]interface{}{
+		"name": "Riley Chen", "status": "Converted",
+	}, marketing.ID, marketing.Role)
+	resp := doJSON(t, app, req, nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+}
+
+// TestProspectUpdate_RejectsManualConvertedStatus is Update's half of the
+// same guard: an existing (not-yet-converted) Prospect can't be flipped to
+// Converted by a plain PUT either.
+func TestProspectUpdate_RejectsManualConvertedStatus(t *testing.T) {
+	app, db := testutil.App(t)
+	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
+	prospect := seedProspect(t, db, nil)
+
+	req := testutil.AuthRequest(t, http.MethodPut, "/api/v1/prospects/"+itoa(prospect.ID), map[string]interface{}{
+		"name": prospect.Name, "status": "Converted",
+	}, marketing.ID, marketing.Role)
+	resp := doJSON(t, app, req, nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+
+	var reloaded models.Prospect
+	require.NoError(t, db.First(&reloaded, prospect.ID).Error)
+	assert.NotEqual(t, models.ProspectStatusConverted, reloaded.Status, "status must not have been changed")
+}
+
+// TestProspectUpdate_AllowsResubmittingAlreadyConvertedStatus proves the
+// guard only blocks a *transition* into Converted, not a client harmlessly
+// re-submitting an already-converted Prospect's unchanged status (e.g. a
+// generic "edit this record" form that resends every field as-is).
+func TestProspectUpdate_AllowsResubmittingAlreadyConvertedStatus(t *testing.T) {
+	app, db := testutil.App(t)
+	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
+	prospect := seedProspect(t, db, nil)
+
+	convertReq := testutil.AuthRequest(t, http.MethodPost, "/api/v1/prospects/"+itoa(prospect.ID)+"/convert", map[string]interface{}{},
+		marketing.ID, marketing.Role)
+	convertResp := doJSON(t, app, convertReq, nil)
+	require.Equal(t, http.StatusOK, convertResp.StatusCode)
+
+	updateReq := testutil.AuthRequest(t, http.MethodPut, "/api/v1/prospects/"+itoa(prospect.ID), map[string]interface{}{
+		"name": prospect.Name, "status": "Converted", "notes": "updated notes",
+	}, marketing.ID, marketing.Role)
+	updateResp := doJSON(t, app, updateReq, nil)
+	assert.Equal(t, http.StatusOK, updateResp.StatusCode)
+}
+
 // Route-level role gating (Sales Rep forbidden, Admin/Marketing/Sales Manager
 // allowed) is covered by tests/rbac_test.go's TestRBAC_RouteGates and
 // TestRBAC_ProspectsAllowMarketingAndSalesManager, not duplicated here.
