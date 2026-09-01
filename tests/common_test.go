@@ -59,7 +59,7 @@ func seedProspect(t *testing.T, db *gorm.DB, companyID *uint) *models.Prospect {
 	t.Helper()
 	prospect := &models.Prospect{
 		Name: "Riley Chen", CompanyID: companyID,
-		Source: models.LeadSourceWebsite, Status: models.ProspectStatusEngaging,
+		Source: "Social Media", Status: models.ProspectStatusEngaging,
 	}
 	require.NoError(t, db.Create(prospect).Error)
 	return prospect

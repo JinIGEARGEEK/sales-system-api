@@ -22,7 +22,7 @@ func TestProspectCreate_LinksCompanyID(t *testing.T) {
 		Data models.Prospect `json:"data"`
 	}
 	req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/prospects", map[string]interface{}{
-		"name": "Riley Chen", "company_id": company.ID, "source": "Website",
+		"name": "Riley Chen", "company_id": company.ID, "source": "Social Media",
 	}, marketing.ID, marketing.Role)
 	resp := doJSON(t, app, req, &out)
 	require.Equal(t, http.StatusCreated, resp.StatusCode)

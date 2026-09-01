@@ -63,6 +63,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	attachmentH := handlers.NewAttachmentHandler(db, storage)
 	pipelineStageH := handlers.NewPipelineStageHandler(db)
 	leadSourceH := handlers.NewLeadSourceHandler(db)
+	prospectSourceH := handlers.NewProspectSourceHandler(db)
 	industryOptionH := handlers.NewIndustryOptionHandler(db)
 	companySizeOptionH := handlers.NewCompanySizeOptionHandler(db)
 	revenueSizeOptionH := handlers.NewRevenueSizeOptionHandler(db)
@@ -322,6 +323,15 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	leadSources.Post("/", leadSourceH.Create)
 	leadSources.Patch("/:id", leadSourceH.Update)
 	leadSources.Delete("/:id", leadSourceH.Delete)
+
+	// Prospect sources — Marketing's own funnel-source list, kept Admin-only
+	// same as every other /admin/* config resource here (Marketing manages
+	// day-to-day Prospect data via /prospects*, not this taxonomy).
+	prospectSources := authed.Group("/admin/prospect-sources", adminOnly)
+	prospectSources.Get("/", prospectSourceH.List)
+	prospectSources.Post("/", prospectSourceH.Create)
+	prospectSources.Patch("/:id", prospectSourceH.Update)
+	prospectSources.Delete("/:id", prospectSourceH.Delete)
 
 	// Company industry / size — Admin-only config, replacing the previously
 	// frontend-only hardcoded INDUSTRY_OPTIONS list (and Size's total lack of

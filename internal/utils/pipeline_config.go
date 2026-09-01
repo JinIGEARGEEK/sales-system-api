@@ -30,6 +30,19 @@ func IsActiveLeadSource(db *gorm.DB, name string) bool {
 	return count > 0
 }
 
+// IsActiveProspectSource reports whether name matches an active
+// ProspectSourceOption row — Marketing's own funnel-source list, separate
+// from IsActiveLeadSource's LeadSourceOption table. Empty name is allowed
+// through, same as every other optional-field option check here.
+func IsActiveProspectSource(db *gorm.DB, name string) bool {
+	if name == "" {
+		return true
+	}
+	var count int64
+	db.Model(&models.ProspectSourceOption{}).Where("name = ? AND is_active = ?", name, true).Count(&count)
+	return count > 0
+}
+
 // IsActiveIndustry reports whether name matches an active IndustryOption
 // row — the DB-backed replacement for the old frontend-only INDUSTRY_OPTIONS
 // whitelist. Empty name is allowed through (Industry has no NOT NULL

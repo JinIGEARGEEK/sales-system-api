@@ -16,6 +16,13 @@ const (
 	ProspectStatusConverted ProspectStatus = "Converted"
 )
 
+// ProspectSource is its own type, deliberately NOT LeadSource — Marketing's
+// funnel sources (Social Media, LINE OA, Email Campaign, ...) are a separate
+// admin-configurable list (ProspectSourceOption, see pipeline_config.go) from
+// Lead/Deal's (LeadSourceOption), added 2026-09-01 once Marketing's actual
+// channel mix turned out not to overlap with Sales's lead-capture sources.
+type ProspectSource string
+
 // Prospect — the pre-Lead marketing funnel entity. Marketing works a Prospect
 // (with an optional linked Company, same nullable-FK shape as Lead.CompanyID)
 // before it's ready to hand off to Sales via Convert, which mirrors
@@ -27,7 +34,7 @@ type Prospect struct {
 	CompanyID  *uint          `gorm:"index" json:"company_id,omitempty"`
 	Email      string         `json:"email"`
 	Phone      string         `json:"phone"`
-	Source     LeadSource     `gorm:"type:varchar(64);index" json:"source"`
+	Source     ProspectSource `gorm:"type:varchar(64);index" json:"source"`
 	Status     ProspectStatus `gorm:"type:varchar(16);default:'New';index" json:"status"`
 	Notes      string         `json:"notes"`
 	AssignedTo *uint          `gorm:"index" json:"assigned_to"`

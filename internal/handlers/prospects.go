@@ -86,7 +86,7 @@ type prospectForm struct {
 	CompanyID  *uint                 `json:"company_id"`
 	Email      string                `json:"email"`
 	Phone      string                `json:"phone"`
-	Source     models.LeadSource     `json:"source"`
+	Source     models.ProspectSource `json:"source"`
 	Status     models.ProspectStatus `json:"status"`
 	Notes      string                `json:"notes"`
 	AssignedTo *uint                 `json:"assigned_to"`
@@ -104,8 +104,8 @@ func (h *ProspectHandler) Create(c *fiber.Ctx) error {
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a prospect to another team member")
 	}
-	if !utils.IsActiveLeadSource(h.DB, string(form.Source)) {
-		return utils.ValidationError(c, "source is not a valid active lead source", map[string][]string{"source": {"invalid"}})
+	if !utils.IsActiveProspectSource(h.DB, string(form.Source)) {
+		return utils.ValidationError(c, "source is not a valid active prospect source", map[string][]string{"source": {"invalid"}})
 	}
 	if err := validateExternalEmail(c, form.Email); err != nil {
 		return nil
@@ -153,8 +153,8 @@ func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a prospect to another team member")
 	}
-	if !utils.IsActiveLeadSource(h.DB, string(form.Source)) {
-		return utils.ValidationError(c, "source is not a valid active lead source", map[string][]string{"source": {"invalid"}})
+	if !utils.IsActiveProspectSource(h.DB, string(form.Source)) {
+		return utils.ValidationError(c, "source is not a valid active prospect source", map[string][]string{"source": {"invalid"}})
 	}
 	if err := validateExternalEmail(c, form.Email); err != nil {
 		return nil
@@ -349,8 +349,17 @@ func (h *ProspectHandler) Convert(c *fiber.Ctx) error {
 		}
 
 		lead = models.Lead{
+			// Source is carried over as-is even though ProspectSourceOption and
+			// LeadSourceOption are separate lists (see ProspectSource's doc) —
+			// the resulting Lead may end up with a source value ("LINE OA",
+			// "Cold Outreach", ...) that isn't one of Lead's own configured
+			// options. That's intentional: it preserves real information about
+			// how this Lead originated rather than lossily mapping it to
+			// "Other", the same way the frontend already lets a Contact's
+			// role_title display a since-deactivated option instead of
+			// silently blanking it.
 			Name: prospect.Name, CompanyID: &company.ID, Email: prospect.Email, Phone: prospect.Phone,
-			Source: prospect.Source, Status: models.LeadStatusNew, AssignedTo: req.Lead.AssignedTo,
+			Source: models.LeadSource(prospect.Source), Status: models.LeadStatusNew, AssignedTo: req.Lead.AssignedTo,
 			ProspectID: &prospect.ID,
 		}
 		if lead.AssignedTo == nil {
