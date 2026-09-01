@@ -43,17 +43,7 @@ func (h *ProspectHandler) List(c *fiber.Ctx) error {
 
 	sortField := strings.TrimPrefix(c.Query("sort"), "-")
 	search := c.Query("search")
-	// Same LEFT JOIN reasoning as LeadHandler.List: a Prospect with no
-	// company_id at all (still allowed) must not silently disappear from an
-	// otherwise-unfiltered list.
-	needsCompanyJoin := sortField == "company_name" || search != ""
-	if needsCompanyJoin {
-		query = query.Joins("LEFT JOIN companies ON companies.id = prospects.company_id")
-	}
-	if search != "" {
-		like := "%" + search + "%"
-		query = query.Where("prospects.name ILIKE ? OR prospects.email ILIKE ? OR companies.name ILIKE ?", like, like, like)
-	}
+	query, needsCompanyJoin := utils.ApplyNullableCompanySearch(query, "prospects", sortField, search)
 	if c.Query("exclude_converted") == "true" {
 		query = query.Where("converted_lead_id IS NULL")
 	}
@@ -63,14 +53,7 @@ func (h *ProspectHandler) List(c *fiber.Ctx) error {
 
 	var prospects []models.Prospect
 	if needsCompanyJoin {
-		query = query.Select("prospects.*")
-	}
-	if sortField == "company_name" {
-		dir := "ASC"
-		if strings.HasPrefix(c.Query("sort"), "-") {
-			dir = "DESC"
-		}
-		query = query.Order("companies.name " + dir)
+		query = utils.ApplyNullableCompanySort(query, "prospects", c.Query("sort"), sortField)
 	} else {
 		query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true}, "-created_at")
 	}
