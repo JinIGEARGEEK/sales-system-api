@@ -31,17 +31,9 @@ func TestProspectCreate_LinksCompanyID(t *testing.T) {
 	assert.Equal(t, models.ProspectStatusNew, out.Data.Status, "defaults to New when omitted")
 }
 
-// TestProspectList_RequiresProspectRole guards that a Sales Rep (no legitimate
-// reason to see the pre-Lead marketing funnel) is forbidden, matching the
-// route-level RequireRoles(Admin, Marketing, Sales Manager) gate.
-func TestProspectList_RequiresProspectRole(t *testing.T) {
-	app, db := testutil.App(t)
-	rep := testutil.CreateUser(t, db, models.RoleSalesRep)
-
-	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/prospects", nil, rep.ID, rep.Role)
-	resp := doJSON(t, app, req, nil)
-	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-}
+// Route-level role gating (Sales Rep forbidden, Admin/Marketing/Sales Manager
+// allowed) is covered by tests/rbac_test.go's TestRBAC_RouteGates and
+// TestRBAC_ProspectsAllowMarketingAndSalesManager, not duplicated here.
 
 // TestProspectConvert_CreatesLeadAndReusesCompany guards the core Convert
 // path: reuses the Prospect's own linked Company (no duplicate), creates a

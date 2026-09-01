@@ -13,18 +13,20 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
-// validateLeadEmail rejects a syntactically invalid, non-empty email — unlike
-// User accounts, a Lead's email belongs to an external contact so it isn't
-// restricted to the company domain (see utils.IsValidCompanyEmail), just
-// checked for basic format. Left unvalidated before, a garbage address would
-// silently persist and then be relied on as an exact-match dedupe key by
-// ImportHandler.ImportContacts.
+// validateExternalEmail rejects a syntactically invalid, non-empty email —
+// unlike User accounts, a Lead's or Prospect's email belongs to an external
+// contact so it isn't restricted to the company domain (see
+// utils.IsValidCompanyEmail), just checked for basic format. Left
+// unvalidated before, a garbage address would silently persist and then be
+// relied on as an exact-match dedupe key by ImportHandler.ImportContacts.
+// Named for what it validates (any external-contact email field), not which
+// resource calls it — shared by LeadHandler and ProspectHandler.
 //
 // Returns utils.ErrHandled (see its doc) if invalid, nil if valid — NOT
 // ValidationError's own return value, which is nil even on the invalid path
 // since the JSON write itself succeeds; forwarding that would make the
 // caller's `if err != nil` guard never fire.
-func validateLeadEmail(c *fiber.Ctx, email string) error {
+func validateExternalEmail(c *fiber.Ctx, email string) error {
 	if email == "" {
 		return nil
 	}
@@ -129,7 +131,7 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 	if !utils.IsActiveLeadSource(h.DB, string(form.Source)) {
 		return utils.ValidationError(c, "source is not a valid active lead source", map[string][]string{"source": {"invalid"}})
 	}
-	if err := validateLeadEmail(c, form.Email); err != nil {
+	if err := validateExternalEmail(c, form.Email); err != nil {
 		return nil
 	}
 
@@ -318,7 +320,7 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	if !utils.IsActiveLeadSource(h.DB, string(form.Source)) {
 		return utils.ValidationError(c, "source is not a valid active lead source", map[string][]string{"source": {"invalid"}})
 	}
-	if err := validateLeadEmail(c, form.Email); err != nil {
+	if err := validateExternalEmail(c, form.Email); err != nil {
 		return nil
 	}
 

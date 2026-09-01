@@ -89,7 +89,7 @@ func (h *ProspectHandler) Create(c *fiber.Ctx) error {
 	if !utils.IsActiveLeadSource(h.DB, string(form.Source)) {
 		return utils.ValidationError(c, "source is not a valid active lead source", map[string][]string{"source": {"invalid"}})
 	}
-	if err := validateLeadEmail(c, form.Email); err != nil {
+	if err := validateExternalEmail(c, form.Email); err != nil {
 		return nil
 	}
 
@@ -135,7 +135,7 @@ func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 	if !utils.IsActiveLeadSource(h.DB, string(form.Source)) {
 		return utils.ValidationError(c, "source is not a valid active lead source", map[string][]string{"source": {"invalid"}})
 	}
-	if err := validateLeadEmail(c, form.Email); err != nil {
+	if err := validateExternalEmail(c, form.Email); err != nil {
 		return nil
 	}
 
