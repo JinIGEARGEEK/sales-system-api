@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/lib/pq"
 	"gorm.io/gorm"
 
 	"github.com/igeargeek/sales-system-api/internal/middleware"
@@ -90,6 +91,11 @@ type prospectForm struct {
 	Status     models.ProspectStatus `json:"status"`
 	Notes      string                `json:"notes"`
 	AssignedTo *uint                 `json:"assigned_to"`
+	// Tags is settable directly here (unlike Lead's own leadForm, which only
+	// exposes tags via bulk-tag) — mirrors Contact's simpler pattern instead,
+	// since Marketing editing a single Prospect's tags one at a time from its
+	// detail page is a real, expected workflow.
+	Tags []string `json:"tags"`
 }
 
 // Create — POST /prospects.
@@ -117,6 +123,7 @@ func (h *ProspectHandler) Create(c *fiber.Ctx) error {
 	prospect := models.Prospect{
 		Name: form.Name, CompanyID: form.CompanyID, Email: form.Email, Phone: form.Phone,
 		Source: form.Source, Status: form.Status, Notes: form.Notes, AssignedTo: form.AssignedTo,
+		Tags: pq.StringArray(form.Tags),
 	}
 	if prospect.Status == "" {
 		prospect.Status = models.ProspectStatusNew
@@ -165,6 +172,7 @@ func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 
 	prospect.Name, prospect.CompanyID, prospect.Email, prospect.Phone = form.Name, form.CompanyID, form.Email, form.Phone
 	prospect.Source, prospect.Status, prospect.Notes, prospect.AssignedTo = form.Source, form.Status, form.Notes, form.AssignedTo
+	prospect.Tags = pq.StringArray(form.Tags)
 
 	if err := h.DB.Save(&prospect).Error; err != nil {
 		return utils.Internal(c, "Failed to update prospect")

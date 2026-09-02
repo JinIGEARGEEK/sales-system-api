@@ -31,6 +31,36 @@ func TestProspectCreate_LinksCompanyID(t *testing.T) {
 	assert.Equal(t, models.ProspectStatusNew, out.Data.Status, "defaults to New when omitted")
 }
 
+// TestProspectTags_RoundTripThroughCreateAndUpdate guards that tags are
+// settable directly on Create/Update, unlike Lead's own leadForm (which only
+// exposes tags via bulk-tag) — Prospect deliberately mirrors Contact's
+// simpler pattern here instead, since editing one Prospect's tags at a time
+// from its detail page is a real workflow, not just a bulk-select action.
+func TestProspectTags_RoundTripThroughCreateAndUpdate(t *testing.T) {
+	app, db := testutil.App(t)
+	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
+
+	var created struct {
+		Data models.Prospect `json:"data"`
+	}
+	createReq := testutil.AuthRequest(t, http.MethodPost, "/api/v1/prospects", map[string]interface{}{
+		"name": "Riley Chen", "tags": []string{"Warm", "Referral Partner"},
+	}, marketing.ID, marketing.Role)
+	createResp := doJSON(t, app, createReq, &created)
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	assert.Equal(t, []string{"Warm", "Referral Partner"}, []string(created.Data.Tags))
+
+	var updated struct {
+		Data models.Prospect `json:"data"`
+	}
+	updateReq := testutil.AuthRequest(t, http.MethodPut, "/api/v1/prospects/"+itoa(created.Data.ID), map[string]interface{}{
+		"name": "Riley Chen", "tags": []string{"Cold"},
+	}, marketing.ID, marketing.Role)
+	updateResp := doJSON(t, app, updateReq, &updated)
+	require.Equal(t, http.StatusOK, updateResp.StatusCode)
+	assert.Equal(t, []string{"Cold"}, []string(updated.Data.Tags), "PUT replaces tags wholesale, same as every other field")
+}
+
 // TestProspectCreate_RejectsManualConvertedStatus guards
 // rejectManualConvertedStatus: ProspectStatusConverted's own doc comment says
 // it's set automatically by Convert only — a client passing
