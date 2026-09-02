@@ -48,6 +48,8 @@ On first run, if the `users` table is empty, the server seeds an Admin account a
 
 Migrations run automatically on boot via `database.AutoMigrate` — no separate migration step needed for local dev.
 
+**Demo data**: whenever `APP_ENV=development` (the default) and the `companies` table is empty, the server also seeds a small realistic chain of sample records — 3 Companies, 6 Contacts, 6 Prospects (spanning every status incl. one already Converted), 5 Leads, 6 Deals (one per pipeline stage), 6 Tasks, and 2 Projects — plus 3 staff accounts (Sales Rep/Sales Manager/Marketing, password `Password123!`) so assignee dropdowns aren't just the Admin. This is purely for local visual checking (`seedDemoData` in `cmd/api/main.go`) — it never runs outside `development`, and it's idempotent: once any Company exists (including a real one you created by hand), it no-ops on every future boot.
+
 ### Environment variables
 
 See [`.env.example`](.env.example). Notable ones:
