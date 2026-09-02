@@ -58,6 +58,7 @@ var tables = []string{
 	"contacts",
 	"companies",
 	"leads",
+	"prospects",
 	"users",
 }
 
@@ -173,6 +174,14 @@ func seedPipelineConfig(db *gorm.DB) {
 	if sourceCount == 0 {
 		if err := db.Create(&models.DefaultLeadSourceOptions).Error; err != nil {
 			panic(fmt.Sprintf("testutil: seed lead sources: %v", err))
+		}
+	}
+
+	var prospectSourceCount int64
+	db.Model(&models.ProspectSourceOption{}).Count(&prospectSourceCount)
+	if prospectSourceCount == 0 {
+		if err := db.Create(&models.DefaultProspectSourceOptions).Error; err != nil {
+			panic(fmt.Sprintf("testutil: seed prospect sources: %v", err))
 		}
 	}
 }

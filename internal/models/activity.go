@@ -12,9 +12,10 @@ const (
 type ActivityRelatedType string
 
 const (
-	RelatedTypeContact ActivityRelatedType = "contact"
-	RelatedTypeCompany ActivityRelatedType = "company"
-	RelatedTypeDeal    ActivityRelatedType = "deal"
+	RelatedTypeContact  ActivityRelatedType = "contact"
+	RelatedTypeCompany  ActivityRelatedType = "company"
+	RelatedTypeDeal     ActivityRelatedType = "deal"
+	RelatedTypeProspect ActivityRelatedType = "prospect"
 )
 
 // Activity — api-system-spec.md §7.2.

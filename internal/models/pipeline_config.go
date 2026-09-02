@@ -32,6 +32,21 @@ type LeadSourceOption struct {
 
 func (LeadSourceOption) TableName() string { return "lead_source_options" }
 
+// ProspectSourceOption is an Admin-configurable Prospect acquisition source
+// — Marketing's own funnel-source list (added 2026-09-01), deliberately
+// separate from LeadSourceOption above: Marketing's actual channels (Social
+// Media, LINE OA, Email Campaign, Content/SEO, Cold Outreach, Marketing
+// Campaign) don't overlap well with Sales's lead-capture sources
+// (Referral/Website/Event/Ads/Other), so this is its own table rather than
+// forcing both teams to share one list.
+type ProspectSourceOption struct {
+	AuditedModel
+	Name     string `gorm:"not null;uniqueIndex" json:"name"`
+	IsActive bool   `gorm:"not null;default:true;index" json:"is_active"`
+}
+
+func (ProspectSourceOption) TableName() string { return "prospect_source_options" }
+
 // DefaultPipelineStages is the hardcoded stage list being retired — seeded
 // verbatim (same order, same names) on first run so existing Deals validate
 // unchanged. Kept here (not in database package) so handlers/seed code share
@@ -53,4 +68,19 @@ var DefaultLeadSourceOptions = []LeadSourceOption{
 	{Name: string(LeadSourceEvent), IsActive: true},
 	{Name: string(LeadSourceAds), IsActive: true},
 	{Name: string(LeadSourceOther), IsActive: true},
+}
+
+// DefaultProspectSourceOptions is Marketing's own starter source list, seeded
+// on first run same as DefaultLeadSourceOptions above (see
+// cmd/api/main.go's seedPipelineConfig) — picked to cover the channels an
+// inbound-marketing funnel actually uses that Sales's Lead/Deal source list
+// doesn't (no "Referral"/"Event"/generic "Ads" duplication; LINE OA called
+// out explicitly given this is a Thai company).
+var DefaultProspectSourceOptions = []ProspectSourceOption{
+	{Name: "Social Media", IsActive: true},
+	{Name: "LINE OA", IsActive: true},
+	{Name: "Email Campaign", IsActive: true},
+	{Name: "Content/SEO", IsActive: true},
+	{Name: "Cold Outreach", IsActive: true},
+	{Name: "Marketing Campaign", IsActive: true},
 }

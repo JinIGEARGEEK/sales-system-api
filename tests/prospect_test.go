@@ -1,0 +1,211 @@
+package apitests
+
+import (
+	"net/http"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/igeargeek/sales-system-api/internal/models"
+	"github.com/igeargeek/sales-system-api/internal/testutil"
+)
+
+// TestProspectCreate_LinksCompanyID guards Prospect.company_id round-tripping
+// through Create as a real FK, same shape as Lead's.
+func TestProspectCreate_LinksCompanyID(t *testing.T) {
+	app, db := testutil.App(t)
+	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
+	company := seedCompany(t, db)
+
+	var out struct {
+		Data models.Prospect `json:"data"`
+	}
+	req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/prospects", map[string]interface{}{
+		"name": "Riley Chen", "company_id": company.ID, "source": "Social Media",
+	}, marketing.ID, marketing.Role)
+	resp := doJSON(t, app, req, &out)
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	require.NotNil(t, out.Data.CompanyID)
+	assert.Equal(t, company.ID, *out.Data.CompanyID)
+	assert.Equal(t, models.ProspectStatusNew, out.Data.Status, "defaults to New when omitted")
+}
+
+// TestProspectTags_RoundTripThroughCreateAndUpdate guards that tags are
+// settable directly on Create/Update, unlike Lead's own leadForm (which only
+// exposes tags via bulk-tag) — Prospect deliberately mirrors Contact's
+// simpler pattern here instead, since editing one Prospect's tags at a time
+// from its detail page is a real workflow, not just a bulk-select action.
+func TestProspectTags_RoundTripThroughCreateAndUpdate(t *testing.T) {
+	app, db := testutil.App(t)
+	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
+
+	var created struct {
+		Data models.Prospect `json:"data"`
+	}
+	createReq := testutil.AuthRequest(t, http.MethodPost, "/api/v1/prospects", map[string]interface{}{
+		"name": "Riley Chen", "tags": []string{"Warm", "Referral Partner"},
+	}, marketing.ID, marketing.Role)
+	createResp := doJSON(t, app, createReq, &created)
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	assert.Equal(t, []string{"Warm", "Referral Partner"}, []string(created.Data.Tags))
+
+	var updated struct {
+		Data models.Prospect `json:"data"`
+	}
+	updateReq := testutil.AuthRequest(t, http.MethodPut, "/api/v1/prospects/"+itoa(created.Data.ID), map[string]interface{}{
+		"name": "Riley Chen", "tags": []string{"Cold"},
+	}, marketing.ID, marketing.Role)
+	updateResp := doJSON(t, app, updateReq, &updated)
+	require.Equal(t, http.StatusOK, updateResp.StatusCode)
+	assert.Equal(t, []string{"Cold"}, []string(updated.Data.Tags), "PUT replaces tags wholesale, same as every other field")
+}
+
+// TestProspectCreate_RejectsManualConvertedStatus guards
+// rejectManualConvertedStatus: ProspectStatusConverted's own doc comment says
+// it's set automatically by Convert only — a client passing
+// status: "Converted" directly to Create must not be able to fake that
+// state (no Lead behind it, ConvertedLeadID never set).
+func TestProspectCreate_RejectsManualConvertedStatus(t *testing.T) {
+	app, db := testutil.App(t)
+	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
+
+	req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/prospects", map[string]interface{}{
+		"name": "Riley Chen", "status": "Converted",
+	}, marketing.ID, marketing.Role)
+	resp := doJSON(t, app, req, nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+}
+
+// TestProspectUpdate_RejectsManualConvertedStatus is Update's half of the
+// same guard: an existing (not-yet-converted) Prospect can't be flipped to
+// Converted by a plain PUT either.
+func TestProspectUpdate_RejectsManualConvertedStatus(t *testing.T) {
+	app, db := testutil.App(t)
+	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
+	prospect := seedProspect(t, db, nil)
+
+	req := testutil.AuthRequest(t, http.MethodPut, "/api/v1/prospects/"+itoa(prospect.ID), map[string]interface{}{
+		"name": prospect.Name, "status": "Converted",
+	}, marketing.ID, marketing.Role)
+	resp := doJSON(t, app, req, nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+
+	var reloaded models.Prospect
+	require.NoError(t, db.First(&reloaded, prospect.ID).Error)
+	assert.NotEqual(t, models.ProspectStatusConverted, reloaded.Status, "status must not have been changed")
+}
+
+// TestProspectUpdate_AllowsResubmittingAlreadyConvertedStatus proves the
+// guard only blocks a *transition* into Converted, not a client harmlessly
+// re-submitting an already-converted Prospect's unchanged status (e.g. a
+// generic "edit this record" form that resends every field as-is).
+func TestProspectUpdate_AllowsResubmittingAlreadyConvertedStatus(t *testing.T) {
+	app, db := testutil.App(t)
+	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
+	prospect := seedProspect(t, db, nil)
+
+	convertReq := testutil.AuthRequest(t, http.MethodPost, "/api/v1/prospects/"+itoa(prospect.ID)+"/convert", map[string]interface{}{},
+		marketing.ID, marketing.Role)
+	convertResp := doJSON(t, app, convertReq, nil)
+	require.Equal(t, http.StatusOK, convertResp.StatusCode)
+
+	updateReq := testutil.AuthRequest(t, http.MethodPut, "/api/v1/prospects/"+itoa(prospect.ID), map[string]interface{}{
+		"name": prospect.Name, "status": "Converted", "notes": "updated notes",
+	}, marketing.ID, marketing.Role)
+	updateResp := doJSON(t, app, updateReq, nil)
+	assert.Equal(t, http.StatusOK, updateResp.StatusCode)
+}
+
+// Route-level role gating (Sales Rep forbidden, Admin/Marketing/Sales Manager
+// allowed) is covered by tests/rbac_test.go's TestRBAC_RouteGates and
+// TestRBAC_ProspectsAllowMarketingAndSalesManager, not duplicated here.
+
+// TestProspectConvert_CreatesLeadAndReusesCompany guards the core Convert
+// path: reuses the Prospect's own linked Company (no duplicate), creates a
+// Lead back-referencing the Prospect, and flips the Prospect to Converted —
+// mirrors TestLeadConvert_ReusesLeadsExistingCompany's Lead→Deal coverage one
+// funnel stage earlier.
+func TestProspectConvert_CreatesLeadAndReusesCompany(t *testing.T) {
+	app, db := testutil.App(t)
+	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
+	company := &models.Company{Name: "Initrode", Status: models.StatusActive}
+	require.NoError(t, db.Create(company).Error)
+	prospect := seedProspect(t, db, &company.ID)
+
+	var out struct {
+		Data struct {
+			Lead    models.Lead    `json:"lead"`
+			Company models.Company `json:"company"`
+			Contact models.Contact `json:"contact"`
+		} `json:"data"`
+	}
+	req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/prospects/"+itoa(prospect.ID)+"/convert", map[string]interface{}{},
+		marketing.ID, marketing.Role)
+	resp := doJSON(t, app, req, &out)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	assert.Equal(t, company.ID, out.Data.Company.ID, "convert must reuse the Prospect's own linked Company")
+	require.NotNil(t, out.Data.Lead.CompanyID)
+	assert.Equal(t, company.ID, *out.Data.Lead.CompanyID)
+	require.NotNil(t, out.Data.Lead.ProspectID)
+	assert.Equal(t, prospect.ID, *out.Data.Lead.ProspectID)
+	assert.Equal(t, models.LeadStatusNew, out.Data.Lead.Status)
+	assert.NotZero(t, out.Data.Contact.ID, "a Contact should be created from the prospect's name/email/phone")
+	assert.Equal(t, prospect.Name, out.Data.Contact.Name)
+
+	var companyCount int64
+	require.NoError(t, db.Model(&models.Company{}).Where("name = ?", "Initrode").Count(&companyCount).Error)
+	assert.Equal(t, int64(1), companyCount, "must not create a duplicate Company for the same Prospect")
+
+	var updated models.Prospect
+	require.NoError(t, db.First(&updated, prospect.ID).Error)
+	assert.Equal(t, models.ProspectStatusConverted, updated.Status)
+	require.NotNil(t, updated.ConvertedLeadID)
+	assert.Equal(t, out.Data.Lead.ID, *updated.ConvertedLeadID)
+}
+
+// TestProspectConvert_ExplicitCompanyIDOverridesProspectsOwnLink mirrors
+// TestLeadConvert_ExplicitCompanyIDOverridesLeadsOwnLink: a caller-supplied
+// company_id on the Convert request wins over the Prospect's own link.
+func TestProspectConvert_ExplicitCompanyIDOverridesProspectsOwnLink(t *testing.T) {
+	app, db := testutil.App(t)
+	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
+	wrongCompany := &models.Company{Name: "Wrong Co", Status: models.StatusActive}
+	require.NoError(t, db.Create(wrongCompany).Error)
+	rightCompany := &models.Company{Name: "Right Co", Status: models.StatusActive}
+	require.NoError(t, db.Create(rightCompany).Error)
+	prospect := seedProspect(t, db, &wrongCompany.ID)
+
+	var out struct {
+		Data struct {
+			Lead models.Lead `json:"lead"`
+		} `json:"data"`
+	}
+	req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/prospects/"+itoa(prospect.ID)+"/convert", map[string]interface{}{
+		"company_id": rightCompany.ID,
+	}, marketing.ID, marketing.Role)
+	resp := doJSON(t, app, req, &out)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NotNil(t, out.Data.Lead.CompanyID)
+	assert.Equal(t, rightCompany.ID, *out.Data.Lead.CompanyID)
+}
+
+// TestProspectConvert_RejectsDoubleConversion guards the ConvertedLeadID
+// guard — converting an already-converted Prospect must 409, not silently
+// create a second Lead.
+func TestProspectConvert_RejectsDoubleConversion(t *testing.T) {
+	app, db := testutil.App(t)
+	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
+	prospect := seedProspect(t, db, nil)
+
+	first := testutil.AuthRequest(t, http.MethodPost, "/api/v1/prospects/"+itoa(prospect.ID)+"/convert", map[string]interface{}{},
+		marketing.ID, marketing.Role)
+	resp := doJSON(t, app, first, nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	second := testutil.AuthRequest(t, http.MethodPost, "/api/v1/prospects/"+itoa(prospect.ID)+"/convert", map[string]interface{}{},
+		marketing.ID, marketing.Role)
+	resp = doJSON(t, app, second, nil)
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+}

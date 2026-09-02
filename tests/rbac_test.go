@@ -28,6 +28,11 @@ func TestRBAC_RouteGates(t *testing.T) {
 		// auditLogH.List), so it never actually ran: the handler doesn't call
 		// c.Next(), so any authenticated role could read the full audit trail.
 		"/api/v1/audit-log",
+		// Admin/Marketing/Sales-Manager-only — new 2026-09-01 for the
+		// Prospect funnel (see TestRBAC_ProspectsAllowMarketingAndSalesManager
+		// below for the Marketing/Sales-Manager-specific positive checks this
+		// shared loop doesn't cover).
+		"/api/v1/prospects",
 	}
 
 	for _, path := range routes {
@@ -55,6 +60,29 @@ func TestRBAC_RouteGates(t *testing.T) {
 		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/users", nil, manager.ID, manager.Role)
 		resp := doJSON(t, app, req, nil)
 		assert.Equal(t, http.StatusForbidden, resp.StatusCode, "/users is Admin-only, not Sales-Manager")
+	})
+}
+
+// TestRBAC_ProspectsAllowMarketingAndSalesManager covers the two roles the
+// shared loop above doesn't: /prospects is Admin/Marketing/Sales-Manager
+// (unlike /users' Admin-only or /reports' Admin/Sales-Manager), so both
+// Marketing (its primary owner) and Sales Manager (oversight) must get
+// through, not just Admin.
+func TestRBAC_ProspectsAllowMarketingAndSalesManager(t *testing.T) {
+	app, db := testutil.App(t)
+	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
+	manager := testutil.CreateUser(t, db, models.RoleSalesManager)
+
+	t.Run("marketing_ok", func(t *testing.T) {
+		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/prospects", nil, marketing.ID, marketing.Role)
+		resp := doJSON(t, app, req, nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+
+	t.Run("sales_manager_ok", func(t *testing.T) {
+		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/prospects", nil, manager.ID, manager.Role)
+		resp := doJSON(t, app, req, nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 }
 

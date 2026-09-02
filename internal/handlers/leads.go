@@ -13,18 +13,20 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
-// validateLeadEmail rejects a syntactically invalid, non-empty email — unlike
-// User accounts, a Lead's email belongs to an external contact so it isn't
-// restricted to the company domain (see utils.IsValidCompanyEmail), just
-// checked for basic format. Left unvalidated before, a garbage address would
-// silently persist and then be relied on as an exact-match dedupe key by
-// ImportHandler.ImportContacts.
+// validateExternalEmail rejects a syntactically invalid, non-empty email —
+// unlike User accounts, a Lead's or Prospect's email belongs to an external
+// contact so it isn't restricted to the company domain (see
+// utils.IsValidCompanyEmail), just checked for basic format. Left
+// unvalidated before, a garbage address would silently persist and then be
+// relied on as an exact-match dedupe key by ImportHandler.ImportContacts.
+// Named for what it validates (any external-contact email field), not which
+// resource calls it — shared by LeadHandler and ProspectHandler.
 //
 // Returns utils.ErrHandled (see its doc) if invalid, nil if valid — NOT
 // ValidationError's own return value, which is nil even on the invalid path
 // since the JSON write itself succeeds; forwarding that would make the
 // caller's `if err != nil` guard never fire.
-func validateLeadEmail(c *fiber.Ctx, email string) error {
+func validateExternalEmail(c *fiber.Ctx, email string) error {
 	if email == "" {
 		return nil
 	}
@@ -67,22 +69,14 @@ func (h *LeadHandler) List(c *fiber.Ctx) error {
 	sortField := strings.TrimPrefix(c.Query("sort"), "-")
 	search := c.Query("search")
 	// The related Company's name is needed for either a "search" match or a
-	// "company_name" sort — join once, up front, whenever either is in
-	// play, rather than duplicating the join per use like deals.go/
-	// contacts.go's sort-only special case does (see utils.ApplyCompanyNameSort,
-	// which those two now share; Lead can't reuse it here since it also needs
-	// the join for "search" and needs LEFT JOIN rather than that helper's
-	// INNER JOIN — see its doc comment for why).
-	// LEFT JOIN, not JOIN: a Lead with no company_id at all (still allowed)
-	// must not silently disappear from an otherwise-unfiltered list.
-	needsCompanyJoin := sortField == "company_name" || search != ""
-	if needsCompanyJoin {
-		query = query.Joins("LEFT JOIN companies ON companies.id = leads.company_id")
-	}
-	if search != "" {
-		like := "%" + search + "%"
-		query = query.Where("leads.name ILIKE ? OR leads.email ILIKE ? OR companies.name ILIKE ?", like, like, like)
-	}
+	// "company_name" sort — join once, up front, whenever either is in play
+	// (utils.ApplyNullableCompanySearch), rather than duplicating the join
+	// per use like deals.go/contacts.go's sort-only special case does (see
+	// utils.ApplyCompanyNameSort, which those two share; Lead/Prospect can't
+	// reuse that one since they also need the join for "search" and need a
+	// LEFT JOIN rather than that helper's INNER JOIN — see its doc comment
+	// for why).
+	query, needsCompanyJoin := utils.ApplyNullableCompanySearch(query, "leads", sortField, search)
 	if c.Query("exclude_converted") == "true" {
 		query = query.Where("converted_deal_id IS NULL")
 	}
@@ -90,23 +84,13 @@ func (h *LeadHandler) List(c *fiber.Ctx) error {
 	var total int64
 	// Count() before the Select below — a plain COUNT(*) works fine against
 	// the join as-is; it's only Find() that needs the column list narrowed
-	// (see below), and applying that narrowing here too would break Count()
-	// against Postgres ("column leads.* does not exist").
+	// (see ApplyNullableCompanySort), and applying that narrowing here too
+	// would break Count() against Postgres ("column leads.* does not exist").
 	query.Count(&total)
 
 	var leads []models.Lead
 	if needsCompanyJoin {
-		// Narrows the joined query back to Lead's own columns for Find()
-		// below — without it, SELECT * would also pull every joined
-		// companies.* column, which Find can't scan into models.Lead.
-		query = query.Select("leads.*")
-	}
-	if sortField == "company_name" {
-		dir := "ASC"
-		if strings.HasPrefix(c.Query("sort"), "-") {
-			dir = "DESC"
-		}
-		query = query.Order("companies.name " + dir)
+		query = utils.ApplyNullableCompanySort(query, "leads", c.Query("sort"), sortField)
 	} else {
 		query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true}, "-created_at")
 	}
@@ -147,7 +131,7 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 	if !utils.IsActiveLeadSource(h.DB, string(form.Source)) {
 		return utils.ValidationError(c, "source is not a valid active lead source", map[string][]string{"source": {"invalid"}})
 	}
-	if err := validateLeadEmail(c, form.Email); err != nil {
+	if err := validateExternalEmail(c, form.Email); err != nil {
 		return nil
 	}
 
@@ -336,7 +320,7 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	if !utils.IsActiveLeadSource(h.DB, string(form.Source)) {
 		return utils.ValidationError(c, "source is not a valid active lead source", map[string][]string{"source": {"invalid"}})
 	}
-	if err := validateLeadEmail(c, form.Email); err != nil {
+	if err := validateExternalEmail(c, form.Email); err != nil {
 		return nil
 	}
 

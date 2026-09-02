@@ -53,6 +53,18 @@ func seedDeal(t *testing.T, db *gorm.DB, assignedTo *uint) *models.Deal {
 	return deal
 }
 
+// seedProspect creates a Prospect, optionally linked to a Company (nil =
+// unlinked), mirroring seedLead's nilable-companyID convention.
+func seedProspect(t *testing.T, db *gorm.DB, companyID *uint) *models.Prospect {
+	t.Helper()
+	prospect := &models.Prospect{
+		Name: "Riley Chen", CompanyID: companyID,
+		Source: "Social Media", Status: models.ProspectStatusEngaging,
+	}
+	require.NoError(t, db.Create(prospect).Error)
+	return prospect
+}
+
 // doJSON runs req through app and decodes the JSON body into out (if non-nil).
 func doJSON(t *testing.T, app *fiber.App, req *http.Request, out interface{}) *http.Response {
 	t.Helper()

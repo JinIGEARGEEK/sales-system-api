@@ -64,6 +64,7 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := db.AutoMigrate(
 		&models.User{},
 		&models.Lead{},
+		&models.Prospect{},
 		&models.Company{},
 		&models.Contact{},
 		&models.Deal{},
@@ -80,6 +81,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.Attachment{},
 		&models.PipelineStage{},
 		&models.LeadSourceOption{},
+		&models.ProspectSourceOption{},
 		&models.IndustryOption{},
 		&models.CompanySizeOption{},
 		&models.RevenueSizeOption{},

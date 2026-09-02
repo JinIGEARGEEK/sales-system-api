@@ -48,6 +48,8 @@ On first run, if the `users` table is empty, the server seeds an Admin account a
 
 Migrations run automatically on boot via `database.AutoMigrate` — no separate migration step needed for local dev.
 
+**Demo data**: whenever `APP_ENV=development` (the default) and the `companies` table is empty, the server also seeds a small realistic chain of sample records — 3 Companies, 6 Contacts, 6 Prospects (spanning every status incl. one already Converted), 5 Leads, 6 Deals (one per pipeline stage), 6 Tasks, and 2 Projects — plus 3 staff accounts (Sales Rep/Sales Manager/Marketing, password `Password123!`) so assignee dropdowns aren't just the Admin. This is purely for local visual checking (`seedDemoData` in `cmd/api/main.go`) — it never runs outside `development`, and it's idempotent: once any Company exists (including a real one you created by hand), it no-ops on every future boot.
+
 ### Environment variables
 
 See [`.env.example`](.env.example). Notable ones:
@@ -80,7 +82,7 @@ Tests run against a separate `sales_system_test` database (created automatically
 
 All routes are prefixed `/api/v1`. Auth is a Bearer JWT (`Authorization: Bearer <token>`), obtained via `POST /auth/login`.
 
-Resources: Auth & Users, Leads, Companies, Contacts, Deals, Activities, Tags, Quotes, Payments, Tasks, Contracts, Products & Customer-Products, Projects, Reports, Audit log, Dashboard aggregate. See `biz_spec/api-system-spec.md` for the full endpoint list, request/response shapes, filters, and per-endpoint status (🟢 required / 🔜 planned).
+Resources: Auth & Users, Leads, Prospects, Companies, Contacts, Deals, Activities, Tags, Quotes, Payments, Tasks, Contracts, Products & Customer-Products, Projects, Reports, Audit log, Dashboard aggregate. See `biz_spec/api-system-spec.md` for the full endpoint list, request/response shapes, filters, and per-endpoint status (🟢 required / 🔜 planned).
 
 `POST /auth/login` is rate-limited to 10 attempts/minute per client IP (resolved from `X-Forwarded-For` behind Railway's proxy, falling back to the raw connection address for local/direct connections) — see `internal/routes/routes.go`.
 
@@ -92,6 +94,7 @@ Resources: Auth & Users, Leads, Companies, Contacts, Deals, Activities, Tags, Qu
 | **Sales Rep** | Full CRUD on records assigned to them or unassigned; read access to teammates' records |
 | **Sales Manager** | Same as Sales Rep, plus read access to all reps' data, all `/reports/*`, and deal reassignment |
 | **Production** | Write access to *only* `status` and `production_reference` on `Project` records |
+| **Marketing** | Full CRUD on Prospects (the pre-Lead marketing funnel — `/prospects`) they're assigned to or unassigned, same ownership model Sales Rep has for Leads. No access to Leads/Deals/any other resource. |
 
 RBAC is enforced server-side on every route — never rely on the frontend hiding a button (NFR-001).
 

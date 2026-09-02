@@ -141,3 +141,49 @@ func ApplyCompanyNameSort(query *gorm.DB, table, sortParam string) (*gorm.DB, bo
 		Select(table + ".*")
 	return query, true
 }
+
+// ApplyNullableCompanySearch is ApplyCompanyNameSort's counterpart for
+// resources with a NULLABLE company_id FK that also search/sort by the
+// related Company's name — Lead, and now Prospect. It must LEFT JOIN rather
+// than ApplyCompanyNameSort's INNER JOIN (only safe for Deal/Contact's NOT
+// NULL company_id), or a row with no company at all would vanish from an
+// otherwise-unfiltered list/search. It also folds in the search predicate
+// itself (ApplyCompanyNameSort doesn't — Deal/Contact's own "search" was
+// never company-name-aware), since both call sites need the join for
+// exactly the same two reasons at once.
+//
+// Call this BEFORE Count() — narrowing the SELECT list (done by
+// ApplyNullableCompanySort below, after Count()) would break a plain
+// COUNT(*) against Postgres ("column table.* does not exist"). Returns the
+// query and whether a join was actually added (sortField == "company_name"
+// or search != ""); callers only need ApplyNullableCompanySort afterward
+// when this returns true.
+func ApplyNullableCompanySearch(query *gorm.DB, table, sortField, search string) (*gorm.DB, bool) {
+	if sortField != "company_name" && search == "" {
+		return query, false
+	}
+	query = query.Joins("LEFT JOIN companies ON companies.id = " + table + ".company_id")
+	if search != "" {
+		like := "%" + search + "%"
+		query = query.Where(table+".name ILIKE ? OR "+table+".email ILIKE ? OR companies.name ILIKE ?", like, like, like)
+	}
+	return query, true
+}
+
+// ApplyNullableCompanySort narrows the SELECT list back to the caller's own
+// columns — required after ApplyNullableCompanySearch's LEFT JOIN so Find
+// can scan into the caller's model, since SELECT * would otherwise also pull
+// every joined companies.* column — and, if sortField is "company_name",
+// orders by the joined Company's name. Only call this when
+// ApplyNullableCompanySearch returned true.
+func ApplyNullableCompanySort(query *gorm.DB, table, sortParam, sortField string) *gorm.DB {
+	query = query.Select(table + ".*")
+	if sortField != "company_name" {
+		return query
+	}
+	dir := "ASC"
+	if strings.HasPrefix(sortParam, "-") {
+		dir = "DESC"
+	}
+	return query.Order("companies.name " + dir)
+}

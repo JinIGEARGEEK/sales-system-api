@@ -43,6 +43,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	authH := handlers.NewAuthHandler(db, cfg)
 	userH := handlers.NewUserHandler(db)
 	leadH := handlers.NewLeadHandler(db)
+	prospectH := handlers.NewProspectHandler(db)
 	companyH := handlers.NewCompanyHandler(db)
 	contactH := handlers.NewContactHandler(db)
 	importH := handlers.NewImportHandler(db)
@@ -62,6 +63,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	attachmentH := handlers.NewAttachmentHandler(db, storage)
 	pipelineStageH := handlers.NewPipelineStageHandler(db)
 	leadSourceH := handlers.NewLeadSourceHandler(db)
+	prospectSourceH := handlers.NewProspectSourceHandler(db)
 	industryOptionH := handlers.NewIndustryOptionHandler(db)
 	companySizeOptionH := handlers.NewCompanySizeOptionHandler(db)
 	revenueSizeOptionH := handlers.NewRevenueSizeOptionHandler(db)
@@ -148,6 +150,24 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	leads.Delete("/:id", leadH.Delete)
 	leads.Post("/:id/convert", leadH.Convert)
 	leads.Post("/:id/restore", bulkRoles, leadH.Restore)
+
+	// Prospects — the pre-Lead marketing funnel entity. Admin/Sales Manager get
+	// oversight visibility; Marketing owns it day-to-day. Bulk/trash/restore
+	// stay on the existing Admin/Sales-Manager-only bulkRoles, same as Leads.
+	prospectRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleMarketing, models.RoleSalesManager)
+	prospects := authed.Group("/prospects", prospectRoles)
+	prospects.Get("/", prospectH.List)
+	prospects.Post("/", prospectH.Create)
+	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
+	prospects.Get("/trash", bulkRoles, prospectH.Trash)
+	prospects.Patch("/bulk-reassign", bulkRoles, prospectH.BulkReassign)
+	prospects.Patch("/bulk-tag", bulkRoles, prospectH.BulkTag)
+	prospects.Patch("/bulk-archive", bulkRoles, prospectH.BulkArchive)
+	prospects.Get("/:id", prospectH.Get)
+	prospects.Put("/:id", prospectH.Update)
+	prospects.Delete("/:id", prospectH.Delete)
+	prospects.Post("/:id/convert", prospectH.Convert)
+	prospects.Post("/:id/restore", bulkRoles, prospectH.Restore)
 
 	// Companies
 	companies := authed.Group("/companies")
@@ -303,6 +323,15 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	leadSources.Post("/", leadSourceH.Create)
 	leadSources.Patch("/:id", leadSourceH.Update)
 	leadSources.Delete("/:id", leadSourceH.Delete)
+
+	// Prospect sources — Marketing's own funnel-source list, kept Admin-only
+	// same as every other /admin/* config resource here (Marketing manages
+	// day-to-day Prospect data via /prospects*, not this taxonomy).
+	prospectSources := authed.Group("/admin/prospect-sources", adminOnly)
+	prospectSources.Get("/", prospectSourceH.List)
+	prospectSources.Post("/", prospectSourceH.Create)
+	prospectSources.Patch("/:id", prospectSourceH.Update)
+	prospectSources.Delete("/:id", prospectSourceH.Delete)
 
 	// Company industry / size — Admin-only config, replacing the previously
 	// frontend-only hardcoded INDUSTRY_OPTIONS list (and Size's total lack of
