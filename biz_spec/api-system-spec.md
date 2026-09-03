@@ -219,6 +219,12 @@ interface Lead {
   score: number                       // FR-CRM-006 — sum of matching active LeadScoringCriterion weights
   classification: 'none' | 'mql' | 'sql'   // FR-CRM-007 — derived from score, or "sql" set manually by a rep
   prospect_id: number | null   // Prospect.id this Lead originated from, if created via POST /prospects/:id/convert (§3a) — null for a Lead created directly
+  // Mirrors Deal.business_unit/business_unit_item (added 2026-09-03) — a
+  // lightweight Project/Product tag, same nullable/enum-guarded shape.
+  // Carried over to the Deal on conversion (frontend pre-fills the Deal
+  // create form from it), same as channel/company_id/assigned_to already are.
+  business_unit: 'Project' | 'Product' | null
+  business_unit_item: string | null
   created_at: string
 }
 ```
@@ -261,6 +267,14 @@ interface Prospect {
   assigned_to: number | null   // User.id — must be a Marketing/Sales Rep/Sales Manager/Admin account
   tags: string[]
   converted_lead_id: number | null   // set once this Prospect has been converted; prevents double-conversion
+  // Mirrors Deal.business_unit/business_unit_item (added 2026-09-03). Carried
+  // over to the new Lead automatically, server-side, on Convert — unlike
+  // Lead→Deal's own Convert (which takes a Deal-style payload from the
+  // frontend form and pre-fills client-side instead), this Convert builds
+  // the whole Lead server-side, so the pass-through happens here directly,
+  // same treatment `source` already gets.
+  business_unit: 'Project' | 'Product' | null
+  business_unit_item: string | null
   created_at: string
 }
 ```

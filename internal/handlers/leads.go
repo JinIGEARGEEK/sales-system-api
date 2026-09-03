@@ -113,7 +113,9 @@ type leadForm struct {
 	// manual override (a rep marking a Lead "sales-ready"); any other value
 	// (including empty) falls back to the auto-computed mql/none result from
 	// computeAndClassify, so a client can't accidentally set "mql" directly.
-	Classification models.LeadClassification `json:"classification"`
+	Classification   models.LeadClassification `json:"classification"`
+	BusinessUnit     *models.BusinessUnit      `json:"business_unit"`
+	BusinessUnitItem *string                   `json:"business_unit_item"`
 }
 
 // Create — POST /leads.
@@ -134,6 +136,9 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 	if err := validateExternalEmail(c, form.Email); err != nil {
 		return nil
 	}
+	if !models.IsValidBusinessUnit(form.BusinessUnit) {
+		return utils.ValidationError(c, "business_unit must be Project or Product", map[string][]string{"business_unit": {"invalid"}})
+	}
 
 	// Auto-assignment: only kicks in when the caller didn't specify an owner
 	// (e.g. a brand-new Lead created without picking someone explicitly).
@@ -152,6 +157,7 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 	lead := models.Lead{
 		Name: form.Name, CompanyID: form.CompanyID, Email: form.Email, Phone: form.Phone,
 		Source: form.Source, Status: form.Status, Notes: form.Notes, AssignedTo: form.AssignedTo,
+		BusinessUnit: form.BusinessUnit, BusinessUnitItem: form.BusinessUnitItem,
 	}
 	if lead.Status == "" {
 		lead.Status = models.LeadStatusNew
@@ -323,9 +329,13 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	if err := validateExternalEmail(c, form.Email); err != nil {
 		return nil
 	}
+	if !models.IsValidBusinessUnit(form.BusinessUnit) {
+		return utils.ValidationError(c, "business_unit must be Project or Product", map[string][]string{"business_unit": {"invalid"}})
+	}
 
 	lead.Name, lead.CompanyID, lead.Email, lead.Phone = form.Name, form.CompanyID, form.Email, form.Phone
 	lead.Source, lead.Status, lead.Notes, lead.AssignedTo = form.Source, form.Status, form.Notes, form.AssignedTo
+	lead.BusinessUnit, lead.BusinessUnitItem = form.BusinessUnit, form.BusinessUnitItem
 
 	// A general-purpose Update PUT doesn't necessarily resend classification
 	// (most fields, like a status/notes edit, have nothing to do with it), so
