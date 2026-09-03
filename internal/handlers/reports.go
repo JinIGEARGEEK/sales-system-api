@@ -45,17 +45,31 @@ type leadSourceConversion struct {
 	ConversionRate float64           `json:"conversion_rate"`
 }
 
-// fetchLeadSourceConversion — shared by LeadSourceConversion (JSON) and
-// LeadSourceConversionExport (CSV). FR-CRM-054, FR-CRM-055 (rep filter).
-// No company_tag filter here — that only applies to Deal-based reports.
-// Lead gained a real Company FK (CompanyID) 2026-08-24, replacing the old
-// free-text company_name, so a company_tag filter joined through it would
-// now be feasible; just not added here since this report's filter set
-// wasn't otherwise in scope for that change. Sorted by Total DESC so the
-// sources actually driving pipeline volume lead the list, not whichever the
-// GROUP BY happens to emit first.
-func (h *ReportHandler) fetchLeadSourceConversion(c *fiber.Ctx) ([]leadSourceConversion, error) {
-	query := h.DB.Model(&models.Lead{})
+// sourceConversionRow is the raw shape shared by every "group by source,
+// count a success condition" report — currently Lead (success = Qualified)
+// and Prospect (success = Converted), one funnel stage apart.
+type sourceConversionRow struct {
+	Source     string
+	Total      int64
+	Successful int64
+}
+
+// fetchSourceConversion factors out the query fetchLeadSourceConversion and
+// fetchProspectSourceConversion both ran identically apart from which model
+// and which status counts as success: filters by assigned_to/date_from/
+// date_to, groups by source, sorted by Total DESC so the sources actually
+// driving volume lead the list rather than whichever the GROUP BY happens to
+// emit first. successCondition is always one of this file's own literal SQL
+// fragments (never derived from a request param), so building it into the
+// FILTER clause via string concatenation carries no injection risk.
+//
+// No company_tag filter on either caller — that only applies to Deal-based
+// reports. Lead gained a real Company FK (CompanyID) 2026-08-24, replacing
+// the old free-text company_name, so a company_tag filter joined through it
+// would now be feasible for that one; just not added since this report's
+// filter set wasn't otherwise in scope for that change.
+func fetchSourceConversion(db *gorm.DB, c *fiber.Ctx, model any, successCondition string) ([]sourceConversionRow, error) {
+	query := db.Model(model)
 	if v := c.Query("assigned_to"); v != "" {
 		query = query.Where("assigned_to = ?", v)
 	}
@@ -66,27 +80,35 @@ func (h *ReportHandler) fetchLeadSourceConversion(c *fiber.Ctx) ([]leadSourceCon
 		query = query.Where("created_at <= ?", v)
 	}
 
-	var rows []struct {
-		Source    models.LeadSource
-		Total     int64
-		Qualified int64
-	}
+	var rows []sourceConversionRow
 	err := query.
-		Select("source, count(*) as total, count(*) FILTER (WHERE status = 'Qualified') as qualified").
+		Select("source, count(*) as total, count(*) FILTER (WHERE " + successCondition + ") as successful").
 		Group("source").
 		Order("total DESC").
 		Scan(&rows).Error
+	return rows, err
+}
+
+func conversionRate(total, successful int64) float64 {
+	if total == 0 {
+		return 0
+	}
+	return float64(successful) / float64(total) * 100
+}
+
+// fetchLeadSourceConversion — shared by LeadSourceConversion (JSON) and
+// LeadSourceConversionExport (CSV). FR-CRM-054, FR-CRM-055 (rep filter).
+func (h *ReportHandler) fetchLeadSourceConversion(c *fiber.Ctx) ([]leadSourceConversion, error) {
+	rows, err := fetchSourceConversion(h.DB, c, &models.Lead{}, "status = 'Qualified'")
 	if err != nil {
 		return nil, err
 	}
-
 	result := make([]leadSourceConversion, 0, len(rows))
 	for _, r := range rows {
-		rate := 0.0
-		if r.Total > 0 {
-			rate = float64(r.Qualified) / float64(r.Total) * 100
-		}
-		result = append(result, leadSourceConversion{Source: r.Source, Total: r.Total, Qualified: r.Qualified, ConversionRate: rate})
+		result = append(result, leadSourceConversion{
+			Source: models.LeadSource(r.Source), Total: r.Total, Qualified: r.Successful,
+			ConversionRate: conversionRate(r.Total, r.Successful),
+		})
 	}
 	return result, nil
 }
@@ -97,6 +119,47 @@ func (h *ReportHandler) LeadSourceConversion(c *fiber.Ctx) error {
 	result, err := h.fetchLeadSourceConversion(c)
 	if err != nil {
 		return utils.Internal(c, "Failed to compute lead source conversion")
+	}
+	return utils.OK(c, result)
+}
+
+type prospectSourceConversion struct {
+	Source         string  `json:"source"`
+	Total          int64   `json:"total"`
+	Converted      int64   `json:"converted"`
+	ConversionRate float64 `json:"conversion_rate"`
+}
+
+// fetchProspectSourceConversion — Marketing's own funnel-conversion report,
+// mirroring fetchLeadSourceConversion exactly one funnel stage earlier.
+// "Converted" here means Prospect.Status == 'Converted' (set only by
+// POST /prospects/:id/convert), the same terminal-success signal
+// Prospect.ConvertedLeadID being non-null would give — using Status keeps
+// this an exact structural mirror of the Lead report's `status = 'Qualified'`
+// filter rather than switching to a null-check for no real reason.
+func (h *ReportHandler) fetchProspectSourceConversion(c *fiber.Ctx) ([]prospectSourceConversion, error) {
+	rows, err := fetchSourceConversion(h.DB, c, &models.Prospect{}, "status = 'Converted'")
+	if err != nil {
+		return nil, err
+	}
+	result := make([]prospectSourceConversion, 0, len(rows))
+	for _, r := range rows {
+		result = append(result, prospectSourceConversion{
+			Source: r.Source, Total: r.Total, Converted: r.Successful,
+			ConversionRate: conversionRate(r.Total, r.Successful),
+		})
+	}
+	return result, nil
+}
+
+// ProspectSourceConversion — GET /reports/prospect-source-conversion?assigned_to=&date_from=&date_to=
+// (Admin/Marketing/Sales Manager, route-gated — Marketing's own funnel, not
+// under the Sales Manager/Admin-only `reports` group the Deal/Lead reports
+// live under).
+func (h *ReportHandler) ProspectSourceConversion(c *fiber.Ctx) error {
+	result, err := h.fetchProspectSourceConversion(c)
+	if err != nil {
+		return utils.Internal(c, "Failed to compute prospect source conversion")
 	}
 	return utils.OK(c, result)
 }

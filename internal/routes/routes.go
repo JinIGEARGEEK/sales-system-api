@@ -307,6 +307,14 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	reports.Get("/projects-at-risk/export", reportH.ProjectsAtRiskExport)
 	reports.Get("/sales-cycle", reportH.SalesCycle)
 
+	// Marketing's own funnel report — deliberately NOT under the `reports`
+	// group above (Sales Manager/Admin only): Marketing has no access to any
+	// Deal/Lead-derived report, but does need visibility into its own
+	// Prospect-source conversion, the one funnel it actually owns.
+	prospectReports := authed.Group("/reports", middleware.RequireRoles(models.RoleAdmin, models.RoleMarketing, models.RoleSalesManager))
+	prospectReports.Get("/prospect-source-conversion", reportH.ProspectSourceConversion)
+	prospectReports.Get("/prospect-source-conversion/export", reportH.ProspectSourceConversionExport)
+
 	// Audit log — Admin only, read-only (NFR-007).
 	authed.Get("/audit-log", adminOnly, auditLogH.List)
 
