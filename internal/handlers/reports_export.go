@@ -47,6 +47,26 @@ func (h *ReportHandler) LeadSourceConversionExport(c *fiber.Ctx) error {
 	})
 }
 
+// ProspectSourceConversionExport — GET /reports/prospect-source-conversion/export.
+func (h *ReportHandler) ProspectSourceConversionExport(c *fiber.Ctx) error {
+	rows, err := h.fetchProspectSourceConversion(c)
+	if err != nil {
+		return utils.Internal(c, "Failed to export prospect source conversion")
+	}
+	header := []string{"Source", "Total Prospects", "Converted", "Conversion Rate (%)"}
+	return streamCSV(c, "prospect-source-conversion.csv", header, func(w *csv.Writer) error {
+		for _, r := range rows {
+			if err := w.Write([]string{
+				r.Source, strconv.FormatInt(r.Total, 10), strconv.FormatInt(r.Converted, 10),
+				strconv.FormatFloat(r.ConversionRate, 'f', 1, 64),
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // CustomersByProductStatusExport — GET /reports/customers-by-product-status/export.
 func (h *ReportHandler) CustomersByProductStatusExport(c *fiber.Ctx) error {
 	rows, err := h.fetchCustomersByProductStatus(c)

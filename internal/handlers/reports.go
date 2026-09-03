@@ -101,6 +101,69 @@ func (h *ReportHandler) LeadSourceConversion(c *fiber.Ctx) error {
 	return utils.OK(c, result)
 }
 
+type prospectSourceConversion struct {
+	Source         string  `json:"source"`
+	Total          int64   `json:"total"`
+	Converted      int64   `json:"converted"`
+	ConversionRate float64 `json:"conversion_rate"`
+}
+
+// fetchProspectSourceConversion — Marketing's own funnel-conversion report,
+// mirroring fetchLeadSourceConversion exactly one funnel stage earlier.
+// "Converted" here means Prospect.Status == 'Converted' (set only by
+// POST /prospects/:id/convert), the same terminal-success signal
+// Prospect.ConvertedLeadID being non-null would give — using Status keeps
+// this an exact structural mirror of the Lead report's `status = 'Qualified'`
+// filter rather than switching to a null-check for no real reason.
+func (h *ReportHandler) fetchProspectSourceConversion(c *fiber.Ctx) ([]prospectSourceConversion, error) {
+	query := h.DB.Model(&models.Prospect{})
+	if v := c.Query("assigned_to"); v != "" {
+		query = query.Where("assigned_to = ?", v)
+	}
+	if v := c.Query("date_from"); v != "" {
+		query = query.Where("created_at >= ?", v)
+	}
+	if v := c.Query("date_to"); v != "" {
+		query = query.Where("created_at <= ?", v)
+	}
+
+	var rows []struct {
+		Source    string
+		Total     int64
+		Converted int64
+	}
+	err := query.
+		Select("source, count(*) as total, count(*) FILTER (WHERE status = 'Converted') as converted").
+		Group("source").
+		Order("total DESC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]prospectSourceConversion, 0, len(rows))
+	for _, r := range rows {
+		rate := 0.0
+		if r.Total > 0 {
+			rate = float64(r.Converted) / float64(r.Total) * 100
+		}
+		result = append(result, prospectSourceConversion{Source: r.Source, Total: r.Total, Converted: r.Converted, ConversionRate: rate})
+	}
+	return result, nil
+}
+
+// ProspectSourceConversion — GET /reports/prospect-source-conversion?assigned_to=&date_from=&date_to=
+// (Admin/Marketing/Sales Manager, route-gated — Marketing's own funnel, not
+// under the Sales Manager/Admin-only `reports` group the Deal/Lead reports
+// live under).
+func (h *ReportHandler) ProspectSourceConversion(c *fiber.Ctx) error {
+	result, err := h.fetchProspectSourceConversion(c)
+	if err != nil {
+		return utils.Internal(c, "Failed to compute prospect source conversion")
+	}
+	return utils.OK(c, result)
+}
+
 type customerByProductStatus struct {
 	CompanyID   uint                         `json:"company_id"`
 	CompanyName string                       `json:"company_name"`
