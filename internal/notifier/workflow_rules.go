@@ -47,6 +47,8 @@ func checkWorkflowRules(db *gorm.DB, cfg *config.Config) {
 			checkQuoteExpiringRule(db, cfg, rule)
 		case models.NotificationEntityContract:
 			checkContractStuckRule(db, cfg, rule)
+		case models.NotificationEntityProspect:
+			checkProspectStaleRule(db, cfg, rule)
 		}
 	}
 }
@@ -251,6 +253,54 @@ func checkContractStuckRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 		sendRuleNotification(cfg, emails, subject, body)
 		if err := recordNotified(db, rule.ID, contract.ID, ""); err != nil {
 			log.Printf("notifier: failed to record notification for contract %d: %v", contract.ID, err)
+		}
+	}
+}
+
+// checkProspectStaleRule — FR-CRM-107, added 2026-09-03. A Prospect still
+// actively being worked (status not yet Converted/Disqualified) that has
+// gone at least rule.ThresholdDays with no update. Uses UpdatedAt rather
+// than a stage-transition audit lookup like checkDealIdleRule, since
+// Prospect.Status changes aren't separately audited the way Deal.Stage is —
+// UpdatedAt is the closest available "last touched" signal (any field edit
+// bumps it, not just a status change).
+func checkProspectStaleRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule) {
+	var prospects []models.Prospect
+	if err := db.Where("status NOT IN ?", []models.ProspectStatus{models.ProspectStatusConverted, models.ProspectStatusDisqualified}).
+		Find(&prospects).Error; err != nil {
+		log.Printf("notifier: failed to query prospects for rule %d: %v", rule.ID, err)
+		return
+	}
+
+	threshold := time.Duration(rule.ThresholdDays) * 24 * time.Hour
+	now := time.Now()
+
+	for _, prospect := range prospects {
+		if now.Sub(prospect.UpdatedAt) < threshold {
+			continue
+		}
+
+		// context = current status, same reasoning as checkDealIdleRule's
+		// stage context — re-idling after a status change (e.g. New ->
+		// Engaging, then stuck again) can re-fire instead of being
+		// permanently suppressed by one earlier notification.
+		context := string(prospect.Status)
+		if alreadyNotified(db, rule.ID, prospect.ID, context) {
+			continue
+		}
+
+		emails := recipientEmails(db, prospect.AssignedTo, rule.RecipientRole)
+		if len(emails) == 0 {
+			continue
+		}
+		subject := fmt.Sprintf("Prospect stale: %s", prospect.Name)
+		body := fmt.Sprintf(
+			"Reminder: the following prospect has had no updates in %d+ days.\n\nProspect: %s\nStatus: %s\n",
+			rule.ThresholdDays, prospect.Name, prospect.Status,
+		)
+		sendRuleNotification(cfg, emails, subject, body)
+		if err := recordNotified(db, rule.ID, prospect.ID, context); err != nil {
+			log.Printf("notifier: failed to record notification for prospect %d: %v", prospect.ID, err)
 		}
 	}
 }
