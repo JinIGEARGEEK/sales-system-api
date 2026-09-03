@@ -411,4 +411,8 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 
 	// Dashboard
 	authed.Get("/dashboard/summary", dashboardH.Summary)
+	// Marketing's own dashboard tab (FR-CRM-107) — not role-gated at the
+	// route, same as the Deal-centric summary above; the frontend decides
+	// which role sees which tab.
+	authed.Get("/dashboard/prospect-summary", dashboardH.ProspectSummary)
 }
