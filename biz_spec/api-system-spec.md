@@ -669,6 +669,12 @@ interface Project {
   status: ProjectStatus
   start_date: string
   target_end_date: string | null
+  // Added 2026-09-03 — planning estimates set by Sales before work is
+  // confirmed, distinct from start_date (record-creation time, not a
+  // schedule) and target_end_date (the deadline FR-CRM-098's projects-at-risk
+  // report checks). Both nullable; no report/automation reads them yet.
+  expected_proposal_date: string | null
+  expected_start_date: string | null
   production_reference: string | null   // free-text ID and/or URL into Production's own system
   notes: string
   company_name?: string   // only present on GET /projects rows (see below) — the per-company list doesn't merge this in

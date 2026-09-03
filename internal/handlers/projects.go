@@ -71,13 +71,15 @@ func (h *ProjectHandler) List(c *fiber.Ctx) error {
 }
 
 type projectForm struct {
-	DealID              *uint                `json:"deal_id"`
-	Name                string               `json:"name"`
-	Status              models.ProjectStatus `json:"status"`
-	StartDate           *time.Time           `json:"start_date"`
-	TargetEndDate       *time.Time           `json:"target_end_date"`
-	ProductionReference *string              `json:"production_reference"`
-	Notes               string               `json:"notes"`
+	DealID               *uint                `json:"deal_id"`
+	Name                 string               `json:"name"`
+	Status               models.ProjectStatus `json:"status"`
+	StartDate            *time.Time           `json:"start_date"`
+	TargetEndDate        *time.Time           `json:"target_end_date"`
+	ExpectedProposalDate *time.Time           `json:"expected_proposal_date"`
+	ExpectedStartDate    *time.Time           `json:"expected_start_date"`
+	ProductionReference  *string              `json:"production_reference"`
+	Notes                string               `json:"notes"`
 }
 
 // Create — POST /companies/:companyId/projects (Sales/Admin, route-gated).
@@ -99,6 +101,7 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 	project := models.Project{
 		CompanyID: company.ID, DealID: form.DealID, Name: form.Name, Status: form.Status,
 		TargetEndDate: form.TargetEndDate, ProductionReference: form.ProductionReference, Notes: form.Notes,
+		ExpectedProposalDate: form.ExpectedProposalDate, ExpectedStartDate: form.ExpectedStartDate,
 	}
 	if form.StartDate != nil {
 		project.StartDate = *form.StartDate
@@ -176,6 +179,12 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 		}
 		if _, ok := raw["target_end_date"]; ok {
 			project.TargetEndDate = form.TargetEndDate
+		}
+		if _, ok := raw["expected_proposal_date"]; ok {
+			project.ExpectedProposalDate = form.ExpectedProposalDate
+		}
+		if _, ok := raw["expected_start_date"]; ok {
+			project.ExpectedStartDate = form.ExpectedStartDate
 		}
 		if _, ok := raw["production_reference"]; ok {
 			project.ProductionReference = form.ProductionReference
