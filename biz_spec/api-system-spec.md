@@ -836,10 +836,10 @@ interface LeadScoringCriterion {
 | `GET` / `POST` | `/admin/lead-scoring-criteria` | List / create. |
 | `PATCH` / `DELETE` | `/admin/lead-scoring-criteria/:id` | Update / delete. |
 
-**Workflow notification rules** (`FR-CRM-100`–`102`) — Admin-configurable thresholds for the in-app "this needs attention" notifications (a Deal idle in-stage, a Quote about to expire, a Contract stuck unsigned):
+**Workflow notification rules** (`FR-CRM-100`–`102`, `prospect` added `FR-CRM-107`) — Admin-configurable thresholds for the in-app "this needs attention" notifications (a Deal idle in-stage, a Quote about to expire, a Contract stuck unsigned, a Prospect gone stale):
 
 ```ts
-type NotificationEntityType = 'deal' | 'quote' | 'contract'
+type NotificationEntityType = 'deal' | 'quote' | 'contract' | 'prospect'
 type NotificationRecipientRole = 'owner' | 'owner_and_managers'
 
 interface NotificationRule {
@@ -848,6 +848,8 @@ interface NotificationRule {
   entity_type: NotificationEntityType
   threshold_days: number   // "deal": days idle in its current stage. "quote": days until validity_date.
                              // "contract": days sitting Draft/Sent without being signed.
+                             // "prospect": days since updated_at with no change, while status is
+                             // not yet Converted/Disqualified (added 2026-09-03, FR-CRM-107).
   recipient_role: NotificationRecipientRole
   is_active: boolean
   created_at: string

@@ -26,12 +26,19 @@ func NewNotificationLogHandler(db *gorm.DB) *NotificationLogHandler {
 const notificationLogListLimit = 20
 
 type notificationFiringRow struct {
-	ID         uint      `json:"id"`
-	RuleName   string    `json:"rule_name"`
-	EntityType string    `json:"entity_type"`
-	DealID     uint      `json:"deal_id"`
-	DealTitle  string    `json:"deal_title"`
-	NotifiedAt time.Time `json:"notified_at"`
+	ID         uint   `json:"id"`
+	RuleName   string `json:"rule_name"`
+	EntityType string `json:"entity_type"`
+	DealID     uint   `json:"deal_id,omitempty"`
+	DealTitle  string `json:"deal_title,omitempty"`
+	// ProspectID/ProspectName — added 2026-09-03 alongside the "prospect"
+	// entity type (FR-CRM-107). Kept as separate, additive fields rather
+	// than renaming DealID/DealTitle to something generic, so existing
+	// Deal/Quote/Contract consumers (the dashboard's Recent Alerts widget)
+	// are untouched.
+	ProspectID   uint      `json:"prospect_id,omitempty"`
+	ProspectName string    `json:"prospect_name,omitempty"`
+	NotifiedAt   time.Time `json:"notified_at"`
 }
 
 // List — GET /notification-log. Any authenticated role — scoping happens
@@ -72,6 +79,22 @@ func (h *NotificationLogHandler) List(c *fiber.Ctx) error {
 		if !ok {
 			continue // rule since deleted — DELETE on NotificationRule is soft (is_active), so this shouldn't happen, but don't crash on it
 		}
+
+		if rule.EntityType == models.NotificationEntityProspect {
+			var prospect models.Prospect
+			if err := h.DB.First(&prospect, l.EntityID).Error; err != nil {
+				continue // entity since deleted
+			}
+			if !CanWrite(c, prospect.AssignedTo) {
+				continue
+			}
+			rows = append(rows, notificationFiringRow{
+				ID: l.ID, RuleName: rule.Name, EntityType: string(rule.EntityType),
+				ProspectID: prospect.ID, ProspectName: prospect.Name, NotifiedAt: l.NotifiedAt,
+			})
+			continue
+		}
+
 		deal, ok := h.resolveDeal(rule.EntityType, l.EntityID)
 		if !ok {
 			continue // entity since deleted

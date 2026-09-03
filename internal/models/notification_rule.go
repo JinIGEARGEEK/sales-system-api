@@ -6,10 +6,13 @@ const (
 	NotificationEntityDeal     NotificationEntityType = "deal"
 	NotificationEntityQuote    NotificationEntityType = "quote"
 	NotificationEntityContract NotificationEntityType = "contract"
+	// NotificationEntityProspect — added 2026-09-03, Marketing's own
+	// staleness rule (FR-CRM-107). See NotificationRule's doc comment below.
+	NotificationEntityProspect NotificationEntityType = "prospect"
 )
 
 var ValidNotificationEntityTypes = []NotificationEntityType{
-	NotificationEntityDeal, NotificationEntityQuote, NotificationEntityContract,
+	NotificationEntityDeal, NotificationEntityQuote, NotificationEntityContract, NotificationEntityProspect,
 }
 
 func IsValidNotificationEntityType(v NotificationEntityType) bool {
@@ -57,6 +60,12 @@ func IsValidNotificationRecipientRole(v NotificationRecipientRole) bool {
 //   - "contract": a Draft/Sent Contract that has sat unsigned for at least
 //     ThresholdDays since creation — same definition as the Contracts Stuck
 //     report (FR-CRM-097) — FR-CRM-101.
+//   - "prospect": a Prospect not yet Converted/Disqualified (i.e. still
+//     actively being worked) that has gone at least ThresholdDays since
+//     UpdatedAt with no change — FR-CRM-107, Marketing's own funnel, added
+//     2026-09-03. Unlike "deal", there's no audit-log stage-history lookup
+//     (Prospect.Status changes aren't separately audited the way Deal.Stage
+//     is), so UpdatedAt is the closest available "last touched" signal.
 type NotificationRule struct {
 	AuditedModel
 	Name          string                    `gorm:"not null;uniqueIndex" json:"name"`
