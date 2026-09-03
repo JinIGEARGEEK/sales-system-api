@@ -4,6 +4,10 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-09-03 — Deal required-field validation dedup
+
+No behavior change: `DealHandler.Create`/`Update` each duplicated the same `company_id`/`contact_id`/`title`-required check verbatim; extracted into `validateDealRequiredFields`, mirroring the existing `validateDealValueAndDate`/`validateProbabilityAndLostReason` shared-validator pattern.
+
 ## 2026-09-01 — Prospect entity (pre-Lead marketing funnel)
 
 Added `Prospect`, a new funnel stage one step before `Lead`, and a new `Marketing` role to own it. `POST /prospects/:id/convert` mirrors `Lead.Convert`'s resolve-or-create-Company/Contact pattern one stage earlier, creating a `Lead` (back-referenced via the new `Lead.prospect_id`) and carrying over Attachments, guarded against double-conversion the same way (`converted_lead_id`). `Prospect.status` gained a fixed `ProspectStatus` enum (`New/Engaging/Nurturing/Disqualified/Converted`) — unlike `Lead`, which tracks conversion only via `converted_deal_id` and has no "converted" status value, `ProspectStatusConverted` is a real enum member, so Create/Update now explicitly reject a client-supplied `status: "Converted"` (`422`) to keep it settable only via Convert. `/prospects` is gated to Admin/Marketing/Sales Manager, with bulk-*/Trash/Restore staying Admin/Sales-Manager-only like Leads'. `Task`/`Activity`/`Attachment`'s shared `related_type` union gained `'prospect'`. Spec: §3a.

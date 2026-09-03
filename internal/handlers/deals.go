@@ -156,6 +156,22 @@ func validateContractSignedBeforeWon(c *fiber.Ctx, db *gorm.DB, dealID uint) err
 	return nil
 }
 
+// validateDealRequiredFields checks the three dealForm fields Create and
+// Update both insist on (company_id, contact_id, title) — extracted since the
+// two handlers previously duplicated this exact check verbatim. Returns
+// utils.ErrHandled (see its doc) if invalid, nil if valid.
+func validateDealRequiredFields(c *fiber.Ctx, form dealForm) error {
+	if form.Title == "" || form.CompanyID == 0 || form.ContactID == 0 {
+		_ = utils.ValidationError(c, "company_id, contact_id and title are required", map[string][]string{
+			"company_id": {"required"},
+			"contact_id": {"required"},
+			"title":      {"required"},
+		})
+		return utils.ErrHandled
+	}
+	return nil
+}
+
 // validateDealValueAndDate checks the two dealForm fields that previously had
 // no format/range validation at all: Value (must be non-negative — a client
 // bug or bad import row supplying a negative number would silently corrupt
@@ -218,12 +234,8 @@ func (h *DealHandler) Create(c *fiber.Ctx) error {
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
-	if form.Title == "" || form.CompanyID == 0 || form.ContactID == 0 {
-		return utils.ValidationError(c, "company_id, contact_id and title are required", map[string][]string{
-			"company_id": {"required"},
-			"contact_id": {"required"},
-			"title":      {"required"},
-		})
+	if err := validateDealRequiredFields(c, form); err != nil {
+		return nil
 	}
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a deal to another sales rep")
@@ -299,12 +311,8 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a deal to another sales rep")
 	}
-	if form.Title == "" || form.CompanyID == 0 || form.ContactID == 0 {
-		return utils.ValidationError(c, "company_id, contact_id and title are required", map[string][]string{
-			"company_id": {"required"},
-			"contact_id": {"required"},
-			"title":      {"required"},
-		})
+	if err := validateDealRequiredFields(c, form); err != nil {
+		return nil
 	}
 	if err := validateDealValueAndDate(c, form); err != nil {
 		return nil
