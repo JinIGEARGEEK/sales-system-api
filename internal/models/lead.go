@@ -56,6 +56,13 @@ type Lead struct {
 	// ("mql"), or set manually by a rep to "sql"; "none" below threshold.
 	Score          int    `gorm:"not null;default:0" json:"score"`
 	Classification string `gorm:"type:varchar(16);not null;default:'none';index" json:"classification"`
+	// BusinessUnit/BusinessUnitItem mirror Deal's own fields (deal.go) — a
+	// lightweight tag of which Project or Product this Lead is interested
+	// in, not a real FK into the Project/CustomerProduct tables (api-system-
+	// spec.md §7.1/§7.4 note this exact distinction for Deal; same applies
+	// here). Carried over automatically to the Deal on conversion.
+	BusinessUnit     *BusinessUnit `gorm:"type:varchar(16);index" json:"business_unit"`
+	BusinessUnitItem *string       `json:"business_unit_item"`
 }
 
 const (

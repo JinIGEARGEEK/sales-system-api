@@ -43,6 +43,11 @@ type Prospect struct {
 	// (nil = not yet converted). Prevents double-conversion, same guard as
 	// Lead.ConvertedDealID.
 	ConvertedLeadID *uint `gorm:"index" json:"converted_lead_id"`
+	// BusinessUnit/BusinessUnitItem mirror Deal's own fields (deal.go) — a
+	// lightweight tag of which Project or Product this Prospect is interested
+	// in, not a real FK. Carried over automatically to the Lead on conversion.
+	BusinessUnit     *BusinessUnit `gorm:"type:varchar(16);index" json:"business_unit"`
+	BusinessUnitItem *string       `json:"business_unit_item"`
 }
 
 func (Prospect) TableName() string { return "prospects" }

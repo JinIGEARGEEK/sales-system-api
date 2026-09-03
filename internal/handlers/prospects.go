@@ -95,7 +95,9 @@ type prospectForm struct {
 	// exposes tags via bulk-tag) — mirrors Contact's simpler pattern instead,
 	// since Marketing editing a single Prospect's tags one at a time from its
 	// detail page is a real, expected workflow.
-	Tags []string `json:"tags"`
+	Tags             []string             `json:"tags"`
+	BusinessUnit     *models.BusinessUnit `json:"business_unit"`
+	BusinessUnitItem *string              `json:"business_unit_item"`
 }
 
 // Create — POST /prospects.
@@ -119,11 +121,15 @@ func (h *ProspectHandler) Create(c *fiber.Ctx) error {
 	if err := rejectManualConvertedStatus(c, form.Status, ""); err != nil {
 		return nil
 	}
+	if !models.IsValidBusinessUnit(form.BusinessUnit) {
+		return utils.ValidationError(c, "business_unit must be Project or Product", map[string][]string{"business_unit": {"invalid"}})
+	}
 
 	prospect := models.Prospect{
 		Name: form.Name, CompanyID: form.CompanyID, Email: form.Email, Phone: form.Phone,
 		Source: form.Source, Status: form.Status, Notes: form.Notes, AssignedTo: form.AssignedTo,
-		Tags: pq.StringArray(form.Tags),
+		Tags:         pq.StringArray(form.Tags),
+		BusinessUnit: form.BusinessUnit, BusinessUnitItem: form.BusinessUnitItem,
 	}
 	if prospect.Status == "" {
 		prospect.Status = models.ProspectStatusNew
@@ -169,10 +175,14 @@ func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 	if err := rejectManualConvertedStatus(c, form.Status, prospect.Status); err != nil {
 		return nil
 	}
+	if !models.IsValidBusinessUnit(form.BusinessUnit) {
+		return utils.ValidationError(c, "business_unit must be Project or Product", map[string][]string{"business_unit": {"invalid"}})
+	}
 
 	prospect.Name, prospect.CompanyID, prospect.Email, prospect.Phone = form.Name, form.CompanyID, form.Email, form.Phone
 	prospect.Source, prospect.Status, prospect.Notes, prospect.AssignedTo = form.Source, form.Status, form.Notes, form.AssignedTo
 	prospect.Tags = pq.StringArray(form.Tags)
+	prospect.BusinessUnit, prospect.BusinessUnitItem = form.BusinessUnit, form.BusinessUnitItem
 
 	if err := h.DB.Save(&prospect).Error; err != nil {
 		return utils.Internal(c, "Failed to update prospect")
@@ -369,6 +379,11 @@ func (h *ProspectHandler) Convert(c *fiber.Ctx) error {
 			Name: prospect.Name, CompanyID: &company.ID, Email: prospect.Email, Phone: prospect.Phone,
 			Source: models.LeadSource(prospect.Source), Status: models.LeadStatusNew, AssignedTo: req.Lead.AssignedTo,
 			ProspectID: &prospect.ID,
+			// Carried over as-is, same reasoning as Source above — this
+			// Convert takes no per-call Deal-style payload for these (unlike
+			// Lead→Deal's Convert, which lets the frontend form override
+			// them), so the Prospect's own tag just passes straight through.
+			BusinessUnit: prospect.BusinessUnit, BusinessUnitItem: prospect.BusinessUnitItem,
 		}
 		if lead.AssignedTo == nil {
 			lead.AssignedTo = prospect.AssignedTo
