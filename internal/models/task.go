@@ -61,6 +61,10 @@ type Task struct {
 	// NotifiedAt is set once the due-date reminder email has been sent for this
 	// task, so the background checker doesn't re-send it on every tick.
 	NotifiedAt *time.Time `gorm:"index" json:"notified_at"`
+	// CampaignID links a task to the Campaign it was bulk-created for (see
+	// CampaignHandler.BulkCreateTasks) — nullable, since most tasks aren't
+	// created as part of a campaign.
+	CampaignID *uint `gorm:"index" json:"campaign_id"`
 }
 
 func (Task) TableName() string { return "tasks" }

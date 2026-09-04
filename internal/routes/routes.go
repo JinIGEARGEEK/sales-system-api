@@ -53,6 +53,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	quoteH := handlers.NewQuoteHandler(db, storage)
 	paymentH := handlers.NewPaymentHandler(db)
 	taskH := handlers.NewTaskHandler(db)
+	campaignH := handlers.NewCampaignHandler(db)
 	contractH := handlers.NewContractHandler(db, storage)
 	productH := handlers.NewProductHandler(db)
 	projectH := handlers.NewProjectHandler(db)
@@ -270,6 +271,14 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	tasks.Patch("/:id/toggle", taskH.Toggle)
 	tasks.Patch("/:id", taskH.Update)
 	tasks.Delete("/:id", taskH.Delete)
+
+	// Campaigns — named, typed batches of outreach (e.g. dormant-company
+	// win-back) that group Tasks via Task.campaign_id.
+	campaigns := authed.Group("/campaigns")
+	campaigns.Get("/", campaignH.List)
+	campaigns.Post("/", campaignH.Create)
+	campaigns.Post("/:id/tasks", campaignH.BulkCreateTasks)
+	campaigns.Get("/:id/progress", campaignH.Progress)
 
 	// Products — any authenticated role manages the shared catalog.
 	products := authed.Group("/products")

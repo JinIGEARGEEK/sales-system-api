@@ -20,23 +20,12 @@ func NewTaskHandler(db *gorm.DB) *TaskHandler {
 	return &TaskHandler{DB: db}
 }
 
-// List — GET /tasks. Filters: related_type+related_id (optional), status, assigned_to.
-// status=pending must work without related_type/related_id for the dashboard widget.
+// List — GET /tasks. Filters (see applyTaskFilters): related_type+related_id
+// (optional), status, assigned_to, campaign_id. status=pending must work
+// without related_type/related_id for the dashboard widget.
 func (h *TaskHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
-	query := h.DB.Model(&models.Task{})
-
-	relatedType := c.Query("related_type")
-	relatedID := c.Query("related_id")
-	if relatedType != "" && relatedID != "" {
-		query = query.Where("related_type = ? AND related_id = ?", relatedType, relatedID)
-	}
-	if v := c.Query("status"); v != "" {
-		query = query.Where("status = ?", v)
-	}
-	if v := c.Query("assigned_to"); v != "" {
-		query = query.Where("assigned_to = ?", v)
-	}
+	query := applyTaskFilters(h.DB.Model(&models.Task{}), c)
 
 	var total int64
 	query.Count(&total)

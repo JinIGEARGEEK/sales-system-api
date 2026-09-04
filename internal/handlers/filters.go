@@ -124,6 +124,28 @@ func applyProductFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 	return query
 }
 
+// applyTaskFilters applies related_type+related_id/status/assigned_to/
+// campaign_id filters used by TaskHandler.List. status=pending must work
+// without related_type/related_id for the dashboard widget, so related_type/
+// related_id are only applied together, not independently.
+func applyTaskFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
+	relatedType := c.Query("related_type")
+	relatedID := c.Query("related_id")
+	if relatedType != "" && relatedID != "" {
+		query = query.Where("related_type = ? AND related_id = ?", relatedType, relatedID)
+	}
+	if v := c.Query("status"); v != "" {
+		query = query.Where("status = ?", v)
+	}
+	if v := c.Query("assigned_to"); v != "" {
+		query = query.Where("assigned_to = ?", v)
+	}
+	if v := c.Query("campaign_id"); v != "" {
+		query = query.Where("campaign_id = ?", v)
+	}
+	return query
+}
+
 // applyProjectFilters applies status/company_id filters shared by
 // ProjectHandler.List and ExportHandler.Projects.
 func applyProjectFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
