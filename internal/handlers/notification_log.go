@@ -36,9 +36,14 @@ type notificationFiringRow struct {
 	// than renaming DealID/DealTitle to something generic, so existing
 	// Deal/Quote/Contract consumers (the dashboard's Recent Alerts widget)
 	// are untouched.
-	ProspectID   uint      `json:"prospect_id,omitempty"`
-	ProspectName string    `json:"prospect_name,omitempty"`
-	NotifiedAt   time.Time `json:"notified_at"`
+	ProspectID   uint   `json:"prospect_id,omitempty"`
+	ProspectName string `json:"prospect_name,omitempty"`
+	// CompanyID/CompanyName — added alongside the "company" entity type
+	// (dormant-customer / upsell-targeting feature), same additive pattern as
+	// ProspectID/ProspectName above.
+	CompanyID   uint      `json:"company_id,omitempty"`
+	CompanyName string    `json:"company_name,omitempty"`
+	NotifiedAt  time.Time `json:"notified_at"`
 }
 
 // List — GET /notification-log. Any authenticated role — scoping happens
@@ -91,6 +96,33 @@ func (h *NotificationLogHandler) List(c *fiber.Ctx) error {
 			rows = append(rows, notificationFiringRow{
 				ID: l.ID, RuleName: rule.Name, EntityType: string(rule.EntityType),
 				ProspectID: prospect.ID, ProspectName: prospect.Name, NotifiedAt: l.NotifiedAt,
+			})
+			continue
+		}
+
+		if rule.EntityType == models.NotificationEntityCompany {
+			var company models.Company
+			if err := h.DB.First(&company, l.EntityID).Error; err != nil {
+				continue // entity since deleted
+			}
+			// Same most-recent-Deal-owner resolution as
+			// checkCompanyDormantRule (internal/notifier/workflow_rules.go) —
+			// nil when the Company has no Deals at all. Passed straight into
+			// CanWrite unchanged, exactly like resolveDeal's deal.AssignedTo
+			// below (which is also nilable for an unassigned Deal) —
+			// CanWrite's existing assignedTo == nil rule already governs
+			// that case identically, no special-casing needed here.
+			var ownerID *uint
+			var mostRecentDeal models.Deal
+			if err := h.DB.Where("company_id = ?", company.ID).Order("created_at DESC").First(&mostRecentDeal).Error; err == nil {
+				ownerID = mostRecentDeal.AssignedTo
+			}
+			if !CanWrite(c, ownerID) {
+				continue
+			}
+			rows = append(rows, notificationFiringRow{
+				ID: l.ID, RuleName: rule.Name, EntityType: string(rule.EntityType),
+				CompanyID: company.ID, CompanyName: company.Name, NotifiedAt: l.NotifiedAt,
 			})
 			continue
 		}
