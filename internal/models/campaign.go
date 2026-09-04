@@ -1,16 +1,19 @@
 package models
 
-// CampaignType — currently just win_back, structured (type + const block +
-// Valid*/IsValid* pair) the same way TaskPriority is, so more campaign types
-// can be added later without changing the validation shape.
+// CampaignType — structured (type + const block + Valid*/IsValid* pair) the
+// same way TaskPriority is. win_back/upsell target existing Companies;
+// new_channel is the broader outreach type used when a campaign mixes Lead
+// and Contact targets alongside or instead of Companies.
 type CampaignType string
 
 const (
-	CampaignTypeWinBack CampaignType = "win_back"
+	CampaignTypeWinBack    CampaignType = "win_back"
+	CampaignTypeUpsell     CampaignType = "upsell"
+	CampaignTypeNewChannel CampaignType = "new_channel"
 )
 
 // ValidCampaignTypes lists every accepted CampaignType value, for handler-layer validation.
-var ValidCampaignTypes = []CampaignType{CampaignTypeWinBack}
+var ValidCampaignTypes = []CampaignType{CampaignTypeWinBack, CampaignTypeUpsell, CampaignTypeNewChannel}
 
 func IsValidCampaignType(t CampaignType) bool {
 	for _, v := range ValidCampaignTypes {

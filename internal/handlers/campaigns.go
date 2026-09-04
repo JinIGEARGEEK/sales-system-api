@@ -60,21 +60,47 @@ func (h *CampaignHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, campaign)
 }
 
-type campaignBulkCreateTasksForm struct {
-	CompanyIDs  []uint              `json:"company_ids"`
-	Title       string              `json:"title"`
-	Description string              `json:"description"`
-	DueDate     time.Time           `json:"due_date"`
-	Priority    models.TaskPriority `json:"priority"`
-	AssignedTo  *uint               `json:"assigned_to"`
+// campaignTargetForm is one (related_type, related_id) pair this campaign's
+// Tasks should be created against — Company, Lead, or Contact (see
+// models.ValidCampaignTargetTypes; Deal/Prospect aren't valid targets).
+type campaignTargetForm struct {
+	RelatedType models.ActivityRelatedType `json:"related_type"`
+	RelatedID   uint                       `json:"related_id"`
 }
 
-// BulkCreateTasks — POST /campaigns/:id/tasks. Creates one company-related
-// Task per company_id, tagged with this campaign, in a single transaction —
-// unlike utils.BulkUpdate (which loads and mutates existing rows), this
-// creates new rows, so it's a plain transaction loop instead. Writes one
-// summary audit-log entry for the whole batch rather than one per task,
-// since these tasks don't exist yet for a per-row before/after diff.
+type campaignBulkCreateTasksForm struct {
+	Targets     []campaignTargetForm `json:"targets"`
+	Title       string               `json:"title"`
+	Description string               `json:"description"`
+	DueDate     time.Time            `json:"due_date"`
+	Priority    models.TaskPriority  `json:"priority"`
+	AssignedTo  *uint                `json:"assigned_to"`
+}
+
+// dedupeCampaignTargets drops duplicate (related_type, related_id) pairs,
+// preserving first-seen order — same rationale as utils.DedupeUints, but
+// keyed on the composite pair since a Lead and a Company can legitimately
+// share a numeric id.
+func dedupeCampaignTargets(targets []campaignTargetForm) []campaignTargetForm {
+	seen := make(map[campaignTargetForm]bool, len(targets))
+	out := make([]campaignTargetForm, 0, len(targets))
+	for _, t := range targets {
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	return out
+}
+
+// BulkCreateTasks — POST /campaigns/:id/tasks. Creates one Task per target,
+// tagged with this campaign, in a single batch insert. Works identically
+// whether :id is a campaign just created for this call or an existing one
+// with tasks already on it — that's how "add to existing campaign" works,
+// no separate endpoint needed. Writes one summary audit-log entry for the
+// whole batch rather than one per task, since these tasks don't exist yet
+// for a per-row before/after diff.
 func (h *CampaignHandler) BulkCreateTasks(c *fiber.Ctx) error {
 	var campaign models.Campaign
 	if err := h.DB.First(&campaign, c.Params("id")).Error; err != nil {
@@ -85,13 +111,17 @@ func (h *CampaignHandler) BulkCreateTasks(c *fiber.Ctx) error {
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
-	if len(form.CompanyIDs) == 0 {
-		return utils.ValidationError(c, "company_ids is required", map[string][]string{"company_ids": {"required"}})
+	if len(form.Targets) == 0 {
+		return utils.ValidationError(c, "targets is required", map[string][]string{"targets": {"required"}})
 	}
-	// Dedup so a caller-supplied duplicate id can't create two identical
-	// tasks for the same company, reusing the same rule utils.BulkUpdate
-	// applies to its ids.
-	form.CompanyIDs = utils.DedupeUints(form.CompanyIDs)
+	// Dedup so a caller-supplied duplicate (type, id) pair can't create two
+	// identical tasks for the same target.
+	form.Targets = dedupeCampaignTargets(form.Targets)
+	for _, target := range form.Targets {
+		if !models.IsValidCampaignTargetType(target.RelatedType) {
+			return utils.ValidationError(c, "targets contains an invalid related_type", map[string][]string{"targets": {"invalid"}})
+		}
+	}
 	if form.Title == "" {
 		return utils.ValidationError(c, "title is required", map[string][]string{"title": {"required"}})
 	}
@@ -111,11 +141,11 @@ func (h *CampaignHandler) BulkCreateTasks(c *fiber.Ctx) error {
 	}
 
 	actorID := middleware.CurrentUserID(c)
-	tasks := make([]models.Task, 0, len(form.CompanyIDs))
-	for _, companyID := range form.CompanyIDs {
+	tasks := make([]models.Task, 0, len(form.Targets))
+	for _, target := range form.Targets {
 		tasks = append(tasks, models.Task{
-			RelatedType: models.RelatedTypeCompany,
-			RelatedID:   companyID,
+			RelatedType: target.RelatedType,
+			RelatedID:   target.RelatedID,
 			Title:       form.Title,
 			Description: form.Description,
 			DueDate:     form.DueDate,
@@ -127,8 +157,8 @@ func (h *CampaignHandler) BulkCreateTasks(c *fiber.Ctx) error {
 	}
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
 		// Single batch insert (GORM batches a slice Create into one/few
-		// statements) instead of one round trip per company — matters once
-		// a win-back push targets hundreds of dormant companies.
+		// statements) instead of one round trip per target — matters once a
+		// campaign targets hundreds of records.
 		if err := tx.Create(&tasks).Error; err != nil {
 			return err
 		}
@@ -142,10 +172,13 @@ func (h *CampaignHandler) BulkCreateTasks(c *fiber.Ctx) error {
 }
 
 // Progress — GET /campaigns/:id/progress. total/done/pending count this
-// campaign's Tasks; converted counts distinct companies among those tasks'
+// campaign's Tasks; converted counts distinct targets among those tasks'
 // related_ids that have since won a Deal (created at or after the campaign
-// started) — same EXISTS-subquery shape as applyCompanyFilters' has_won_deal,
-// adapted with the campaign-start date condition.
+// started). A task's target maps to the deal-bearing Company differently per
+// related_type — Company tasks match deals.company_id directly, Lead/Contact
+// tasks match through their own company_id — so each branch gets its own
+// EXISTS clause (same shape as applyCompanyFilters' has_won_deal, adapted
+// per target type), unioned into one count.
 func (h *CampaignHandler) Progress(c *fiber.Ctx) error {
 	var campaign models.Campaign
 	if err := h.DB.First(&campaign, c.Params("id")).Error; err != nil {
@@ -161,12 +194,22 @@ func (h *CampaignHandler) Progress(c *fiber.Ctx) error {
 	pending := total - done
 
 	var converted int64
-	if err := h.DB.Model(&models.Task{}).
+	convertedQuery := h.DB.Model(&models.Task{}).
 		Where("campaign_id = ?", campaign.ID).
-		Where("EXISTS (SELECT 1 FROM deals WHERE deals.company_id = tasks.related_id AND deals.status = ? AND deals.created_at >= ?)",
-			models.DealStatusWon, campaign.CreatedAt).
-		Distinct("related_id").
-		Count(&converted).Error; err != nil {
+		Where(`(
+			(tasks.related_type = ? AND EXISTS (SELECT 1 FROM deals WHERE deals.company_id = tasks.related_id AND deals.status = ? AND deals.created_at >= ?))
+			OR (tasks.related_type = ? AND EXISTS (SELECT 1 FROM leads JOIN deals ON deals.company_id = leads.company_id WHERE leads.id = tasks.related_id AND deals.status = ? AND deals.created_at >= ?))
+			OR (tasks.related_type = ? AND EXISTS (SELECT 1 FROM contacts JOIN deals ON deals.company_id = contacts.company_id WHERE contacts.id = tasks.related_id AND deals.status = ? AND deals.created_at >= ?))
+		)`,
+			models.RelatedTypeCompany, models.DealStatusWon, campaign.CreatedAt,
+			models.RelatedTypeLead, models.DealStatusWon, campaign.CreatedAt,
+			models.RelatedTypeContact, models.DealStatusWon, campaign.CreatedAt,
+		)
+	// Postgres' COUNT(DISTINCT a, b) isn't valid multi-column syntax (it
+	// needs a row expression), so distinct on a single concatenated
+	// "type:id" key instead — cheap since related_type is only ever a
+	// handful of short values.
+	if err := convertedQuery.Distinct("tasks.related_type || ':' || tasks.related_id::text").Count(&converted).Error; err != nil {
 		return utils.Internal(c, "Failed to compute campaign progress")
 	}
 
