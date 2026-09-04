@@ -88,6 +88,10 @@ func (h *CampaignHandler) BulkCreateTasks(c *fiber.Ctx) error {
 	if len(form.CompanyIDs) == 0 {
 		return utils.ValidationError(c, "company_ids is required", map[string][]string{"company_ids": {"required"}})
 	}
+	// Dedup so a caller-supplied duplicate id can't create two identical
+	// tasks for the same company, reusing the same rule utils.BulkUpdate
+	// applies to its ids.
+	form.CompanyIDs = utils.DedupeUints(form.CompanyIDs)
 	if form.Title == "" {
 		return utils.ValidationError(c, "title is required", map[string][]string{"title": {"required"}})
 	}
@@ -107,24 +111,28 @@ func (h *CampaignHandler) BulkCreateTasks(c *fiber.Ctx) error {
 	}
 
 	actorID := middleware.CurrentUserID(c)
+	tasks := make([]models.Task, 0, len(form.CompanyIDs))
+	for _, companyID := range form.CompanyIDs {
+		tasks = append(tasks, models.Task{
+			RelatedType: models.RelatedTypeCompany,
+			RelatedID:   companyID,
+			Title:       form.Title,
+			Description: form.Description,
+			DueDate:     form.DueDate,
+			Status:      models.TaskStatusPending,
+			Priority:    priority,
+			AssignedTo:  form.AssignedTo,
+			CampaignID:  &campaign.ID,
+		})
+	}
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
-		for _, companyID := range form.CompanyIDs {
-			task := models.Task{
-				RelatedType: models.RelatedTypeCompany,
-				RelatedID:   companyID,
-				Title:       form.Title,
-				Description: form.Description,
-				DueDate:     form.DueDate,
-				Status:      models.TaskStatusPending,
-				Priority:    priority,
-				AssignedTo:  form.AssignedTo,
-				CampaignID:  &campaign.ID,
-			}
-			if err := tx.Create(&task).Error; err != nil {
-				return err
-			}
+		// Single batch insert (GORM batches a slice Create into one/few
+		// statements) instead of one round trip per company — matters once
+		// a win-back push targets hundreds of dormant companies.
+		if err := tx.Create(&tasks).Error; err != nil {
+			return err
 		}
-		after := models.JSONMap{"campaign_id": campaign.ID, "task_count": len(form.CompanyIDs)}
+		after := models.JSONMap{"campaign_id": campaign.ID, "task_count": len(tasks)}
 		return utils.WriteAuditLog(tx, "campaign", campaign.ID, "bulk_created_campaign_tasks", nil, after, actorID)
 	})
 	if err != nil {
@@ -144,11 +152,13 @@ func (h *CampaignHandler) Progress(c *fiber.Ctx) error {
 		return utils.NotFound(c, "Campaign not found")
 	}
 
-	var total, done, pending int64
-	tasks := h.DB.Model(&models.Task{}).Where("campaign_id = ?", campaign.ID)
-	tasks.Count(&total)
-	tasks.Session(&gorm.Session{}).Where("status = ?", models.TaskStatusDone).Count(&done)
-	tasks.Session(&gorm.Session{}).Where("status = ?", models.TaskStatusPending).Count(&pending)
+	var total, done int64
+	tasksQuery := h.DB.Model(&models.Task{}).Where("campaign_id = ?", campaign.ID)
+	tasksQuery.Count(&total)
+	tasksQuery.Session(&gorm.Session{}).Where("status = ?", models.TaskStatusDone).Count(&done)
+	// TaskStatus only ever has two values (pending/done), so pending is
+	// always total-done — no need for a third Count() round trip.
+	pending := total - done
 
 	var converted int64
 	if err := h.DB.Model(&models.Task{}).

@@ -273,7 +273,12 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	tasks.Delete("/:id", taskH.Delete)
 
 	// Campaigns — named, typed batches of outreach (e.g. dormant-company
-	// win-back) that group Tasks via Task.campaign_id.
+	// win-back) that group Tasks via Task.campaign_id. Deliberately not
+	// role-gated, same as the /tasks group above and for the same reason:
+	// BulkCreateTasks enforces ownership per assignee via CanWrite rather
+	// than restricting who may launch a campaign, since both Sales and
+	// Marketing (via the guided /crm/campaigns/new flow) are meant to
+	// self-serve this.
 	campaigns := authed.Group("/campaigns")
 	campaigns.Get("/", campaignH.List)
 	campaigns.Post("/", campaignH.Create)
