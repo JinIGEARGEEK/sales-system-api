@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"time"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/lib/pq"
 	"gorm.io/gorm"
@@ -10,6 +12,15 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
+// companyWithActivity embeds Company plus the last_activity_at computed by
+// withLastActivityAt's join (company_activity.go) — null/omitted when the
+// Company has no company-scoped Activities at all. Used by both List and Get
+// so the field's shape is identical everywhere it's returned.
+type companyWithActivity struct {
+	models.Company
+	LastActivityAt *time.Time `json:"last_activity_at"`
+}
+
 type CompanyHandler struct {
 	DB *gorm.DB
 }
@@ -18,17 +29,20 @@ func NewCompanyHandler(db *gorm.DB) *CompanyHandler {
 	return &CompanyHandler{DB: db}
 }
 
-// List — GET /companies. Filters: status, tag, industry, search (name).
+// List — GET /companies. Filters: status, tag, industry, search (name),
+// stale_days, has_won_deal.
 func (h *CompanyHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := applyCompanyFilters(h.DB.Model(&models.Company{}), c)
+	query = withLastActivityAt(query)
 
 	var total int64
 	query.Count(&total)
 
-	var companies []models.Company
+	var companies []companyWithActivity
 	query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true, "industry": true}, "-created_at")
-	if err := query.Limit(perPage).Offset(offset).Find(&companies).Error; err != nil {
+	if err := query.Select("companies.*, last_company_activity.last_activity_at as last_activity_at").
+		Limit(perPage).Offset(offset).Find(&companies).Error; err != nil {
 		return utils.Internal(c, "Failed to list companies")
 	}
 	return utils.List(c, companies, page, perPage, total)
@@ -88,8 +102,10 @@ func (h *CompanyHandler) Create(c *fiber.Ctx) error {
 
 // Get — GET /companies/:id.
 func (h *CompanyHandler) Get(c *fiber.Ctx) error {
-	var company models.Company
-	if err := h.DB.First(&company, c.Params("id")).Error; err != nil {
+	var company companyWithActivity
+	query := withLastActivityAt(h.DB.Model(&models.Company{})).
+		Select("companies.*, last_company_activity.last_activity_at as last_activity_at")
+	if err := query.First(&company, c.Params("id")).Error; err != nil {
 		return utils.NotFound(c, "Company not found")
 	}
 	return utils.OK(c, company)

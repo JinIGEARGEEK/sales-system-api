@@ -9,10 +9,14 @@ const (
 	// NotificationEntityProspect — added 2026-09-03, Marketing's own
 	// staleness rule (FR-CRM-107). See NotificationRule's doc comment below.
 	NotificationEntityProspect NotificationEntityType = "prospect"
+	// NotificationEntityCompany — added for the dormant-customer / upsell
+	// -targeting feature. See NotificationRule's doc comment below.
+	NotificationEntityCompany NotificationEntityType = "company"
 )
 
 var ValidNotificationEntityTypes = []NotificationEntityType{
 	NotificationEntityDeal, NotificationEntityQuote, NotificationEntityContract, NotificationEntityProspect,
+	NotificationEntityCompany,
 }
 
 func IsValidNotificationEntityType(v NotificationEntityType) bool {
@@ -66,6 +70,8 @@ func IsValidNotificationRecipientRole(v NotificationRecipientRole) bool {
 //     2026-09-03. Unlike "deal", there's no audit-log stage-history lookup
 //     (Prospect.Status changes aren't separately audited the way Deal.Stage
 //     is), so UpdatedAt is the closest available "last touched" signal.
+//   - "company": an active Company with no Activity logged directly against
+//     it in at least ThresholdDays.
 type NotificationRule struct {
 	AuditedModel
 	Name          string                    `gorm:"not null;uniqueIndex" json:"name"`

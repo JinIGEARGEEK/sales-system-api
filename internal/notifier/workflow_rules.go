@@ -49,6 +49,8 @@ func checkWorkflowRules(db *gorm.DB, cfg *config.Config) {
 			checkContractStuckRule(db, cfg, rule)
 		case models.NotificationEntityProspect:
 			checkProspectStaleRule(db, cfg, rule)
+		case models.NotificationEntityCompany:
+			checkCompanyDormantRule(db, cfg, rule)
 		}
 	}
 }
@@ -301,6 +303,101 @@ func checkProspectStaleRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 		sendRuleNotification(cfg, emails, subject, body)
 		if err := recordNotified(db, rule.ID, prospect.ID, context); err != nil {
 			log.Printf("notifier: failed to record notification for prospect %d: %v", prospect.ID, err)
+		}
+	}
+}
+
+// companyDormantTiers are the same 60/90/120-day stale-tier boundaries as the
+// dashboard's upsell_opportunities widget (internal/handlers/dashboard.go's
+// upsellOpportunities) and the frontend's composables/utils/useLastContact.ts
+// — kept in sync deliberately, not derived from rule.ThresholdDays, since
+// this rule (unlike checkDealIdleRule/checkQuoteExpiringRule/
+// checkContractStuckRule) escalates through fixed tiers rather than firing
+// once past a single caller-configured threshold; rule.ThresholdDays is still
+// honored as the floor below which nothing fires at all (see the loop below).
+var companyDormantTiers = []int{60, 90, 120}
+
+// checkCompanyDormantRule — dormant-customer / upsell-targeting feature. An
+// active Company with no Activity logged directly against it (related_type =
+// "company", same company-scoped-only definition as
+// internal/handlers/company_activity.go's withLastActivityAt — deliberately
+// NOT rolled up from that Company's Deals/Contacts) for at least
+// rule.ThresholdDays. The LEFT JOIN subquery below duplicates that handler's
+// SQL rather than importing it, mirroring how checkDealIdleRule already
+// builds its own raw audit_log_entries query instead of reaching into the
+// handlers package — this notifier package stays self-contained.
+//
+// Idempotency context is the coarse stale tier ("60"/"90"/"120", whichever
+// boundary the Company just crossed) rather than a fixed value, so escalating
+// into a worse tier can re-fire even though an earlier, milder tier already
+// logged a notification — same reasoning as checkDealIdleRule's stage-as-
+// context. A Company with no Activity at all is always treated as the most
+// stale tier (120).
+func checkCompanyDormantRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule) {
+	var rows []struct {
+		ID             uint
+		Name           string
+		LastActivityAt *time.Time
+	}
+	if err := db.Table("companies").
+		Select("companies.id, companies.name, last_company_activity.last_activity_at as last_activity_at").
+		Joins("LEFT JOIN (SELECT related_id, MAX(created_at) as last_activity_at FROM activities WHERE related_type = ? GROUP BY related_id) as last_company_activity ON last_company_activity.related_id = companies.id", models.RelatedTypeCompany).
+		Where("companies.status = ?", models.StatusActive).
+		Scan(&rows).Error; err != nil {
+		log.Printf("notifier: failed to query companies for rule %d: %v", rule.ID, err)
+		return
+	}
+
+	now := time.Now()
+
+	for _, row := range rows {
+		var daysSince int
+		if row.LastActivityAt == nil {
+			daysSince = companyDormantTiers[len(companyDormantTiers)-1]
+		} else {
+			daysSince = int(now.Sub(*row.LastActivityAt).Hours() / 24)
+		}
+		if daysSince < rule.ThresholdDays {
+			continue
+		}
+
+		// The tier just crossed — the largest boundary daysSince has reached,
+		// falling back to the smallest if it hasn't reached any (still ≥
+		// rule.ThresholdDays, which may be below companyDormantTiers[0]).
+		tier := companyDormantTiers[0]
+		for _, t := range companyDormantTiers {
+			if daysSince >= t {
+				tier = t
+			}
+		}
+		context := fmt.Sprintf("%d", tier)
+		if alreadyNotified(db, rule.ID, row.ID, context) {
+			continue
+		}
+
+		// ownerID resolves to the company's most-recent Deal's AssignedTo, nil
+		// if the Company has no Deals at all — recipientEmails' existing
+		// nil-ownerID behavior (only adds an owner email when ownerID != nil)
+		// already gives the desired "falls back to whatever RecipientRole
+		// broadcasts to" behavior with no special-casing needed here.
+		var ownerID *uint
+		var mostRecentDeal models.Deal
+		if err := db.Where("company_id = ?", row.ID).Order("created_at DESC").First(&mostRecentDeal).Error; err == nil {
+			ownerID = mostRecentDeal.AssignedTo
+		}
+
+		emails := recipientEmails(db, ownerID, rule.RecipientRole)
+		if len(emails) == 0 {
+			continue
+		}
+		subject := fmt.Sprintf("Company gone quiet: %s", row.Name)
+		body := fmt.Sprintf(
+			"Reminder: the following company has had no logged activity in %d+ days — a possible upsell/renewal target worth reaching out to.\n\nCompany: %s\n",
+			tier, row.Name,
+		)
+		sendRuleNotification(cfg, emails, subject, body)
+		if err := recordNotified(db, rule.ID, row.ID, context); err != nil {
+			log.Printf("notifier: failed to record notification for company %d: %v", row.ID, err)
 		}
 	}
 }

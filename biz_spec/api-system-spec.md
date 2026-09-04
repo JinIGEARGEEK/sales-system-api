@@ -317,6 +317,7 @@ interface Company {
   legal_name: string | null   // registered legal entity name — used on Contract PDF exports
   address: string | null      // registered address — used on Contract PDF exports
   tax_id: string | null       // used on Contract PDF exports
+  last_activity_at: string | null   // dormant-customer / upsell-targeting feature — see note below
   created_at: string
   updated_at: string
 }
@@ -324,9 +325,11 @@ interface Company {
 
 > `industry`/`size`/`revenue_size` should be validated against the Admin-configurable option lists in §8.8 (`IndustryOption`/`CompanySizeOption`/`RevenueSizeOption`) rather than free text.
 
+`last_activity_at` (dormant-customer / upsell-targeting feature) is `MAX(activities.created_at)` for Activities logged directly against this Company (`related_type = 'company'`) — deliberately **not** rolled up from the Company's Deals/Contacts. `null` when no such Activity exists. Computed at query time (a `LEFT JOIN` subquery), not a stored column, so it needs no backfill and is always current. Returned on both `GET /companies` and `GET /companies/:id`.
+
 | Method | Path | Status | Description |
 |---|---|---|---|
-| `GET` | `/companies` | 🟢 | Filters: `status`, `tag`, `industry`, `search` (name). Backs `pages/crm/companies/index.vue`. |
+| `GET` | `/companies` | 🟢 | Filters: `status`, `tag`, `industry`, `search` (name), `stale_days` (int — only companies whose `last_activity_at` is `null` or older than this many days), `has_won_deal` (`true`/`false` — only companies with/without at least one Deal at `status: 'won'`). Backs `pages/crm/companies/index.vue`. |
 | `POST` | `/companies` | 🟢 | Create. |
 | `GET` | `/companies/:id` | 🟢 | Single company — `pages/crm/companies/[id].vue`'s Overview tab. |
 | `PUT` | `/companies/:id` | 🟢 | Update. |
@@ -843,10 +846,10 @@ interface LeadScoringCriterion {
 | `GET` / `POST` | `/admin/lead-scoring-criteria` | List / create. |
 | `PATCH` / `DELETE` | `/admin/lead-scoring-criteria/:id` | Update / delete. |
 
-**Workflow notification rules** (`FR-CRM-100`–`102`, `prospect` added `FR-CRM-107`) — Admin-configurable thresholds for the in-app "this needs attention" notifications (a Deal idle in-stage, a Quote about to expire, a Contract stuck unsigned, a Prospect gone stale):
+**Workflow notification rules** (`FR-CRM-100`–`102`, `prospect` added `FR-CRM-107`, `company` added for the dormant-customer / upsell-targeting feature) — Admin-configurable thresholds for the in-app "this needs attention" notifications (a Deal idle in-stage, a Quote about to expire, a Contract stuck unsigned, a Prospect gone stale, a Company gone quiet):
 
 ```ts
-type NotificationEntityType = 'deal' | 'quote' | 'contract' | 'prospect'
+type NotificationEntityType = 'deal' | 'quote' | 'contract' | 'prospect' | 'company'
 type NotificationRecipientRole = 'owner' | 'owner_and_managers'
 
 interface NotificationRule {
@@ -857,6 +860,11 @@ interface NotificationRule {
                              // "contract": days sitting Draft/Sent without being signed.
                              // "prospect": days since updated_at with no change, while status is
                              // not yet Converted/Disqualified (added 2026-09-03, FR-CRM-107).
+                             // "company": days since last_activity_at (§4's definition —
+                             // company-scoped Activities only) for an active Company, null
+                             // treated as always-eligible. Fires at most once per coarse stale
+                             // tier (60/90/120 days, §9's upsell_opportunities tiers) so
+                             // escalating into a worse tier can re-fire.
   recipient_role: NotificationRecipientRole
   is_active: boolean
   created_at: string
@@ -911,12 +919,18 @@ Response shape (one object covering every widget on `pages/index.vue`):
     "stage_breakdown": [ { "stage": "Qualified", "value": 900000, "count": 4 }, "...per DealStage" ],
     "industry_breakdown": [ { "industry": "Retail", "win_rate": 55, "won_count": 6 }, "..." ],
     "team_performance": [ { "user_id": 3, "name": "...", "won_count": 5, "won_value": 620000, "win_rate": 60 }, "..." ],
-    "upsell_opportunities": [ /* stale-contact candidates grouped by tier, see FR in dashboard hint copy */ ]
+    "upsell_opportunities": [
+      { "tier": "tier1", "companies": [ { "id": 12, "name": "Acme Corp", "industry": "Retail", "last_activity_at": "2026-06-20T10:00:00Z" }, "..." ] },
+      { "tier": "tier2", "companies": [ "..." ] },
+      { "tier": "tier3", "companies": [ { "id": 44, "name": "Globex Corp", "industry": "Logistics", "last_activity_at": null }, "..." ] }
+    ]
   }
 }
 ```
 
 `quarterly_sales_target` (`FR-CRM-058`) and `annual_revenue_goal`/`annual_revenue_actual`/`annual_revenue_progress_ratio`/`annual_revenue_trend` (`FR-CRM-091`) are Admin-configurable via `PATCH /admin/settings` — see §8.6. `quarterly_sales_target`'s value resolves through §8.7's per-quarter override first (a `SalesTarget` row for the current `(year, quarter)`, if an Admin has set one) before falling back to `quarterly_sales_target(annual) / 4` — this response field always reports whichever one actually applies to the current quarter, not the raw annual figure. `annual_revenue_trend`'s `actual` is a running cumulative total through each month (not that month's own delta); `goal_pace` is a straight-line `annual_revenue_goal × months_elapsed / 12` for the same point, letting the frontend chart whether the company is ahead of or behind pace, not just infer it from today's single ratio. Both `revenue_trend`/`forecast_trend` and `annual_revenue_trend` deliberately ignore this endpoint's own `business_unit`/`channel`/`date_from`/`date_to` filters (fixed trailing-6-months and fixed calendar-year views respectively, not filtered slices) — only the top-level stat cards and `stage_breakdown`/`industry_breakdown`/`team_performance` respect them.
+
+`upsell_opportunities` (dormant-customer / upsell-targeting feature) — active Companies whose `last_activity_at` (§4's definition — company-scoped Activities only) is `null` or ≥60 days old, bucketed into 3 fixed tiers (`tier1`: 60-89 days, `tier2`: 90-119 days, `tier3`: 120+ days or never contacted) and capped at 10 companies per tier, most-stale first. Always returns all 3 tier objects, even when a tier's `companies` array is empty. Company-centric, not Deal-scoped, so — like `annual_revenue_trend`/`revenue_trend`/`forecast_trend` above — it deliberately ignores this endpoint's `business_unit`/`channel`/`assigned_to`/`company_tag`/`date_from`/`date_to` filters.
 
 ---
 

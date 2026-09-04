@@ -1,8 +1,13 @@
 package handlers
 
 import (
+	"strconv"
+	"time"
+
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
+
+	"github.com/igeargeek/sales-system-api/internal/models"
 )
 
 // This file centralizes the query-param filter logic shared between each
@@ -28,6 +33,33 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 	if v := c.Query("search"); v != "" {
 		like := "%" + v + "%"
 		query = query.Where("name ILIKE ? OR website ILIKE ?", like, like)
+	}
+	// stale_days — only companies with no company-scoped Activity (see
+	// company_activity.go's withLastActivityAt for the same "related_type =
+	// 'company'" definition) at or after the cutoff, i.e. last_activity_at is
+	// NULL or older than stale_days. Expressed as a NOT EXISTS rather than
+	// relying on withLastActivityAt's joined alias, so this filter works
+	// standalone here (and in ExportHandler.Companies, which shares this
+	// function but never joins the activity subquery itself).
+	if v := c.Query("stale_days"); v != "" {
+		if days, err := strconv.Atoi(v); err == nil {
+			cutoff := time.Now().AddDate(0, 0, -days)
+			query = query.Where(
+				"NOT EXISTS (SELECT 1 FROM activities WHERE activities.related_type = ? AND activities.related_id = companies.id AND activities.created_at >= ?)",
+				models.RelatedTypeCompany, cutoff,
+			)
+		}
+	}
+	// has_won_deal — "true"/"false" string param; only companies with (or
+	// without) at least one Deal at status = 'won'.
+	if v := c.Query("has_won_deal"); v != "" {
+		if hasWonDeal, err := strconv.ParseBool(v); err == nil {
+			exists := "EXISTS (SELECT 1 FROM deals WHERE deals.company_id = companies.id AND deals.status = ?)"
+			if !hasWonDeal {
+				exists = "NOT " + exists
+			}
+			query = query.Where(exists, models.DealStatusWon)
+		}
 	}
 	return query
 }

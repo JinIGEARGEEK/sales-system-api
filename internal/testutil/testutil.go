@@ -45,6 +45,13 @@ const TestPassword = "password123!"
 var tables = []string{
 	"attachments",
 	"audit_log_entries",
+	// notification_logs/notification_rules — added alongside the dormant-
+	// company notification rule tests: notification_rules.name is
+	// uniqueIndex'd, so leaving this table out of the truncate list (as it
+	// was before) let one test run's seeded rule name collide with the next
+	// run's.
+	"notification_logs",
+	"notification_rules",
 	"projects",
 	"customer_products",
 	"products",
