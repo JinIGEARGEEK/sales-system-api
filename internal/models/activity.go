@@ -16,7 +16,23 @@ const (
 	RelatedTypeCompany  ActivityRelatedType = "company"
 	RelatedTypeDeal     ActivityRelatedType = "deal"
 	RelatedTypeProspect ActivityRelatedType = "prospect"
+	RelatedTypeLead     ActivityRelatedType = "lead"
 )
+
+// ValidCampaignTargetTypes lists every ActivityRelatedType a Campaign's Tasks
+// may be created against. Deal/Prospect are valid Activity/Task related
+// types but not valid Campaign targets — a campaign is outreach aimed at a
+// contactable record (Company/Lead/Contact), not a pipeline object.
+var ValidCampaignTargetTypes = []ActivityRelatedType{RelatedTypeCompany, RelatedTypeLead, RelatedTypeContact}
+
+func IsValidCampaignTargetType(t ActivityRelatedType) bool {
+	for _, v := range ValidCampaignTargetTypes {
+		if v == t {
+			return true
+		}
+	}
+	return false
+}
 
 // Activity — api-system-spec.md §7.2.
 type Activity struct {
