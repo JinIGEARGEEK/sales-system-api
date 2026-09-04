@@ -581,6 +581,7 @@ interface Task {
   due_date: string
   status: TaskStatus
   assigned_to: number | null
+  campaign_id: number | null   // added — optional link to a Campaign (§7.7); null for ordinary, ungrouped Tasks
   created_at: string
 }
 ```
@@ -594,6 +595,38 @@ interface Task {
 | `PATCH` | `/tasks/bulk-reassign` | 🟢 | Body: `{ ids: number[], assigned_to: number \| null }`. Same per-row ownership rule as above, checked against both the new assignee (once, up front) and each task's current assignee (per row) — a Sales Rep may bulk-reassign their own tasks to themselves/unassigned, not to a different rep. |
 | `DELETE` | `/tasks/:id` | 🟢 | Delete. |
 | — | *(reminder notifications)* | 🔜 | `FR-CRM-032`'s "notification on due" — no delivery mechanism (email/push) exists in the frontend; needs a scheduled job + `/6` integrations, out of scope for this v1 endpoint list. |
+
+### 7.7 Campaigns
+
+Named, dated batches of outreach Tasks (win-back/upsell pushes) — `FR-CRM-110`/`111`. `internal/models/campaign.go`, `internal/handlers/campaigns.go`.
+
+```ts
+type CampaignType = 'win_back'   // extensible — only one type exists so far
+
+interface Campaign {
+  id: number
+  name: string
+  type: CampaignType
+  created_by: number | null
+  created_at: string
+}
+
+interface CampaignProgress {
+  total: number      // Tasks under this campaign
+  done: number
+  pending: number      // total - done (TaskStatus only has two values, so this isn't a separate query)
+  converted: number    // distinct target companies with a Won Deal created on/after the campaign's created_at
+}
+```
+
+| Method | Path | Status | Description |
+|---|---|---|---|
+| `GET` | `/campaigns` | 🟢 | List, newest first. |
+| `POST` | `/campaigns` | 🟢 | Body: `{name, type}`. `created_by` set from the authenticated user. |
+| `POST` | `/campaigns/:id/tasks` | 🟢 | Body: `{company_ids: number[], title, description, due_date, priority, assigned_to}`. Dedupes `company_ids` (`utils.DedupeUints`, same rule `BulkUpdate` applies), checks `CanWrite` against `assigned_to` once up front, then creates one Task per company (`related_type: 'company'`, `campaign_id` set) via a single batch insert inside one transaction, plus one summary audit-log entry (`bulk_created_campaign_tasks`). Not routed through `utils.BulkUpdate` — that helper loads/mutates existing rows, this creates new ones. |
+| `GET` | `/campaigns/:id/progress` | 🟢 | Returns `CampaignProgress`. `converted` reuses the same `has_won_deal` EXISTS-subquery shape `GET /companies`'s `has_won_deal` filter uses (`applyCompanyFilters`, see the Companies section above), scoped to `deals.created_at >= campaign.created_at`. |
+
+Not role-gated (`/campaigns` group), same as `/tasks` above and for the same reason — ownership is enforced per-assignee inside `BulkCreateTasks` rather than restricting who may launch a campaign, since this is meant to be self-serve for both Sales and Marketing.
 
 ---
 

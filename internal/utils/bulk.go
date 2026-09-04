@@ -14,7 +14,7 @@ import (
 // each row.
 func BulkUpdate[T any](db *gorm.DB, ids []uint, entityType, action string, actorID uint,
 	apply func(tx *gorm.DB, item *T) (before, after models.JSONMap, err error)) error {
-	ids = dedupeUints(ids)
+	ids = DedupeUints(ids)
 	return db.Transaction(func(tx *gorm.DB) error {
 		for _, id := range ids {
 			var item T
@@ -33,12 +33,13 @@ func BulkUpdate[T any](db *gorm.DB, ids []uint, entityType, action string, actor
 	})
 }
 
-// dedupeUints drops repeated ids, preserving first-seen order — a caller
+// DedupeUints drops repeated ids, preserving first-seen order — a caller
 // accidentally passing a duplicate id (e.g. "ids": [5, 5]) would otherwise
 // have BulkUpdate load/apply/audit-log that row twice inside the same
 // transaction, silently double-writing it and leaving two audit-log entries
-// for one logical bulk action.
-func dedupeUints(ids []uint) []uint {
+// for one logical bulk action. Exported so other bulk-style handlers (e.g.
+// CampaignHandler.BulkCreateTasks) can reuse the same duplicate-safety rule.
+func DedupeUints(ids []uint) []uint {
 	seen := make(map[uint]bool, len(ids))
 	out := make([]uint, 0, len(ids))
 	for _, id := range ids {
