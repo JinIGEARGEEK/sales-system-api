@@ -57,6 +57,7 @@ var tables = []string{
 	"products",
 	"contracts",
 	"tasks",
+	"campaigns",
 	"payments",
 	"quotes",
 	"tags",
