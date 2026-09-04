@@ -598,8 +598,8 @@ func (h *DashboardHandler) upsellOpportunities() []upsellTierGroup {
 	}
 	for _, co := range candidates {
 		var tierIdx int
-		switch {
-		case co.LastActivityAt == nil:
+		switch co.LastActivityAt {
+		case nil:
 			tierIdx = 2
 		default:
 			days := int(now.Sub(*co.LastActivityAt).Hours() / 24)
