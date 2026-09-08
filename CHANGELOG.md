@@ -4,6 +4,10 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-09-08 — Sales Rep gains Prospects + restricted audit-log access
+
+`/prospects` (and its `/reports/prospect-source-conversion` sibling) opened up to `Sales Rep`, matching Marketing/Sales Manager/Admin — Sales Reps now work Prospects ahead of the Lead hand-off the same way they already work Leads/Deals. `/audit-log` also opened up from Admin-only to Admin/Sales Rep/Sales Manager, but `AuditLogHandler.List` hard-restricts what a non-Admin caller actually gets back to Deal stage-change history only (`entity_type=deal`, `action=stage_changed`), ignoring any `entity_type`/`actor_id` they pass — this lets the Activities pages surface a Deal's pipeline history as read-only context without granting the Admin audit viewer's full reach into other entity types or Deal actions like `reassigned`. Spec: §1.7, §3a, §8.5.
+
 ## 2026-09-04 — Dormant-company / upsell-targeting
 
 Added `Company.last_activity_at` (computed from `MAX(activities.created_at)` for company-scoped Activities only, not rolled up from Deals/Contacts — no migration/backfill needed), returned on `GET /companies` and `GET /companies/:id`, plus two new `GET /companies` filters: `stale_days` and `has_won_deal`. Implemented the Dashboard's previously-stubbed `upsell_opportunities` (`GET /dashboard/summary`): active Companies stale ≥60 days, bucketed into 3 tiers (60/90/120-day boundaries) capped at 10 companies each. Added `"company"` as a `NotificationRule.entity_type` (`checkCompanyDormantRule`), firing once per stale tier crossed, recipient resolved via the Company's most-recent Deal's owner; `GET /notification-log` gained a matching `company` branch (`company_id`/`company_name`, scoped the same way). Spec: §4, §9, §8.8.

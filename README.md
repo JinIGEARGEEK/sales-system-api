@@ -91,7 +91,7 @@ Resources: Auth & Users, Leads, Prospects, Companies, Contacts, Deals, Activitie
 | Role | Access |
 |---|---|
 | **Admin** | Full access to every resource, including Users and Product Catalog |
-| **Sales Rep** | Full CRUD on records assigned to them or unassigned; read access to teammates' records |
+| **Sales Rep** | Full CRUD on records assigned to them or unassigned, including Prospects (added 2026-09-08); read access to teammates' records; read access to `/audit-log` restricted to Deal stage-change history only |
 | **Sales Manager** | Same as Sales Rep, plus read access to all reps' data, all `/reports/*`, and deal reassignment |
 | **Production** | Write access to *only* `status` and `production_reference` on `Project` records |
 | **Marketing** | Full CRUD on Prospects (the pre-Lead marketing funnel — `/prospects`) they're assigned to or unassigned, same ownership model Sales Rep has for Leads. No access to Leads/Deals/any other resource. |

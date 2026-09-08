@@ -152,10 +152,12 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	leads.Post("/:id/convert", leadH.Convert)
 	leads.Post("/:id/restore", bulkRoles, leadH.Restore)
 
-	// Prospects — the pre-Lead marketing funnel entity. Admin/Sales Manager get
-	// oversight visibility; Marketing owns it day-to-day. Bulk/trash/restore
-	// stay on the existing Admin/Sales-Manager-only bulkRoles, same as Leads.
-	prospectRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleMarketing, models.RoleSalesManager)
+	// Prospects — the pre-Lead marketing funnel entity. Admin/Sales Manager/
+	// Sales Rep get full read+write access (Sales Reps work Prospects ahead
+	// of the Lead hand-off the same way they work Leads/Deals); Marketing
+	// owns it day-to-day. Bulk/trash/restore stay on the existing
+	// Admin/Sales-Manager-only bulkRoles, same as Leads.
+	prospectRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleMarketing, models.RoleSalesManager, models.RoleSalesRep)
 	prospects := authed.Group("/prospects", prospectRoles)
 	prospects.Get("/", prospectH.List)
 	prospects.Post("/", prospectH.Create)
@@ -324,13 +326,19 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// Marketing's own funnel report — deliberately NOT under the `reports`
 	// group above (Sales Manager/Admin only): Marketing has no access to any
 	// Deal/Lead-derived report, but does need visibility into its own
-	// Prospect-source conversion, the one funnel it actually owns.
-	prospectReports := authed.Group("/reports", middleware.RequireRoles(models.RoleAdmin, models.RoleMarketing, models.RoleSalesManager))
+	// Prospect-source conversion, the one funnel it actually owns. Sales Rep
+	// is included here too, matching `prospectRoles` above.
+	prospectReports := authed.Group("/reports", prospectRoles)
 	prospectReports.Get("/prospect-source-conversion", reportH.ProspectSourceConversion)
 	prospectReports.Get("/prospect-source-conversion/export", reportH.ProspectSourceConversionExport)
 
-	// Audit log — Admin only, read-only (NFR-007).
-	authed.Get("/audit-log", adminOnly, auditLogH.List)
+	// Audit log — read-only (NFR-007). Full/unrestricted browsing (any
+	// entity_type, actor_id, date range) stays Admin-only; List itself
+	// further restricts non-Admin callers to just Deal stage-change history
+	// (entity_type=deal, action=stage_changed) — see its own comment — so
+	// Sales Rep/Sales Manager can pull that in as read-only context on the
+	// Activities pages without gaining the Admin audit viewer's full reach.
+	authed.Get("/audit-log", middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager), auditLogH.List)
 
 	// Pipeline stages / lead sources — Admin-only config, replacing the
 	// previously hardcoded DealStage/LeadSource enums as the source of truth.
