@@ -4,6 +4,10 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-09-08 — Deal Overview stage edits now write an audit trail
+
+`PUT /deals/:id` (the Overview tab's full edit form) now writes a `stage_changed` audit log entry when the submitted stage differs from the deal's current one, same as the Kanban board's dedicated `PATCH /deals/:id/stage` already did. Previously a stage change made from the edit form (rather than dragging on the Kanban board) skipped the audit trail entirely — silently missing from both the Admin audit viewer and the frontend Activities pages' Deal "Pipeline History" section, which reads this same trail. New `TestDealUpdate_WritesStageChangedAuditLog` regression test. Spec: §8.5.
+
 ## 2026-09-08 — Sales Rep gains Prospects + restricted audit-log access
 
 `/prospects` (and its `/reports/prospect-source-conversion` sibling) opened up to `Sales Rep`, matching Marketing/Sales Manager/Admin — Sales Reps now work Prospects ahead of the Lead hand-off the same way they already work Leads/Deals. `/audit-log` also opened up from Admin-only to Admin/Sales Rep/Sales Manager, but `AuditLogHandler.List` hard-restricts what a non-Admin caller actually gets back to Deal stage-change history only (`entity_type=deal`, `action=stage_changed`), ignoring any `entity_type`/`actor_id` they pass — this lets the Activities pages surface a Deal's pipeline history as read-only context without granting the Admin audit viewer's full reach into other entity types or Deal actions like `reassigned`. Spec: §1.7, §3a, §8.5.
