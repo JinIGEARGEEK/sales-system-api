@@ -52,3 +52,49 @@ func TestDealReassign_WritesAuditLog(t *testing.T) {
 	require.Len(t, entries, 1, "expected exactly one reassign audit log entry")
 	assert.Equal(t, admin.ID, entries[0].ActorID)
 }
+
+// TestDealUpdate_WritesStageChangedAuditLog guards against a gap where only
+// the Kanban board's dedicated PATCH /deals/:id/stage wrote a stage_changed
+// audit row — a Stage change made via the full PUT /deals/:id (the Overview
+// tab's edit form) was silently invisible to both the Admin audit viewer and
+// the Activities pages' Deal "Pipeline History" section, which reads this
+// same audit trail.
+func TestDealUpdate_WritesStageChangedAuditLog(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	deal := seedDeal(t, db, nil)
+	require.NoError(t, db.Where(models.PipelineStage{Name: "Qualified"}).
+		FirstOrCreate(&models.PipelineStage{Name: "Qualified", SortOrder: 1, IsActive: true}).Error)
+
+	updateBody := map[string]interface{}{
+		"company_id": deal.CompanyID,
+		"contact_id": deal.ContactID,
+		"title":      deal.Title,
+		"value":      deal.Value,
+		"stage":      "Qualified",
+		"status":     "open",
+	}
+
+	t.Run("changing stage writes a stage_changed row", func(t *testing.T) {
+		req := testutil.AuthRequest(t, http.MethodPut, "/api/v1/deals/"+itoa(deal.ID), updateBody, admin.ID, admin.Role)
+		resp := doJSON(t, app, req, nil)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var entries []models.AuditLogEntry
+		require.NoError(t, db.Where("entity_type = ? AND entity_id = ? AND action = ?", "deal", deal.ID, "stage_changed").Find(&entries).Error)
+		require.Len(t, entries, 1, "expected exactly one stage_changed audit log entry")
+		assert.Equal(t, admin.ID, entries[0].ActorID)
+		assert.Equal(t, "Lead", entries[0].Before["stage"])
+		assert.Equal(t, "Qualified", entries[0].After["stage"])
+	})
+
+	t.Run("resubmitting the same stage writes no additional row", func(t *testing.T) {
+		req := testutil.AuthRequest(t, http.MethodPut, "/api/v1/deals/"+itoa(deal.ID), updateBody, admin.ID, admin.Role)
+		resp := doJSON(t, app, req, nil)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var entries []models.AuditLogEntry
+		require.NoError(t, db.Where("entity_type = ? AND entity_id = ? AND action = ?", "deal", deal.ID, "stage_changed").Find(&entries).Error)
+		assert.Len(t, entries, 1, "still just the one entry from the actual stage change above")
+	})
+}

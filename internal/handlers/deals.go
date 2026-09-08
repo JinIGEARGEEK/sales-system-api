@@ -334,6 +334,14 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 		return nil
 	}
 
+	// oldStage/before captured ahead of the mutation below — this form
+	// resubmits the deal's full state on every save (even an unrelated field
+	// edit), so oldStage != deal.Stage after mutating is the only reliable
+	// signal that the rep actually changed Stage here, same check UpdateStage
+	// uses for its own audit row.
+	oldStage := deal.Stage
+	before := models.JSONMap{"stage": deal.Stage, "status": deal.Status}
+
 	deal.CompanyID, deal.ContactID, deal.Title, deal.Value = form.CompanyID, form.ContactID, form.Title, form.Value
 	deal.Stage, deal.Status, deal.ExpectedCloseDate = form.Stage, form.Status, form.ExpectedCloseDate
 	deal.AssignedTo, deal.Channel = form.AssignedTo, form.Channel
@@ -353,7 +361,16 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 		deal.LostReason = nil
 	}
 
-	if err := h.DB.Save(&deal).Error; err != nil {
+	// Previously a plain h.DB.Save with no audit trail at all — a Stage
+	// change made from the Overview edit form (as opposed to the Kanban
+	// board's dedicated PATCH /deals/:id/stage, which already wrote a
+	// stage_changed row) was silently invisible to both the Admin audit
+	// viewer and the Activities pages' Deal "Pipeline History" section,
+	// which reads this same audit trail.
+	after := models.JSONMap{"stage": deal.Stage, "status": deal.Status}
+	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error { return tx.Save(&deal).Error },
+		oldStage != deal.Stage, "deal", deal.ID, "stage_changed", before, after, middleware.CurrentUserID(c))
+	if err != nil {
 		return utils.Internal(c, "Failed to update deal")
 	}
 	return utils.OK(c, deal)
