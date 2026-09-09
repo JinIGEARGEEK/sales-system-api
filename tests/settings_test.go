@@ -308,3 +308,26 @@ func TestSettingsUpdate_InvalidatesDashboardCache(t *testing.T) {
 	patchGoal(99000000)
 	assert.Equal(t, 99000000.0, getGoal(), "dashboard summary must reflect the new goal immediately, not the cached pre-PATCH value")
 }
+
+// TestSettingsGet_SMTPConfiguredReflectsConfig guards smtp_configured — a
+// read-only, never-persisted field (models.AppSettings.SMTPConfigured,
+// gorm:"-") derived from config.Config.SMTPHost at request time, closing an
+// otherwise total lack of Admin-facing visibility into whether Task due-date
+// email reminders (internal/notifier/internal/utils/mailer.go) can actually
+// send anything. testCfg never sets SMTP_HOST, so this only guards the
+// "unconfigured" branch — there's no per-test config override to also cover
+// the true branch.
+func TestSettingsGet_SMTPConfiguredReflectsConfig(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/admin/settings", nil, admin.ID, admin.Role)
+	var out struct {
+		Data struct {
+			SMTPConfigured bool `json:"smtp_configured"`
+		} `json:"data"`
+	}
+	resp := doJSON(t, app, req, &out)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.False(t, out.Data.SMTPConfigured, "test config never sets SMTP_HOST")
+}

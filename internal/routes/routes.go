@@ -73,7 +73,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	leadScoringCriteriaH := handlers.NewLeadScoringCriteriaHandler(db)
 	notificationRuleH := handlers.NewNotificationRuleHandler(db)
 	notificationLogH := handlers.NewNotificationLogHandler(db)
-	settingsH := handlers.NewSettingsHandler(db)
+	settingsH := handlers.NewSettingsHandler(db, cfg)
 	salesTargetH := handlers.NewSalesTargetHandler(db)
 
 	api := app.Group("/api/v1")
@@ -138,6 +138,17 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 
 	// Leads
 	bulkRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesManager)
+	// Sales-pipeline roles only for actual Lead mutations (update/convert) —
+	// Marketing has no nav access to /crm/leads (deliberately, per
+	// user-story.md §4: "Production is not a full user of this CRM" mirrors
+	// Marketing's own Prospect-only scope, FR-CRM-105/106) but could still
+	// reach a specific Lead via the Prospect "View Lead" link once converted,
+	// and until this fix these two routes had no role check at all — the
+	// frontend's Mark SQL/Convert to Deal buttons were only ever hidden by
+	// convention, not actually blocked, so a Marketing (or Production) caller
+	// hitting either endpoint directly would have succeeded. GET stays open
+	// (that's the View Lead read access this is meant to preserve).
+	salesPipelineRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager)
 	leads := authed.Group("/leads")
 	leads.Get("/", leadH.List)
 	leads.Post("/", leadH.Create)
@@ -147,9 +158,9 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	leads.Patch("/bulk-tag", bulkRoles, leadH.BulkTag)
 	leads.Patch("/bulk-archive", bulkRoles, leadH.BulkArchive)
 	leads.Get("/:id", leadH.Get)
-	leads.Put("/:id", leadH.Update)
+	leads.Put("/:id", salesPipelineRoles, leadH.Update)
 	leads.Delete("/:id", leadH.Delete)
-	leads.Post("/:id/convert", leadH.Convert)
+	leads.Post("/:id/convert", salesPipelineRoles, leadH.Convert)
 	leads.Post("/:id/restore", bulkRoles, leadH.Restore)
 
 	// Prospects — the pre-Lead marketing funnel entity. Admin/Sales Manager/
@@ -343,61 +354,91 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// card — FR-CRM-025/M-8).
 	authed.Get("/audit-log", middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager), auditLogH.List)
 
-	// Pipeline stages / lead sources — Admin-only config, replacing the
-	// previously hardcoded DealStage/LeadSource enums as the source of truth.
+	// Pipeline stages / lead sources — config writes are Admin-only, replacing
+	// the previously hardcoded DealStage/LeadSource enums as the source of
+	// truth. List is open to every authenticated role instead, same as
+	// /team-members below — every role's own Deal/Lead create/edit forms and
+	// the shared Dashboard/Kanban board need these for their stage/source
+	// dropdowns, not just Admin. **Fixed 2026-09-09**: List was previously
+	// inside the same Admin-only group as the writes, so any non-Admin role
+	// landing on a page that fetches these (the Dashboard chief among them)
+	// got a silent 403 — no visible breakage since every affected dropdown
+	// just quietly rendered with zero/stale options, but it still surfaced as
+	// a stray "not authorized" toast on pages that route failed requests
+	// through a shared error handler (e.g. pages/index.vue's dashboard).
+	authed.Get("/admin/pipeline-stages", pipelineStageH.List)
 	pipelineStages := authed.Group("/admin/pipeline-stages", adminOnly)
-	pipelineStages.Get("/", pipelineStageH.List)
 	pipelineStages.Post("/", pipelineStageH.Create)
 	pipelineStages.Patch("/:id", pipelineStageH.Update)
 	pipelineStages.Delete("/:id", pipelineStageH.Delete)
 
+	authed.Get("/admin/lead-sources", leadSourceH.List)
 	leadSources := authed.Group("/admin/lead-sources", adminOnly)
-	leadSources.Get("/", leadSourceH.List)
 	leadSources.Post("/", leadSourceH.Create)
 	leadSources.Patch("/:id", leadSourceH.Update)
 	leadSources.Delete("/:id", leadSourceH.Delete)
 
-	// Prospect sources — Marketing's own funnel-source list, kept Admin-only
-	// same as every other /admin/* config resource here (Marketing manages
-	// day-to-day Prospect data via /prospects*, not this taxonomy).
+	// Prospect sources — Marketing's own funnel-source list; writes are
+	// Admin-only, same as every other /admin/* config resource here (Marketing
+	// manages day-to-day Prospect data via /prospects*, not this taxonomy).
+	// List is open to every authenticated role — same 2026-09-09 fix as
+	// pipeline-stages/lead-sources/product-categories above:
+	// pages/crm/prospects/index.vue|[id].vue|create.vue (reachable by
+	// Marketing, Marketing's OWN primary page, not Admin-gated) fetch this for
+	// their source dropdown/filter, so Marketing got a silent 403 loading
+	// its own core page — the worst instance of this bug, since it broke the
+	// one role's primary daily workflow entirely, not just a secondary widget.
+	authed.Get("/admin/prospect-sources", prospectSourceH.List)
 	prospectSources := authed.Group("/admin/prospect-sources", adminOnly)
-	prospectSources.Get("/", prospectSourceH.List)
 	prospectSources.Post("/", prospectSourceH.Create)
 	prospectSources.Patch("/:id", prospectSourceH.Update)
 	prospectSources.Delete("/:id", prospectSourceH.Delete)
 
-	// Company industry / size — Admin-only config, replacing the previously
-	// frontend-only hardcoded INDUSTRY_OPTIONS list (and Size's total lack of
-	// one).
+	// Company industry / size — writes are Admin-only, replacing the
+	// previously frontend-only hardcoded INDUSTRY_OPTIONS list (and Size's
+	// total lack of one). List open to every role, same 2026-09-09 fix:
+	// pages/crm/companies/create.vue|[id].vue|index.vue (not Admin-gated,
+	// reachable by every role with Company access) fetch these for their
+	// industry/size dropdowns.
+	authed.Get("/admin/industries", industryOptionH.List)
 	industries := authed.Group("/admin/industries", adminOnly)
-	industries.Get("/", industryOptionH.List)
 	industries.Post("/", industryOptionH.Create)
 	industries.Patch("/:id", industryOptionH.Update)
 	industries.Delete("/:id", industryOptionH.Delete)
 
+	authed.Get("/admin/company-sizes", companySizeOptionH.List)
 	companySizes := authed.Group("/admin/company-sizes", adminOnly)
-	companySizes.Get("/", companySizeOptionH.List)
 	companySizes.Post("/", companySizeOptionH.Create)
 	companySizes.Patch("/:id", companySizeOptionH.Update)
 	companySizes.Delete("/:id", companySizeOptionH.Delete)
 
+	authed.Get("/admin/revenue-sizes", revenueSizeOptionH.List)
 	revenueSizes := authed.Group("/admin/revenue-sizes", adminOnly)
-	revenueSizes.Get("/", revenueSizeOptionH.List)
 	revenueSizes.Post("/", revenueSizeOptionH.Create)
 	revenueSizes.Patch("/:id", revenueSizeOptionH.Update)
 	revenueSizes.Delete("/:id", revenueSizeOptionH.Delete)
 
-	// Contact job titles / Product categories — Admin-only config, same
-	// treatment as Industry/Size (previously pure free text with no
-	// controlled list at all).
+	// Contact job titles — writes are Admin-only, same treatment as
+	// Industry/Size (previously pure free text with no controlled list at
+	// all). List open to every role, same 2026-09-09 fix:
+	// pages/crm/contacts/create.vue|[id].vue fetch this for their job-title
+	// dropdown.
+	authed.Get("/admin/job-titles", jobTitleOptionH.List)
 	jobTitles := authed.Group("/admin/job-titles", adminOnly)
-	jobTitles.Get("/", jobTitleOptionH.List)
 	jobTitles.Post("/", jobTitleOptionH.Create)
 	jobTitles.Patch("/:id", jobTitleOptionH.Update)
 	jobTitles.Delete("/:id", jobTitleOptionH.Delete)
 
+	// List open to every authenticated role (not just Admin) — same reasoning
+	// and same 2026-09-09 fix as pipeline-stages/lead-sources above:
+	// pages/crm/projects/index.vue's Products tab (reachable by every role,
+	// not Admin-gated) fetches this for its category dropdown, so a
+	// non-Admin role — Production in particular, just landing on this page
+	// via the Dashboard's own "Projects Needing a Status Update" deep link —
+	// got a silent 403 here, which the app's axios interceptor turns into a
+	// hard redirect away from the very page it was trying to reach.
+	authed.Get("/admin/product-categories", productCategoryOptionH.List)
 	productCategories := authed.Group("/admin/product-categories", adminOnly)
-	productCategories.Get("/", productCategoryOptionH.List)
 	productCategories.Post("/", productCategoryOptionH.Create)
 	productCategories.Patch("/:id", productCategoryOptionH.Update)
 	productCategories.Delete("/:id", productCategoryOptionH.Delete)
