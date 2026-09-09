@@ -67,4 +67,7 @@ jobs:
       # and known-vulnerable dependency versions actually reachable from our
       # code (e.g. the fasthttp double-encoded-path auth bypass fixed by
       # bumping to v1.70.0+ in go.mod) — go vet/golangci-lint don't cover this.
-      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      # Pinned (not @latest): govulncheck v1.8.0 requires go>=1.26, ahead of
+      # the go-version pinned above — v1.7.0 is the newest release that still
+      # only requires go1.25.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
