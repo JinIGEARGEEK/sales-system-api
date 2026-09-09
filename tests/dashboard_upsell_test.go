@@ -14,24 +14,27 @@ import (
 )
 
 // TestDashboardSummary_UpsellOpportunities guards the upsell_opportunities
-// widget: always exactly 3 tier groups (even when empty), bucketed by
-// last_activity_at (company-scoped Activities only, never contacted counts
-// as the most stale tier), and excluding companies contacted within the last
-// 60 days or archived companies.
+// widget: a flat, most-stale-first list of active Companies whose
+// last_activity_at (company-scoped Activities only) is NULL (never
+// contacted) or at least ?upsell_min_stale_days old (default 60 when
+// omitted), excluding archived companies. **Updated 2026-09-09**: this used
+// to always return exactly 3 fixed 60/90/120-day tier groups; replaced by a
+// single minStaleDays threshold now that the widget shows one filtered list
+// instead of three fixed columns (the frontend's own filter dropdown).
 func TestDashboardSummary_UpsellOpportunities(t *testing.T) {
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 
 	neverContacted := seedCompany(t, db)
 
-	tier1Company := seedCompany(t, db)
-	seedCompanyActivity(t, db, tier1Company.ID, time.Now().AddDate(0, 0, -70))
+	stale70 := seedCompany(t, db)
+	seedCompanyActivity(t, db, stale70.ID, time.Now().AddDate(0, 0, -70))
 
-	tier2Company := seedCompany(t, db)
-	seedCompanyActivity(t, db, tier2Company.ID, time.Now().AddDate(0, 0, -100))
+	stale100 := seedCompany(t, db)
+	seedCompanyActivity(t, db, stale100.ID, time.Now().AddDate(0, 0, -100))
 
-	tier3Company := seedCompany(t, db)
-	seedCompanyActivity(t, db, tier3Company.ID, time.Now().AddDate(0, 0, -150))
+	stale150 := seedCompany(t, db)
+	seedCompanyActivity(t, db, stale150.ID, time.Now().AddDate(0, 0, -150))
 
 	recentCompany := seedCompany(t, db)
 	seedCompanyActivity(t, db, recentCompany.ID, time.Now().AddDate(0, 0, -5))
@@ -39,43 +42,50 @@ func TestDashboardSummary_UpsellOpportunities(t *testing.T) {
 	archivedStale := seedCompany(t, db)
 	require.NoError(t, db.Model(&models.Company{}).Where("id = ?", archivedStale.ID).Update("status", models.StatusArchived).Error)
 
-	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/dashboard/summary", nil, admin.ID, admin.Role)
-	var out struct {
-		Data struct {
-			UpsellOpportunities []struct {
-				Tier      string `json:"tier"`
-				Companies []struct {
-					ID   uint   `json:"id"`
-					Name string `json:"name"`
-				} `json:"companies"`
-			} `json:"upsell_opportunities"`
-		} `json:"data"`
+	type upsellCompany struct {
+		ID uint `json:"id"`
 	}
-	resp := doJSON(t, app, req, &out)
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	require.Len(t, out.Data.UpsellOpportunities, 3, "must always report exactly 3 tier groups")
-
-	byTier := map[string][]uint{}
-	for _, group := range out.Data.UpsellOpportunities {
-		ids := make([]uint, len(group.Companies))
-		for i, c := range group.Companies {
+	fetchIDs := func(query string) []uint {
+		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/dashboard/summary"+query, nil, admin.ID, admin.Role)
+		var out struct {
+			Data struct {
+				UpsellOpportunities []upsellCompany `json:"upsell_opportunities"`
+			} `json:"data"`
+		}
+		resp := doJSON(t, app, req, &out)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		ids := make([]uint, len(out.Data.UpsellOpportunities))
+		for i, c := range out.Data.UpsellOpportunities {
 			ids[i] = c.ID
 		}
-		byTier[group.Tier] = ids
+		return ids
 	}
-	assert.ElementsMatch(t, []string{"tier1", "tier2", "tier3"}, []string{
-		out.Data.UpsellOpportunities[0].Tier, out.Data.UpsellOpportunities[1].Tier, out.Data.UpsellOpportunities[2].Tier,
+
+	t.Run("default (no param) matches the old 60-day tier1 cutoff", func(t *testing.T) {
+		ids := fetchIDs("")
+		assert.Contains(t, ids, stale70.ID)
+		assert.Contains(t, ids, stale100.ID)
+		assert.Contains(t, ids, stale150.ID)
+		assert.Contains(t, ids, neverContacted.ID, "never-contacted must always qualify")
+		assert.NotContains(t, ids, recentCompany.ID)
+		assert.NotContains(t, ids, archivedStale.ID)
 	})
 
-	assert.Contains(t, byTier["tier1"], tier1Company.ID)
-	assert.Contains(t, byTier["tier2"], tier2Company.ID)
-	assert.Contains(t, byTier["tier3"], tier3Company.ID)
-	assert.Contains(t, byTier["tier3"], neverContacted.ID, "never-contacted must land in the most-stale tier")
+	t.Run("upsell_min_stale_days=90 excludes the 70-day-stale company", func(t *testing.T) {
+		ids := fetchIDs("?upsell_min_stale_days=90")
+		assert.NotContains(t, ids, stale70.ID)
+		assert.Contains(t, ids, stale100.ID)
+		assert.Contains(t, ids, stale150.ID)
+		assert.Contains(t, ids, neverContacted.ID)
+	})
 
-	for _, ids := range byTier {
-		assert.NotContains(t, ids, recentCompany.ID, "recently-contacted company must not appear in any tier")
-		assert.NotContains(t, ids, archivedStale.ID, "archived company must not appear in any tier")
-	}
+	t.Run("upsell_min_stale_days=120 only the 150-day-stale and never-contacted qualify", func(t *testing.T) {
+		ids := fetchIDs("?upsell_min_stale_days=120")
+		assert.NotContains(t, ids, stale70.ID)
+		assert.NotContains(t, ids, stale100.ID)
+		assert.Contains(t, ids, stale150.ID)
+		assert.Contains(t, ids, neverContacted.ID)
+	})
 }
 
 // seedCompanyActivity creates a company-scoped Activity and backdates its
