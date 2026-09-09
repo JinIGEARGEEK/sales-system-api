@@ -121,6 +121,9 @@ func (h *ProspectHandler) Create(c *fiber.Ctx) error {
 	if err := rejectManualConvertedStatus(c, form.Status, ""); err != nil {
 		return nil
 	}
+	if !utils.IsActiveProspectStage(h.DB, string(form.Status)) {
+		return utils.ValidationError(c, "status is not a valid active prospect stage", map[string][]string{"status": {"invalid"}})
+	}
 	if !models.IsValidBusinessUnit(form.BusinessUnit) {
 		return utils.ValidationError(c, "business_unit must be Project or Product", map[string][]string{"business_unit": {"invalid"}})
 	}
@@ -174,6 +177,9 @@ func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 	}
 	if err := rejectManualConvertedStatus(c, form.Status, prospect.Status); err != nil {
 		return nil
+	}
+	if !utils.IsActiveProspectStage(h.DB, string(form.Status)) {
+		return utils.ValidationError(c, "status is not a valid active prospect stage", map[string][]string{"status": {"invalid"}})
 	}
 	if !models.IsValidBusinessUnit(form.BusinessUnit) {
 		return utils.ValidationError(c, "business_unit must be Project or Product", map[string][]string{"business_unit": {"invalid"}})

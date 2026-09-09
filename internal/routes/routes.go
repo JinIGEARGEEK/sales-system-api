@@ -65,6 +65,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	pipelineStageH := handlers.NewPipelineStageHandler(db)
 	leadSourceH := handlers.NewLeadSourceHandler(db)
 	prospectSourceH := handlers.NewProspectSourceHandler(db)
+	prospectStageH := handlers.NewProspectStageHandler(db)
 	industryOptionH := handlers.NewIndustryOptionHandler(db)
 	companySizeOptionH := handlers.NewCompanySizeOptionHandler(db)
 	revenueSizeOptionH := handlers.NewRevenueSizeOptionHandler(db)
@@ -393,6 +394,17 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	prospectSources.Post("/", prospectSourceH.Create)
 	prospectSources.Patch("/:id", prospectSourceH.Update)
 	prospectSources.Delete("/:id", prospectSourceH.Delete)
+
+	// Prospect stages — Marketing's own funnel stage list, replacing the
+	// previously hardcoded ProspectStatus working-stage enum ("Converted" is
+	// excluded from this table, see ProspectStage's own doc). Same
+	// list-open/writes-admin-only shape as every other pipeline-config
+	// resource above.
+	authed.Get("/admin/prospect-stages", prospectStageH.List)
+	prospectStages := authed.Group("/admin/prospect-stages", adminOnly)
+	prospectStages.Post("/", prospectStageH.Create)
+	prospectStages.Patch("/:id", prospectStageH.Update)
+	prospectStages.Delete("/:id", prospectStageH.Delete)
 
 	// Company industry / size — writes are Admin-only, replacing the
 	// previously frontend-only hardcoded INDUSTRY_OPTIONS list (and Size's

@@ -43,6 +43,21 @@ func IsActiveProspectSource(db *gorm.DB, name string) bool {
 	return count > 0
 }
 
+// IsActiveProspectStage reports whether name matches an active ProspectStage
+// row — the DB-backed replacement for the old hardcoded ProspectStatus
+// working-stage whitelist. Empty name is allowed through, same as the other
+// option checks here, and "Converted" is always allowed through too since
+// it's a system-set terminal status (see ProspectStage's own doc) that never
+// gets a row in this table.
+func IsActiveProspectStage(db *gorm.DB, name string) bool {
+	if name == "" || name == string(models.ProspectStatusConverted) {
+		return true
+	}
+	var count int64
+	db.Model(&models.ProspectStage{}).Where("name = ? AND is_active = ?", name, true).Count(&count)
+	return count > 0
+}
+
 // IsActiveIndustry reports whether name matches an active IndustryOption
 // row — the DB-backed replacement for the old frontend-only INDUSTRY_OPTIONS
 // whitelist. Empty name is allowed through (Industry has no NOT NULL

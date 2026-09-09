@@ -214,6 +214,15 @@ func seedPipelineConfig(db *gorm.DB) {
 		log.Printf("Seeded %d default prospect sources", len(models.DefaultProspectSourceOptions))
 	}
 
+	var prospectStageCount int64
+	db.Model(&models.ProspectStage{}).Count(&prospectStageCount)
+	if prospectStageCount == 0 {
+		if err := db.Create(&models.DefaultProspectStages).Error; err != nil {
+			log.Fatalf("failed to seed default prospect stages: %v", err)
+		}
+		log.Printf("Seeded %d default prospect stages", len(models.DefaultProspectStages))
+	}
+
 	var industryCount int64
 	db.Model(&models.IndustryOption{}).Count(&industryCount)
 	if industryCount == 0 {

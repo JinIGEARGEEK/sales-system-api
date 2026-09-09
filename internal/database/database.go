@@ -83,6 +83,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.PipelineStage{},
 		&models.LeadSourceOption{},
 		&models.ProspectSourceOption{},
+		&models.ProspectStage{},
 		&models.IndustryOption{},
 		&models.CompanySizeOption{},
 		&models.RevenueSizeOption{},

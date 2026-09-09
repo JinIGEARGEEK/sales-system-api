@@ -192,6 +192,14 @@ func seedPipelineConfig(db *gorm.DB) {
 			panic(fmt.Sprintf("testutil: seed prospect sources: %v", err))
 		}
 	}
+
+	var prospectStageCount int64
+	db.Model(&models.ProspectStage{}).Count(&prospectStageCount)
+	if prospectStageCount == 0 {
+		if err := db.Create(&models.DefaultProspectStages).Error; err != nil {
+			panic(fmt.Sprintf("testutil: seed prospect stages: %v", err))
+		}
+	}
 }
 
 // TruncateAll wipes every table between tests, restarting identity sequences
