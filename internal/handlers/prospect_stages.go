@@ -33,9 +33,10 @@ func (h *ProspectStageHandler) List(c *fiber.Ctx) error {
 }
 
 type prospectStageForm struct {
-	Name      string `json:"name"`
-	SortOrder int    `json:"sort_order"`
-	IsActive  *bool  `json:"is_active"`
+	Name                string `json:"name"`
+	SortOrder           int    `json:"sort_order"`
+	IsActive            *bool  `json:"is_active"`
+	IsDisqualifiedStage bool   `json:"is_disqualified_stage"`
 }
 
 // Create — POST /admin/prospect-stages.
@@ -52,7 +53,11 @@ func (h *ProspectStageHandler) Create(c *fiber.Ctx) error {
 	}
 
 	actorID := middleware.CurrentUserID(c)
-	stage := models.ProspectStage{Name: form.Name, SortOrder: form.SortOrder, IsActive: form.IsActive == nil || *form.IsActive}
+	stage := models.ProspectStage{
+		Name: form.Name, SortOrder: form.SortOrder,
+		IsActive: form.IsActive == nil || *form.IsActive,
+		IsDisqualifiedStage: form.IsDisqualifiedStage,
+	}
 	stage.CreatedBy = &actorID
 	stage.UpdatedBy = &actorID
 	if err := h.DB.Create(&stage).Error; err != nil {
@@ -80,6 +85,7 @@ func (h *ProspectStageHandler) Update(c *fiber.Ctx) error {
 	}
 
 	stage.Name, stage.SortOrder = form.Name, form.SortOrder
+	stage.IsDisqualifiedStage = form.IsDisqualifiedStage
 	if form.IsActive != nil {
 		stage.IsActive = *form.IsActive
 	}

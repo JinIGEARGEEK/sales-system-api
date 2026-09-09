@@ -266,9 +266,27 @@ func checkContractStuckRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 // Prospect.Status changes aren't separately audited the way Deal.Stage is —
 // UpdatedAt is the closest available "last touched" signal (any field edit
 // bumps it, not just a status change).
+//
+// **Updated 2026-09-09**: the "disqualified" exclusion resolves the
+// configured ProspectStage row's IsDisqualifiedStage flag instead of the
+// hardcoded models.ProspectStatusDisqualified literal, since Prospect
+// stages became Admin-configurable/renamable the same day (see
+// ProspectStage's own doc) — an Admin renaming "Disqualified" would
+// otherwise leave genuinely-disqualified Prospects incorrectly eligible for
+// this rule. Falls back to the literal name if no row is flagged (e.g.
+// right after a migration, before the seed runs), same fallback shape as
+// utils.IsWonStage/IsLostStage use for Deal stages. "Converted" stays a
+// literal check — it's deliberately never a ProspectStage row (see
+// ProspectStatusConverted's own doc).
 func checkProspectStaleRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule) {
+	disqualifiedStageName := string(models.ProspectStatusDisqualified)
+	var disqualifiedStage models.ProspectStage
+	if err := db.Where("is_disqualified_stage = ?", true).First(&disqualifiedStage).Error; err == nil {
+		disqualifiedStageName = disqualifiedStage.Name
+	}
+
 	var prospects []models.Prospect
-	if err := db.Where("status NOT IN ?", []models.ProspectStatus{models.ProspectStatusConverted, models.ProspectStatusDisqualified}).
+	if err := db.Where("status NOT IN ?", []string{string(models.ProspectStatusConverted), disqualifiedStageName}).
 		Find(&prospects).Error; err != nil {
 		log.Printf("notifier: failed to query prospects for rule %d: %v", rule.ID, err)
 		return

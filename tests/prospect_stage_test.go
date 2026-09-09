@@ -37,6 +37,16 @@ func TestProspectStages_SeededDefaults(t *testing.T) {
 	assert.Contains(t, names, "New")
 	assert.Contains(t, names, "Engaging")
 	assert.NotContains(t, names, "Converted", `"Converted" is a reserved, system-set stage and must never appear in this table`)
+
+	// The seeded "Disqualified" row must carry IsDisqualifiedStage — frontend
+	// code resolves the disqualified-equivalent stage through this flag
+	// (mirrors PipelineStage.IsWonStage/IsLostStage) instead of hardcoding the
+	// literal name, since an Admin can rename it like any other stage.
+	for _, s := range out.Data {
+		if s.Name == "Disqualified" {
+			assert.True(t, s.IsDisqualifiedStage)
+		}
+	}
 }
 
 // TestProspectStages_ListOpenWritesAdminOnly guards the route-level
