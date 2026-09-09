@@ -334,10 +334,13 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 
 	// Audit log — read-only (NFR-007). Full/unrestricted browsing (any
 	// entity_type, actor_id, date range) stays Admin-only; List itself
-	// further restricts non-Admin callers to just Deal stage-change history
-	// (entity_type=deal, action=stage_changed) — see its own comment — so
-	// Sales Rep/Sales Manager can pull that in as read-only context on the
-	// Activities pages without gaining the Admin audit viewer's full reach.
+	// further restricts non-Admin callers to a fixed slice of Deal history
+	// (entity_type=deal) — see its own comment — so Sales Rep/Sales Manager
+	// can pull that in as read-only context on the Activities/Deal-detail
+	// pages without gaining the Admin audit viewer's full reach. Sales
+	// Manager's slice is wider than Sales Rep's (also includes
+	// reassigned/bulk_reassigned, for the Deal detail page's Owner History
+	// card — FR-CRM-025/M-8).
 	authed.Get("/audit-log", middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager), auditLogH.List)
 
 	// Pipeline stages / lead sources — Admin-only config, replacing the

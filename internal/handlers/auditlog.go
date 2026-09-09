@@ -21,21 +21,24 @@ func NewAuditLogHandler(db *gorm.DB) *AuditLogHandler {
 // routes.go). Append-only resource, no write handlers exist for it at all —
 // NFR-007.
 //
-// Non-Admin callers are hard-restricted here (not just route-gated) to Deal
-// stage-change history only — entity_type=deal, action=stage_changed,
-// ignoring any entity_type/actor_id/action they pass — so a Sales Rep/
-// Manager can pull a Deal's pipeline history into the Activities pages as
-// read-only context (the frontend request that motivated opening this route
-// up at all) without gaining the Admin audit viewer's full reach into other
-// entity types (settings, project, customer_product), other actions on a
-// Deal (reassigned/bulk_reassigned — deliberately kept Admin-only, same as
-// the Deal detail page's own "Owner History" card), or browsing by actor_id.
-// entity_id/date_from/date_to still apply for non-Admins so a specific
-// Deal's history (or a date-bounded slice of all Deals') can be requested.
+// Non-Admin callers are hard-restricted here (not just route-gated) to a
+// fixed slice of Deal history — entity_type=deal — ignoring any
+// entity_type/actor_id they pass, so a Sales Rep/Manager can pull a Deal's
+// history into the Activities/Deal-detail pages as read-only context without
+// gaining the Admin audit viewer's full reach into other entity types
+// (settings, project, customer_product) or browsing by actor_id. Which
+// actions within that slice differ by role: Sales Rep gets stage_changed
+// only; Sales Manager also gets reassigned/bulk_reassigned (the Deal detail
+// page's "Owner History" card, FR-CRM-025/M-8 — a Sales Manager reassigning
+// work needs to see who held it before, same as they're the one doing the
+// reassigning in the first place). entity_id/date_from/date_to still apply
+// for non-Admins so a specific Deal's history (or a date-bounded slice of
+// all Deals') can be requested.
 func (h *AuditLogHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := h.DB.Model(&models.AuditLogEntry{})
 	isAdmin := middleware.CurrentRole(c) == models.RoleAdmin
+	isSalesManager := middleware.CurrentRole(c) == models.RoleSalesManager
 
 	if isAdmin {
 		if v := c.Query("entity_type"); v != "" {
@@ -44,6 +47,8 @@ func (h *AuditLogHandler) List(c *fiber.Ctx) error {
 		if v := c.Query("actor_id"); v != "" {
 			query = query.Where("actor_id = ?", v)
 		}
+	} else if isSalesManager {
+		query = query.Where("entity_type = ? AND action IN ?", "deal", []string{"stage_changed", "reassigned", "bulk_reassigned"})
 	} else {
 		query = query.Where("entity_type = ? AND action = ?", "deal", "stage_changed")
 	}

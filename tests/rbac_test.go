@@ -127,11 +127,14 @@ func TestRBAC_TagsWritesAreRestricted(t *testing.T) {
 
 // TestRBAC_AuditLogRestrictedForNonAdmin covers /audit-log's 2026-09-08
 // change: the route itself opened up from Admin-only to Admin/Sales Rep/
-// Sales Manager (so Deal stage-change history can surface in the Activities
+// Sales Manager (so Deal history can surface in the Activities/Deal-detail
 // pages as read-only context), but List() then hard-restricts what a
-// non-Admin caller actually gets back — entity_type=deal, action=stage_changed
-// only, regardless of what they ask for — so this needs its own regression
-// guard beyond the plain route-gate check in TestRBAC_RouteGates above.
+// non-Admin caller actually gets back to entity_type=deal, regardless of what
+// entity_type/actor_id they ask for — with a further split by role: Sales Rep
+// gets stage_changed only, Sales Manager also gets reassigned/bulk_reassigned
+// (the Owner History card, FR-CRM-025/M-8) — so this needs its own
+// regression guard beyond the plain route-gate check in TestRBAC_RouteGates
+// above.
 func TestRBAC_AuditLogRestrictedForNonAdmin(t *testing.T) {
 	app, db := testutil.App(t)
 	rep := testutil.CreateUser(t, db, models.RoleSalesRep)
@@ -181,13 +184,14 @@ func TestRBAC_AuditLogRestrictedForNonAdmin(t *testing.T) {
 		assert.Equal(t, stageChange.ID, out.Data[0].ID)
 	})
 
-	t.Run("sales manager asking for settings/reassigned still only gets the stage-change entry", func(t *testing.T) {
+	t.Run("sales manager asking for settings still gets both deal entries, never the settings one", func(t *testing.T) {
 		var out listResponse
 		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/audit-log?entity_type=settings&actor_id="+itoa(admin.ID), nil, manager.ID, manager.Role)
 		resp := doJSON(t, app, req, &out)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
-		require.Len(t, out.Data, 1, "entity_type/actor_id from a non-Admin caller must be ignored, not honored")
-		assert.Equal(t, "stage_changed", out.Data[0].Action)
+		require.Len(t, out.Data, 2, "entity_type/actor_id from a non-Admin caller must be ignored, not honored")
+		actions := []string{out.Data[0].Action, out.Data[1].Action}
+		assert.ElementsMatch(t, []string{"stage_changed", "reassigned"}, actions)
 	})
 
 	t.Run("admin sees all three entries", func(t *testing.T) {
