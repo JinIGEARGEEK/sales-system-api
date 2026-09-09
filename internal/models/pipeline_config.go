@@ -47,6 +47,30 @@ type ProspectSourceOption struct {
 
 func (ProspectSourceOption) TableName() string { return "prospect_source_options" }
 
+// ProspectStage is an Admin-configurable Prospect funnel stage — replaces
+// the previously hardcoded ProspectStatus enum as the source of truth for
+// the *working* stages (New/Engaging/Nurturing/Disqualified by default, plus
+// whatever an Admin adds/renames/reorders). "Converted" is deliberately NOT
+// a row here: it's a system-set terminal status (see ProspectStatus's own
+// doc and ProspectHandler.Convert), never chosen by a user, so it stays a
+// hardcoded literal outside this table — same reason it isn't a Kanban drop
+// target on the frontend today.
+//
+// IsDisqualifiedStage mirrors PipelineStage's IsWonStage/IsLostStage —
+// frontend code (the "Convert to Lead" button/action's visibility, the
+// status badge color) needs to know which configured stage means
+// "disqualified" without hardcoding the literal name "Disqualified", since
+// an Admin can rename it just like any other stage.
+type ProspectStage struct {
+	AuditedModel
+	Name                string `gorm:"not null;uniqueIndex" json:"name"`
+	SortOrder           int    `gorm:"not null;default:0;index" json:"sort_order"`
+	IsActive            bool   `gorm:"not null;default:true;index" json:"is_active"`
+	IsDisqualifiedStage bool   `gorm:"not null;default:false" json:"is_disqualified_stage"`
+}
+
+func (ProspectStage) TableName() string { return "prospect_stages" }
+
 // DefaultPipelineStages is the hardcoded stage list being retired — seeded
 // verbatim (same order, same names) on first run so existing Deals validate
 // unchanged. Kept here (not in database package) so handlers/seed code share
@@ -83,4 +107,15 @@ var DefaultProspectSourceOptions = []ProspectSourceOption{
 	{Name: "Content/SEO", IsActive: true},
 	{Name: "Cold Outreach", IsActive: true},
 	{Name: "Marketing Campaign", IsActive: true},
+}
+
+// DefaultProspectStages is the hardcoded ProspectStatus working-stage list
+// being retired — seeded verbatim (same order, same names) on first run so
+// existing Prospect rows validate unchanged. "Converted" is excluded on
+// purpose (see ProspectStage's own doc).
+var DefaultProspectStages = []ProspectStage{
+	{Name: string(ProspectStatusNew), SortOrder: 0, IsActive: true},
+	{Name: string(ProspectStatusEngaging), SortOrder: 1, IsActive: true},
+	{Name: string(ProspectStatusNurturing), SortOrder: 2, IsActive: true},
+	{Name: string(ProspectStatusDisqualified), SortOrder: 3, IsActive: true, IsDisqualifiedStage: true},
 }

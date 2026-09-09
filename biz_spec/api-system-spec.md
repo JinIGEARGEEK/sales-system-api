@@ -3,8 +3,8 @@
 **Companion document to:** `feature-spec.md` (business requirements), `user-story.md` (role acceptance criteria), `design-system.md` (frontend conventions)
 **Purpose:** The contract for this backend API. This document was originally written when the frontend (`sales-system`) was still 100% client-side mock data with no real backend at all — that's no longer the state of either repo (20+ merged PRs, a working Go/Fiber API, and a frontend wired up against it resource by resource). It's kept up to date as a living reference for the current contract rather than as a forward-looking build spec.
 **Audience:** Backend/frontend engineers (and AI coding agents) working against this API.
-**Version:** 1.4 (Sales Rep gains Prospects + restricted Deal-history audit-log access — see `CHANGELOG.md`)
-**Date:** 2026-09-08
+**Version:** 1.5 (Admin config-list reads opened to every role, Lead mutation RBAC fixed, admin-configurable Prospect stages, Deal reassignment history for Sales Manager — see `CHANGELOG.md`)
+**Date:** 2026-09-09
 
 > **Status legend** (mirrors `feature-spec.md`'s legend, applied per endpoint):
 > 🟢 **Required now** — replaces an existing mock Pinia store; needed to take this frontend off mock data as-is.
@@ -22,7 +22,7 @@
 |---|---|
 | **แอดมิน (Admin)** | เข้าถึงได้ทุก Resource รวมถึง Users, Tags และ (เมื่อสร้างแล้ว) Product Catalog / การตั้งค่า Pipeline |
 | **เซลล์ / ผู้ดูแลลูกค้า (Sales Rep / Account Manager)** | CRUD เต็มรูปแบบบน Leads/Companies/Contacts/Deals/Activities/Tasks/Quotes/Payments/Prospects ที่ตนรับผิดชอบหรือยังไม่มีผู้รับผิดชอบ อ่านข้อมูลของเพื่อนร่วมทีมได้ ตั้งแต่ 2026-09-08 อ่าน `/audit-log` ได้เพิ่มเติมแต่ถูกจำกัดเฉพาะประวัติการเปลี่ยน Stage ของ Deal เท่านั้น (§8.5) |
-| **หัวหน้าทีมขาย (Sales Manager)** | เหมือนเซลล์ แต่เพิ่มสิทธิ์อ่านข้อมูลของทุกคนในทีมและทุก endpoint ใน `/reports/*` รวมถึงการโยกย้าย Deal และ `/audit-log` ที่ถูกจำกัดแบบเดียวกับ Sales Rep (§8.5) |
+| **หัวหน้าทีมขาย (Sales Manager)** | เหมือนเซลล์ แต่เพิ่มสิทธิ์อ่านข้อมูลของทุกคนในทีมและทุก endpoint ใน `/reports/*` รวมถึงการโยกย้าย Deal และ `/audit-log` ที่ถูกจำกัดเฉพาะประวัติของ Deal เท่านั้น แต่กว้างกว่า Sales Rep เล็กน้อย — เห็นทั้งการเปลี่ยน Stage และประวัติการโยกย้าย (`reassigned`/`bulk_reassigned`) ด้วย (§8.5) |
 | **ทีม Production (สิทธิ์จำกัด)** | เขียนได้เฉพาะ `status` และ `production_reference` ของ `Project` เท่านั้น (§8.3) — ไม่มีสิทธิ์เข้าถึง Resource อื่นใดเลย |
 | **ทีม Marketing** | เพิ่มเมื่อ 2026-09-01 สำหรับ Prospect (§3a) — CRUD เต็มรูปแบบบน Prospects ที่ตนรับผิดชอบหรือยังไม่มีผู้รับผิดชอบ ไม่มีสิทธิ์เข้าถึง Leads/Deals หรือ Resource อื่น |
 
@@ -141,7 +141,7 @@ Per `feature-spec.md` §2.2 / `user-story.md`. `FR-CRM-080` (RBAC enforcement) i
 |---|---|
 | **Admin** | Full access to every resource, including Users, Tags, and (once built) Product Catalog / pipeline config |
 | **Sales Rep / Account Manager** | Full CRUD on Leads/Companies/Contacts/Deals/Activities/Tasks/Quotes/Payments they're assigned to or that are unassigned; read access to teammates' records. Also full read+write on Prospects (added 2026-09-08 — see Marketing row below) and, since the same date, read access to `/audit-log` restricted to Deal stage-change history only (§8.5). |
-| **Sales Manager** | Same as Sales Rep, plus read access to all reps' data and all `/reports/*` endpoints, plus deal reassignment |
+| **Sales Manager** | Same as Sales Rep, plus read access to all reps' data and all `/reports/*` endpoints, plus deal reassignment. Its own `/audit-log` restriction is a superset of Sales Rep's — Deal `stage_changed` plus `reassigned`/`bulk_reassigned` (widened 2026-09-09, §8.5) — since a Sales Manager is the one actually performing reassignments. |
 | **Production (limited)** | Write access to *only* `status` and `production_reference` on `Project` records (§8.3) — no access to any other resource |
 | **Marketing** | Added 2026-09-01 for the Prospect funnel (§3a) — full CRUD on Prospects they're assigned to or that are unassigned, same ownership model as Sales Rep has for Leads. No access to Leads/Deals/any other resource; Admin and Sales Manager retain oversight access to `/prospects` alongside Marketing, and since 2026-09-08 Sales Rep gets full read+write access too (they work Prospects ahead of the Lead hand-off the same way they work Leads/Deals). Not part of the original `feature-spec.md` §2.2 role table — see `internal/models/user.go`'s `RoleMarketing` doc comment. |
 
@@ -236,14 +236,14 @@ interface Lead {
 | `GET` | `/leads` | 🟢 | Filters: `status`, `source`, `assigned_to` (`unassigned` for `assigned_to IS NULL`), `company_id` (exact match), `exclude_converted=true`, `search` (name/email/**the joined Company's name**), `sort` (including `sort=company_name`, resolved via a join since it isn't a real column). Backs `pages/crm/leads/index.vue`. |
 | `POST` | `/leads` | 🟢 | Create. `email`, if supplied, must be a syntactically valid address (not domain-restricted like staff `User.email` — a Lead's email belongs to an external contact) — `422` otherwise. Empty is fine; the field stays optional. `source` must be an active `LeadSourceOption` (§8.8). If `assigned_to` is omitted, the backend auto-assigns to whichever active Sales Rep currently has the fewest open Leads+Deals (round-robin by load). `classification` accepts only an explicit `"sql"` as a manual override — any other value defers to the auto-computed `score`/`classification` result. |
 | `GET` | `/leads/:id` | 🟢 | Single lead. |
-| `PUT` | `/leads/:id` | 🟢 | Update (including status transitions). Same `email`/`source` validation as Create. Omitting `classification` leaves an existing manual `"sql"` override in place rather than letting it fall back to the auto-computed value. |
+| `PUT` | `/leads/:id` | 🟢 | Admin/Sales Rep/Sales Manager only (added 2026-09-09 — previously any authenticated role, including Marketing/Production, could mutate a Lead they have no business touching; `GET` stays open for Marketing's read-only "View Lead" access from a converted Prospect). Update (including status transitions). Same `email`/`source` validation as Create. Omitting `classification` leaves an existing manual `"sql"` override in place rather than letting it fall back to the auto-computed value. |
 | `DELETE` | `/leads/:id` | 🟢 | Soft-delete (§1.6) — recoverable via Trash/Restore below. |
 | `GET` | `/leads/trash` | 🟢 | Sales Manager/Admin only. List soft-deleted leads, paginated like `GET /leads`. |
 | `POST` | `/leads/:id/restore` | 🟢 | Sales Manager/Admin only. Clears `deleted_at`/`deleted_by`. |
 | `PATCH` | `/leads/bulk-reassign` | 🟢 | Sales Manager/Admin only. Body: `{ ids: number[], assigned_to: number \| null }`. |
 | `PATCH` | `/leads/bulk-tag` | 🟢 | Sales Manager/Admin only. Body: `{ ids: number[], tags: string[], mode: 'set' \| 'add' }` — `"set"` replaces each Lead's tags outright, `"add"` merges into the existing set. |
 | `PATCH` | `/leads/bulk-archive` | 🟢 | Sales Manager/Admin only. Soft-deletes every listed Lead in one transaction (same effect as Delete, batched). |
-| `POST` | `/leads/:id/convert` | 🟢 | Converts a Qualified Lead into a Deal (and Company/Contact if new) — `FR-CRM-004`. Body: `{ company_id?: number, contact_id?: number, deal: { title, value, stage, channel, ... } }`. Company resolution order: an explicit `company_id` in the request always wins; otherwise the Lead's own `company_id` is reused (falling back to creating a fresh Company only if that Company has since been soft-deleted); otherwise (a Lead with no Company at all) a new blank Company is created. `contact_id` omitted creates one from the Lead's `name`/`email`/`phone`. Any Attachments on the Lead are carried over to the new Deal. Response: `{ data: { deal: Deal, company: Company, contact: Contact } }`. |
+| `POST` | `/leads/:id/convert` | 🟢 | Admin/Sales Rep/Sales Manager only, same 2026-09-09 fix as `PUT` above. Converts a Qualified Lead into a Deal (and Company/Contact if new) — `FR-CRM-004`. Body: `{ company_id?: number, contact_id?: number, deal: { title, value, stage, channel, ... } }`. Company resolution order: an explicit `company_id` in the request always wins; otherwise the Lead's own `company_id` is reused (falling back to creating a fresh Company only if that Company has since been soft-deleted); otherwise (a Lead with no Company at all) a new blank Company is created. `contact_id` omitted creates one from the Lead's `name`/`email`/`phone`. Any Attachments on the Lead are carried over to the new Deal. Response: `{ data: { deal: Deal, company: Company, contact: Contact } }`. |
 
 ---
 
@@ -279,7 +279,7 @@ interface Prospect {
 }
 ```
 
-> `ProspectStatus` is a **fixed** enum (not Admin-configurable via an option list, unlike `PipelineStage`) — mirrors how `LeadStatus` is fixed too. `"Converted"` is set **only** by `POST /prospects/:id/convert` below — Create/Update reject a client-supplied `status: "Converted"` with `422` unless the Prospect is already Converted and the request is just re-submitting that same value unchanged (so a generic "edit this record" form that resends every field as-is isn't blocked).
+> `ProspectStatus`'s *working* values (`New/Engaging/Nurturing/Disqualified`) are Admin-configurable via `ProspectStage` (§8.8, added 2026-09-09 — mirrors how `PipelineStage` backs `DealStage`) rather than a fixed Go enum: Create/Update validate `status` against the active `ProspectStage` rows, same as Deal `stage` validates against active `PipelineStage` rows. `"Converted"` stays a hardcoded literal outside that table, though — it's set **only** by `POST /prospects/:id/convert` below, never a stage an Admin can rename/reorder/deactivate. Create/Update reject a client-supplied `status: "Converted"` with `422` unless the Prospect is already Converted and the request is just re-submitting that same value unchanged (so a generic "edit this record" form that resends every field as-is isn't blocked).
 
 | Method | Path | Auth | Status | Description |
 |---|---|---|---|---|
@@ -772,7 +772,9 @@ interface AuditLogEntry {
 
 At minimum, write an entry whenever: a Deal's `stage` changes, a Deal's `status` becomes `won`/`lost`, or a `CustomerProduct`/`Project` `status` changes (per `FR-CRM-082`'s explicit minimum scope) — all four are now implemented (`deals.go` for the Deal events, `projects.go`/`products.go` for the other two). The frontend's `/admin/activity-log` page is already repointed at this real endpoint.
 
-**Non-Admin restriction (added 2026-09-08).** `/audit-log` was Admin-only until a frontend need surfaced: the Activities pages wanted a Deal's pipeline (stage-change) history as read-only context, without opening up the full Admin audit viewer. The route gate itself now also admits Sales Rep/Sales Manager, but `AuditLogHandler.List` hard-restricts what a non-Admin caller can see, regardless of what they ask for: the query is forced to `entity_type = "deal" AND action = "stage_changed"`, and any `entity_type`/`actor_id` query params they send are silently ignored (`entity_id`/`date_from`/`date_to` still apply, so a specific Deal's history — or a date-bounded slice across Deals — can still be requested). This keeps a non-Admin from reading other entity types (`settings`, `project`, `customer_product`), other Deal actions (`reassigned`/`bulk_reassigned` — deliberately kept Admin-only, matching the Deal detail page's own "Owner History" card), or browsing by `actor_id`. See `internal/handlers/auditlog.go` and the `TestRBAC_AuditLogRestrictedForNonAdmin` regression test in `tests/rbac_test.go`.
+**Non-Admin restriction (added 2026-09-08, widened 2026-09-09).** `/audit-log` was Admin-only until a frontend need surfaced: the Activities pages wanted a Deal's pipeline (stage-change) history as read-only context, without opening up the full Admin audit viewer. The route gate itself now also admits Sales Rep/Sales Manager, but `AuditLogHandler.List` hard-restricts what a non-Admin caller can see, regardless of what they ask for, to `entity_type = "deal"` — any `entity_type`/`actor_id` query params they send are silently ignored (`entity_id`/`date_from`/`date_to` still apply, so a specific Deal's history — or a date-bounded slice across Deals — can still be requested). This keeps a non-Admin from reading other entity types (`settings`, `project`, `customer_product`) or browsing by `actor_id`.
+
+Which `action`s within that Deal-only slice a non-Admin sees differs by role: **Sales Rep** gets `stage_changed` only. **Sales Manager** also gets `reassigned`/`bulk_reassigned` — widened 2026-09-09 (`FR-CRM-025`/`M-8`: a Sales Manager performs Deal reassignments and needs to see who held a Deal before, to rebalance workload without losing accountability), whereas the Deal detail page's own "Owner History" card and a Sales Rep's own `/audit-log` access stay `stage_changed`-only. See `internal/handlers/auditlog.go` and the `TestRBAC_AuditLogRestrictedForNonAdmin` regression test in `tests/rbac_test.go`.
 
 ### 8.6 Admin Settings (`FR-CRM-058`, `FR-CRM-091`)
 
@@ -783,6 +785,9 @@ interface AppSettings {
   id: number
   quarterly_sales_target: number   // FR-CRM-058 — feeds §9's pipeline_coverage_ratio
   annual_revenue_goal: number      // FR-CRM-091 — feeds §9's annual_revenue_progress_ratio/annual_revenue_trend
+  smtp_configured: boolean         // read-only, added 2026-09-09 — derived from config.Config.SMTPHost at request
+                                    // time (not a stored column), not settable via PATCH. Lets an Admin see from
+                                    // the app itself whether Task due-date email reminders can actually send.
   updated_at: string               // "last updated" hint for the Admin config UI — neither figure resets itself automatically
 }
 ```
@@ -822,9 +827,11 @@ Every write here also invalidates `GET /dashboard/summary`'s response cache (§9
 
 ### 8.8 Admin Configuration (option lists, lead scoring, notifications)
 
-🟢 **Required now** — fully implemented and routed (Admin only, `adminOnly` middleware) but previously undocumented here. Replaces several enums/lists that used to be hardcoded (`DealStage`, `LeadSource`) or unconstrained free text (`Company.industry/size/revenue_size`, `Contact.role_title`, Product category) with Admin-editable, DB-backed option rows — every Create/Update endpoint elsewhere in this spec that references one of these values (Lead/Deal `source`/`channel`, Deal `stage`, Contact `role_title`, etc.) validates against the corresponding active row here rather than a fixed Go enum.
+🟢 **Required now** — fully implemented and routed, but previously undocumented here. Replaces several enums/lists that used to be hardcoded (`DealStage`, `LeadSource`) or unconstrained free text (`Company.industry/size/revenue_size`, `Contact.role_title`, Product category) with Admin-editable, DB-backed option rows — every Create/Update endpoint elsewhere in this spec that references one of these values (Lead/Deal `source`/`channel`, Deal `stage`, Contact `role_title`, etc.) validates against the corresponding active row here rather than a fixed Go enum.
 
-Every option-list resource below (`PipelineStage`, `LeadSourceOption`, `IndustryOption`, `CompanySizeOption`, `RevenueSizeOption`, `JobTitleOption`, `ProductCategoryOption`) shares the same shape and endpoint pattern:
+**Auth split (fixed 2026-09-09).** Every option-list resource below (except Lead-scoring criteria/Notification rules, still fully `adminOnly`) splits by verb: `GET` (list) is open to every authenticated role — `authed`, no role check — since these back plain dropdowns/filters on pages with no role restriction of their own (Deal/Lead/Contact/Company/Project create-and-edit forms, the shared Dashboard, the Kanban board, Marketing's own `/prospects*` pages). `POST`/`PATCH`/`DELETE` stay `adminOnly`. Previously the whole resource (including `GET`) was bundled into one Admin-only route group, so any non-Admin role loading one of these dropdowns got a silent 403 that the frontend's axios interceptor turned into a hard redirect away from the page — Marketing's own primary `/prospects*` pages were the worst-hit instance, since Marketing has no other resource to fall back to. Regression-guarded by `TestRBAC_PipelineStagesLeadSourcesListOpenWritesAdminOnly`/`TestProspectSources_ListOpenWritesAdminOnly` in `tests/`.
+
+Every option-list resource below (`PipelineStage`, `LeadSourceOption`, `IndustryOption`, `CompanySizeOption`, `RevenueSizeOption`, `JobTitleOption`, `ProductCategoryOption`, `ProspectSourceOption` (§3a), `ProspectStage`) shares the same shape and endpoint pattern:
 
 ```ts
 interface PipelineStage {          // the only one with extra fields — see note below
@@ -861,6 +868,10 @@ interface OptionRow {              // LeadSourceOption / IndustryOption / Compan
 | `PATCH` / `DELETE` | `/admin/job-titles/:id` | Update / delete. |
 | `GET` / `POST` | `/admin/product-categories` | List / create a `ProductCategoryOption` for `Product.category`. |
 | `PATCH` / `DELETE` | `/admin/product-categories/:id` | Update / delete. |
+| `GET` / `POST` | `/admin/prospect-sources` | List / create a `ProspectSourceOption` for `Prospect.source` (§3a) — Marketing's own funnel-source list, deliberately separate from `LeadSourceOption` (see `ProspectSourceOption`'s own model doc for why). Added 2026-09-01. |
+| `PATCH` / `DELETE` | `/admin/prospect-sources/:id` | Update / delete. |
+| `GET` / `POST` | `/admin/prospect-stages` | List / create a `ProspectStage` for `Prospect.status` (§3a) — replaces the previously hardcoded `ProspectStatus` *working*-stage enum (`New/Engaging/Nurturing/Disqualified`) as the source of truth. `"Converted"` is deliberately **not** a row here — it's the system-set terminal status `POST /prospects/:id/convert` alone sets (see the `ProspectStatus` note above), so Create/Update reject a client-supplied `name: "Converted"` with `422`. No `is_won_stage`/`is_lost_stage` equivalent — Prospect stages are a straight funnel sequence, not a win/loss outcome — but `is_disqualified_stage` mirrors that pattern for the one stage that does gate behavior (the frontend's "Convert to Lead" action visibility/status badge color, and — added same day — `checkProspectStaleRule`'s FR-CRM-107 exclusion), so renaming "Disqualified" doesn't silently break any of the three. Added 2026-09-09. |
+| `PATCH` / `DELETE` | `/admin/prospect-stages/:id` | Update (including `is_active`/`sort_order`/`is_disqualified_stage`) / soft-delete (`is_active: false`, not a hard row delete — existing Prospects may still reference the name). Same reserved-name rejection as Create. |
 
 **Lead scoring criteria** (`FR-CRM-006`) — weighted rules summed into `Lead.score`:
 
