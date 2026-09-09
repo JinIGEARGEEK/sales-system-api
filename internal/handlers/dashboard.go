@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"math"
+	"strconv"
 	"sync"
 	"time"
 
@@ -247,6 +248,18 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	// (called from a goroutine below) only takes plain strings, not `c`, for
 	// exactly this reason.
 	assignedTo, dateFrom, dateTo := c.Query("assigned_to"), c.Query("date_from"), c.Query("date_to")
+	// upsell_min_stale_days — the Upsell Opportunities widget's own staleness
+	// filter (FR-CRM-108/109), read up front for the same data-race reason as
+	// companyTagSet/assignedTo above. Defaults to 60 (the old fixed tier1
+	// cutoff) so an omitted param behaves the same as before this filter
+	// existed. Invalid/non-positive values fall back to the same default
+	// rather than 400ing — this is a display filter, not a validated form
+	// field, so a malformed value degrading to "show the widest reasonable
+	// default" is friendlier than an error.
+	upsellMinStaleDays := 60
+	if v, err := strconv.Atoi(c.Query("upsell_min_stale_days")); err == nil && v > 0 {
+		upsellMinStaleDays = v
+	}
 
 	// Loaded synchronously up front (one cheap query) rather than after
 	// wg.Wait() below, since annualRevenueTrend needs settings.AnnualRevenueGoal
@@ -268,7 +281,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	var industryBreakdown []industryBreakdownItem
 	var teamPerformance []teamPerformanceItem
 	var annualRevenueTrend []annualGoalTrendPoint
-	var upsellOpportunities []upsellTierGroup
+	var upsellOpportunities []upsellCompany
 
 	var wg sync.WaitGroup
 	run := func(f func()) {
@@ -312,7 +325,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	// upsellOpportunities is Company-centric (not Deal-scoped), so it's
 	// deliberately independent of `base`/baseFilter's Deal-side query params —
 	// see h.upsellOpportunities's own doc comment.
-	run(func() { upsellOpportunities = h.upsellOpportunities() })
+	run(func() { upsellOpportunities = h.upsellOpportunities(upsellMinStaleDays) })
 	var quarterlySalesTarget float64
 	run(func() { quarterlySalesTarget = h.currentQuarterTarget(settings.QuarterlySalesTarget) })
 	// FR-CRM-099's report computation, reused here rather than duplicated —
@@ -541,17 +554,11 @@ func (h *DashboardHandler) teamPerformance(base *gorm.DB) []teamPerformanceItem 
 	return result
 }
 
-// upsellStaleDays/Tier2Days/Tier3Days are the dormant-company tier
-// boundaries — 60/90/120 days, matching the frontend's own
-// composables/utils/useLastContact.ts thresholds.
-const (
-	upsellTier1Days = 60
-	upsellTier2Days = 90
-	upsellTier3Days = 120
-	// upsellTierCap bounds each tier's companies to the 10 most-stale, so the
-	// widget's payload stays small regardless of how many companies qualify.
-	upsellTierCap = 10
-)
+// upsellCap bounds the widget's payload to the upsellCap most-stale
+// companies, regardless of how many qualify at the requested threshold.
+// Was 10-per-tier (3 tiers, so up to 30 companies) back when this returned
+// tier groups; kept the same overall ceiling now that it's one flat list.
+const upsellCap = 30
 
 type upsellCompany struct {
 	ID             uint       `json:"id"`
@@ -560,61 +567,32 @@ type upsellCompany struct {
 	LastActivityAt *time.Time `json:"last_activity_at"`
 }
 
-type upsellTierGroup struct {
-	Tier      string          `json:"tier"`
-	Companies []upsellCompany `json:"companies"`
-}
-
 // upsellOpportunities — the Dashboard's "Upsell Opportunities" widget
 // (FR-CRM-108): active Companies whose last_activity_at (company_activity.go's
 // withLastActivityAt — company-scoped Activities only, NOT rolled up from
-// Deals/Contacts) is NULL (never contacted) or ≥60 days old, bucketed into 3
-// tiers (60-89 / 90-119 / 120+ days; NULL counts as tier3, the most stale)
-// and capped at upsellTierCap per tier, most-stale first.
+// Deals/Contacts) is NULL (never contacted) or at least minStaleDays old,
+// most-stale first, capped at upsellCap. **Updated 2026-09-09**: used to
+// always return 3 fixed 60/90/120-day tiers, always all three even when
+// empty, so the frontend could render a fixed 3-column layout — replaced by
+// a single minStaleDays threshold (the widget's own filter dropdown, sent as
+// ?upsell_min_stale_days) now that the frontend shows one filtered list
+// instead of three fixed columns.
 //
 // Deliberately independent of Summary's baseFilter (business_unit/channel/
 // assigned_to/company_tag/date range) — this is Company-centric, not
 // Deal-scoped, same reasoning as annualRevenueTrend/revenueTrend/forecastTrend
-// ignoring those filters. Always returns exactly 3 tier groups, even when a
-// tier's companies slice is empty, so the frontend can render a fixed
-// 3-column layout.
-func (h *DashboardHandler) upsellOpportunities() []upsellTierGroup {
-	tier1Cutoff := time.Now().AddDate(0, 0, -upsellTier1Days)
-
-	query := withLastActivityAt(h.DB.Model(&models.Company{})).
-		Where("companies.status = ?", models.StatusActive).
-		Where("last_company_activity.last_activity_at IS NULL OR last_company_activity.last_activity_at < ?", tier1Cutoff).
-		Select("companies.id, companies.name, companies.industry, last_company_activity.last_activity_at as last_activity_at").
-		Order("last_company_activity.last_activity_at ASC NULLS FIRST")
+// ignoring those filters.
+func (h *DashboardHandler) upsellOpportunities(minStaleDays int) []upsellCompany {
+	cutoff := time.Now().AddDate(0, 0, -minStaleDays)
 
 	var candidates []upsellCompany
-	query.Scan(&candidates)
+	withLastActivityAt(h.DB.Model(&models.Company{})).
+		Where("companies.status = ?", models.StatusActive).
+		Where("last_company_activity.last_activity_at IS NULL OR last_company_activity.last_activity_at < ?", cutoff).
+		Select("companies.id, companies.name, companies.industry, last_company_activity.last_activity_at as last_activity_at").
+		Order("last_company_activity.last_activity_at ASC NULLS FIRST").
+		Limit(upsellCap).
+		Scan(&candidates)
 
-	now := time.Now()
-	groups := []upsellTierGroup{
-		{Tier: "tier1", Companies: []upsellCompany{}},
-		{Tier: "tier2", Companies: []upsellCompany{}},
-		{Tier: "tier3", Companies: []upsellCompany{}},
-	}
-	for _, co := range candidates {
-		var tierIdx int
-		switch co.LastActivityAt {
-		case nil:
-			tierIdx = 2
-		default:
-			days := int(now.Sub(*co.LastActivityAt).Hours() / 24)
-			switch {
-			case days >= upsellTier3Days:
-				tierIdx = 2
-			case days >= upsellTier2Days:
-				tierIdx = 1
-			default: // days >= upsellTier1Days, guaranteed by the query's WHERE
-				tierIdx = 0
-			}
-		}
-		if len(groups[tierIdx].Companies) < upsellTierCap {
-			groups[tierIdx].Companies = append(groups[tierIdx].Companies, co)
-		}
-	}
-	return groups
+	return candidates
 }
