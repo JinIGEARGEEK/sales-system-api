@@ -35,6 +35,14 @@ type AppSettings struct {
 	// status Signed.
 	RequireSignedContractBeforeWon bool      `gorm:"not null;default:false" json:"require_signed_contract_before_won"`
 	UpdatedAt                      time.Time `json:"updated_at"`
+	// SMTPConfigured — read-only, derived from config.Config.SMTPHost at
+	// request time (SettingsHandler.Get/Update set it), never persisted
+	// (gorm:"-"). Task due-date email reminders (internal/notifier,
+	// internal/utils/mailer.go) silently no-op with only a server-side log
+	// line when SMTP_HOST is unset — this is the only place an Admin can see
+	// that from the app itself, closing a "why aren't reminder emails
+	// arriving" gap with zero visibility before this.
+	SMTPConfigured bool `gorm:"-" json:"smtp_configured"`
 }
 
 func (AppSettings) TableName() string { return "app_settings" }

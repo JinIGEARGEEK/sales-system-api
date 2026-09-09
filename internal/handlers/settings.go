@@ -4,6 +4,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
@@ -13,16 +14,19 @@ import (
 // (FR-CRM-058: quarterly sales quota; FR-CRM-091: annual revenue goal —
 // both previously hardcoded in dashboard.go).
 type SettingsHandler struct {
-	DB *gorm.DB
+	DB  *gorm.DB
+	cfg *config.Config
 }
 
-func NewSettingsHandler(db *gorm.DB) *SettingsHandler {
-	return &SettingsHandler{DB: db}
+func NewSettingsHandler(db *gorm.DB, cfg *config.Config) *SettingsHandler {
+	return &SettingsHandler{DB: db, cfg: cfg}
 }
 
 // Get — GET /admin/settings.
 func (h *SettingsHandler) Get(c *fiber.Ctx) error {
-	return utils.OK(c, utils.GetAppSettings(h.DB))
+	settings := utils.GetAppSettings(h.DB)
+	settings.SMTPConfigured = h.cfg.SMTPHost != ""
+	return utils.OK(c, settings)
 }
 
 type settingsForm struct {
@@ -119,5 +123,6 @@ func (h *SettingsHandler) Update(c *fiber.Ctx) error {
 	if changed {
 		InvalidateDashboardCache()
 	}
+	settings.SMTPConfigured = h.cfg.SMTPHost != ""
 	return utils.OK(c, settings)
 }

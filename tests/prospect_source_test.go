@@ -39,16 +39,32 @@ func TestProspectSources_SeededDefaults(t *testing.T) {
 	assert.Contains(t, names, "Social Media")
 }
 
-// TestProspectSources_AdminOnly guards the route-level RequireRoles gate —
-// Marketing owns Prospect data day-to-day but not this taxonomy's config,
-// same convention as every other /admin/* option list in this app.
-func TestProspectSources_AdminOnly(t *testing.T) {
+// TestProspectSources_ListOpenWritesAdminOnly guards the route-level
+// RequireRoles gate — Marketing owns Prospect data day-to-day but not this
+// taxonomy's config, so writes stay Admin-only. **Updated 2026-09-09**: List
+// used to be Admin-only too (this test previously asserted a 403 here), but
+// pages/crm/prospects/index.vue|[id].vue|create.vue — Marketing's own
+// primary pages, not Admin-gated — fetch this for their source
+// dropdown/filter, so Marketing got a silent 403 loading its own core page.
+// List is now open to every authenticated role, same convention as
+// TestRBAC_TagsWritesAreRestricted's list/write split for /tags.
+func TestProspectSources_ListOpenWritesAdminOnly(t *testing.T) {
 	app, db := testutil.App(t)
 	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
 
-	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/admin/prospect-sources", nil, marketing.ID, marketing.Role)
-	resp := doJSON(t, app, req, nil)
-	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	t.Run("list is open to marketing", func(t *testing.T) {
+		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/admin/prospect-sources", nil, marketing.ID, marketing.Role)
+		resp := doJSON(t, app, req, nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+
+	t.Run("create is forbidden for marketing", func(t *testing.T) {
+		req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/admin/prospect-sources", map[string]interface{}{
+			"name": "Referral Program",
+		}, marketing.ID, marketing.Role)
+		resp := doJSON(t, app, req, nil)
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
 }
 
 // TestProspectCreate_RejectsInactiveSource guards that Prospect.source is
