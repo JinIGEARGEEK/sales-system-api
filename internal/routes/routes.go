@@ -549,4 +549,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// Lead stats for the Sales tab — same "not role-gated, frontend decides"
 	// convention as the two dashboard routes above.
 	authed.Get("/dashboard/lead-summary", dashboardH.LeadSummary)
+	// Forecast accuracy history (Commit/Best Case/Pipeline forecast rigor) —
+	// same "not role-gated, frontend decides" convention as the routes above.
+	authed.Get("/dashboard/forecast-accuracy", dashboardH.ForecastAccuracy)
 }

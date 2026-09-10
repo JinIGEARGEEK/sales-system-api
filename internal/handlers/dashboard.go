@@ -183,6 +183,16 @@ type stageBreakdownItem struct {
 	Count int64            `json:"count"`
 }
 
+// forecastByCategoryItem is the probability-weighted forecast for open Deals
+// falling under one ForecastCategory — Commit/Best Case/Pipeline breaking
+// down the single forecastedRevenue figure so it can be audited rather than
+// just trusted as one blended number.
+type forecastByCategoryItem struct {
+	Commit   float64 `json:"commit"`
+	BestCase float64 `json:"best_case"`
+	Pipeline float64 `json:"pipeline"`
+}
+
 type industryBreakdownItem struct {
 	Industry string  `json:"industry"`
 	WinRate  float64 `json:"win_rate"`
@@ -319,6 +329,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	var openDealsCount, wonCount, lostCount int64
 	var revenueTrend, forecastTrend []revenueTrendPoint
 	var stageBreakdown []stageBreakdownItem
+	var forecastByCategory forecastByCategoryItem
 	var industryBreakdown []industryBreakdownItem
 	var teamPerformance []teamPerformanceItem
 	var annualRevenueTrend []annualGoalTrendPoint
@@ -360,6 +371,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	run(func() { revenueTrend = h.revenueTrend() })
 	run(func() { forecastTrend = h.forecastTrend() })
 	run(func() { stageBreakdown = h.stageBreakdown(base) })
+	run(func() { forecastByCategory = h.forecastByCategory(base) })
 	run(func() { industryBreakdown = h.industryBreakdown(base, companyTagSet) })
 	run(func() { teamPerformance = h.teamPerformance(base) })
 	run(func() { annualRevenueTrend = h.annualRevenueTrend(settings.AnnualRevenueGoal) })
@@ -407,6 +419,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 		"win_rate":                      winRate(wonCount, lostCount),
 		"open_deals_count":              openDealsCount,
 		"forecasted_revenue":            forecastedRevenue,
+		"forecast_by_category":          forecastByCategory,
 		"avg_deal_size":                 avgDealSize,
 		"avg_sales_cycle_days":          avgSalesCycleDays,
 		"pipeline_coverage_ratio":       pipelineCoverageRatio,
@@ -536,6 +549,34 @@ func (h *DashboardHandler) stageBreakdown(base *gorm.DB) []stageBreakdownItem {
 	return rows
 }
 
+// forecastByCategory splits forecastedRevenue's same weighted formula
+// (value × probability/100) across the three ForecastCategory buckets for
+// open Deals. A Deal with no category (pre-migration rows never backfilled)
+// falls under Pipeline, matching StageDefaultForecastCategory's own fallback.
+func (h *DashboardHandler) forecastByCategory(base *gorm.DB) forecastByCategoryItem {
+	var rows []struct {
+		Category string
+		Value    float64
+	}
+	base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusOpen).
+		Select("COALESCE(deals.forecast_category, 'Pipeline') as category, " +
+			"COALESCE(SUM(deals.value * COALESCE(deals.probability, 0) / 100.0), 0) as value").
+		Group("category").Scan(&rows)
+
+	var result forecastByCategoryItem
+	for _, r := range rows {
+		switch models.ForecastCategory(r.Category) {
+		case models.ForecastCategoryCommit:
+			result.Commit = r.Value
+		case models.ForecastCategoryBestCase:
+			result.BestCase = r.Value
+		default:
+			result.Pipeline += r.Value
+		}
+	}
+	return result
+}
+
 // companyTagSet mirrors whether Summary's base filter already joined
 // companies (only when ?company_tag= was supplied) — avoids joining it twice.
 func (h *DashboardHandler) industryBreakdown(base *gorm.DB, companyTagSet bool) []industryBreakdownItem {
@@ -636,4 +677,82 @@ func (h *DashboardHandler) upsellOpportunities(minStaleDays int) []upsellCompany
 		Scan(&candidates)
 
 	return candidates
+}
+
+// forecastAccuracyQuarter is one (Year, Quarter) row in the forecast-accuracy
+// history — the last snapshot taken during that quarter (its Weighted
+// Forecast/category split being the "final word" forecast before the quarter
+// closed) paired with that snapshot's own ActualWonToDate. For the current,
+// still-open quarter this is simply its most recent snapshot so far.
+type forecastAccuracyQuarter struct {
+	Year             int     `json:"year"`
+	Quarter          int     `json:"quarter"`
+	SnapshotDate     string  `json:"snapshot_date"`
+	CommitValue      float64 `json:"commit_value"`
+	BestCaseValue    float64 `json:"best_case_value"`
+	PipelineValue    float64 `json:"pipeline_value"`
+	WeightedForecast float64 `json:"weighted_forecast"`
+	SalesTarget      float64 `json:"sales_target"`
+	ActualWonToDate  float64 `json:"actual_won_to_date"`
+	// AccuracyRatio is ActualWonToDate / WeightedForecast, 0 when
+	// WeightedForecast is 0 (nothing to divide by — e.g. a very early
+	// quarter with no snapshots yet).
+	AccuracyRatio float64 `json:"accuracy_ratio"`
+}
+
+// ForecastAccuracy godoc
+// @Summary Forecast accuracy history (Admin/Sales Manager/Sales Rep)
+// @Description Per-quarter forecast-vs-actual history built from the daily ForecastSnapshot job (internal/notifier/forecast_snapshots.go) — the last snapshot of each quarter plus the running snapshot for the current quarter, each with an accuracy_ratio (actual ÷ forecast).
+// @Tags dashboard
+// @Security BearerAuth
+// @Produce json
+// @Param quarters query int false "How many most-recent quarters to return (default 8)"
+// @Success 200 {array} forecastAccuracyQuarter
+// @Router /dashboard/forecast-accuracy [get]
+func (h *DashboardHandler) ForecastAccuracy(c *fiber.Ctx) error {
+	limitQuarters := 8
+	if v, err := strconv.Atoi(c.Query("quarters")); err == nil && v > 0 {
+		limitQuarters = v
+	}
+
+	// The last snapshot per (year, quarter) — a plain GROUP BY MAX(snapshot_date)
+	// then a second lookup, rather than a window function, to keep this
+	// portable/readable the same way the rest of this file avoids DB-specific SQL.
+	var latestDates []struct {
+		Year         int
+		Quarter      int
+		SnapshotDate time.Time
+	}
+	if err := h.DB.Model(&models.ForecastSnapshot{}).
+		Select("year, quarter, MAX(snapshot_date) as snapshot_date").
+		Group("year, quarter").
+		Order("year DESC, quarter DESC").
+		Limit(limitQuarters).
+		Scan(&latestDates).Error; err != nil {
+		return utils.Internal(c, "Failed to load forecast accuracy")
+	}
+
+	result := make([]forecastAccuracyQuarter, 0, len(latestDates))
+	for _, ld := range latestDates {
+		var snap models.ForecastSnapshot
+		if err := h.DB.Where("year = ? AND quarter = ? AND snapshot_date = ?", ld.Year, ld.Quarter, ld.SnapshotDate).
+			First(&snap).Error; err != nil {
+			continue
+		}
+		ratio := 0.0
+		if snap.WeightedForecast > 0 {
+			ratio = snap.ActualWonToDate / snap.WeightedForecast
+		}
+		result = append(result, forecastAccuracyQuarter{
+			Year: snap.Year, Quarter: snap.Quarter, SnapshotDate: snap.SnapshotDate.Format("2006-01-02"),
+			CommitValue: snap.CommitValue, BestCaseValue: snap.BestCaseValue, PipelineValue: snap.PipelineValue,
+			WeightedForecast: snap.WeightedForecast, SalesTarget: snap.SalesTarget,
+			ActualWonToDate: snap.ActualWonToDate, AccuracyRatio: ratio,
+		})
+	}
+	// Oldest-first for a left-to-right chart, opposite of the DESC query above.
+	for i, j := 0, len(result)-1; i < j; i, j = i+1, j-1 {
+		result[i], result[j] = result[j], result[i]
+	}
+	return utils.OK(c, result)
 }

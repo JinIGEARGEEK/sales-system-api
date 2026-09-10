@@ -60,6 +60,17 @@ type contactForm struct {
 	RoleTitle string   `json:"role_title"`
 	Tags      []string `json:"tags"`
 	Status    string   `json:"status"`
+	IsPrimary bool     `json:"is_primary"`
+}
+
+// clearOtherPrimaryContacts unsets IsPrimary on every other Contact in
+// companyID so at most one Contact per Company is ever Primary (FR-CRM-012).
+// exceptID is the Contact currently being saved as Primary (0 on Create,
+// where the row doesn't exist yet).
+func clearOtherPrimaryContacts(tx *gorm.DB, companyID uint, exceptID uint) error {
+	return tx.Model(&models.Contact{}).
+		Where("company_id = ? AND id <> ? AND is_primary = ?", companyID, exceptID, true).
+		Update("is_primary", false).Error
 }
 
 // Create godoc
@@ -92,14 +103,23 @@ func (h *ContactHandler) Create(c *fiber.Ctx) error {
 	contact := models.Contact{
 		CompanyID: form.CompanyID, Name: form.Name, Email: form.Email, Phone: form.Phone,
 		RoleTitle: form.RoleTitle, Tags: pq.StringArray(form.Tags),
-		Status: models.ActiveArchivedStatus(form.Status),
+		Status: models.ActiveArchivedStatus(form.Status), IsPrimary: form.IsPrimary,
 	}
 	if contact.Status == "" {
 		contact.Status = models.StatusActive
 	}
 	contact.CreatedBy = &actorID
 	contact.UpdatedBy = &actorID
-	if err := h.DB.Create(&contact).Error; err != nil {
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&contact).Error; err != nil {
+			return err
+		}
+		if contact.IsPrimary {
+			return clearOtherPrimaryContacts(tx, contact.CompanyID, contact.ID)
+		}
+		return nil
+	})
+	if err != nil {
 		return utils.Internal(c, "Failed to create contact")
 	}
 	return utils.Created(c, contact)
@@ -158,10 +178,20 @@ func (h *ContactHandler) Update(c *fiber.Ctx) error {
 	if form.Status != "" {
 		contact.Status = models.ActiveArchivedStatus(form.Status)
 	}
+	contact.IsPrimary = form.IsPrimary
 	actorID := middleware.CurrentUserID(c)
 	contact.UpdatedBy = &actorID
 
-	if err := h.DB.Save(&contact).Error; err != nil {
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&contact).Error; err != nil {
+			return err
+		}
+		if contact.IsPrimary {
+			return clearOtherPrimaryContacts(tx, contact.CompanyID, contact.ID)
+		}
+		return nil
+	})
+	if err != nil {
 		return utils.Internal(c, "Failed to update contact")
 	}
 	return utils.OK(c, contact)

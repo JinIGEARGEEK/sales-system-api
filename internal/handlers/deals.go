@@ -56,19 +56,20 @@ func (h *DealHandler) List(c *fiber.Ctx) error {
 }
 
 type dealForm struct {
-	CompanyID         uint                 `json:"company_id"`
-	ContactID         uint                 `json:"contact_id"`
-	Title             string               `json:"title"`
-	Value             float64              `json:"value"`
-	Stage             models.DealStage     `json:"stage"`
-	Status            models.DealStatus    `json:"status"`
-	ExpectedCloseDate *string              `json:"expected_close_date"`
-	AssignedTo        *uint                `json:"assigned_to"`
-	Channel           models.LeadSource    `json:"channel"`
-	BusinessUnit      *models.BusinessUnit `json:"business_unit"`
-	BusinessUnitItem  *string              `json:"business_unit_item"`
-	Probability       *int                 `json:"probability"`
-	LostReason        *models.LostReason   `json:"lost_reason"`
+	CompanyID         uint                     `json:"company_id"`
+	ContactID         uint                     `json:"contact_id"`
+	Title             string                   `json:"title"`
+	Value             float64                  `json:"value"`
+	Stage             models.DealStage         `json:"stage"`
+	Status            models.DealStatus        `json:"status"`
+	ExpectedCloseDate *string                  `json:"expected_close_date"`
+	AssignedTo        *uint                    `json:"assigned_to"`
+	Channel           models.LeadSource        `json:"channel"`
+	BusinessUnit      *models.BusinessUnit     `json:"business_unit"`
+	BusinessUnitItem  *string                  `json:"business_unit_item"`
+	Probability       *int                     `json:"probability"`
+	LostReason        *models.LostReason       `json:"lost_reason"`
+	ForecastCategory  *models.ForecastCategory `json:"forecast_category"`
 }
 
 // validateStageAndChannel checks Stage/Channel against the active
@@ -121,6 +122,12 @@ func validateProbabilityAndLostReason(c *fiber.Ctx, db *gorm.DB, form dealForm) 
 	if form.Probability != nil && (*form.Probability < 0 || *form.Probability > 100) {
 		_ = utils.ValidationError(c, "probability must be between 0 and 100", map[string][]string{
 			"probability": {"must be between 0 and 100"},
+		})
+		return utils.ErrHandled
+	}
+	if form.ForecastCategory != nil && *form.ForecastCategory != "" && !models.IsValidForecastCategory(*form.ForecastCategory) {
+		_ = utils.ValidationError(c, "forecast_category is invalid", map[string][]string{
+			"forecast_category": {"invalid"},
 		})
 		return utils.ErrHandled
 	}
@@ -227,6 +234,15 @@ func (h *DealHandler) defaultProbabilityFor(stage models.DealStage) int {
 	return utils.StageDefaultProbability(h.DB, stage)
 }
 
+// defaultForecastCategoryFor resolves the Commit/Best Case/Pipeline default
+// for a stage via models.StageDefaultForecastCategory. Unlike
+// defaultProbabilityFor, this isn't backed by the configurable PipelineStage
+// table — forecast category is a coarse three-way exec-facing grouping, not a
+// per-stage-configured number, so the fixed switch is enough.
+func (h *DealHandler) defaultForecastCategoryFor(stage models.DealStage) models.ForecastCategory {
+	return models.StageDefaultForecastCategory(stage)
+}
+
 // syncStatusWithStageFlags forces deal.Status to won/lost whenever the
 // deal's current Stage resolves (via utils.IsWonStage/IsLostStage) to a
 // won/lost stage, regardless of what Status the request body supplied.
@@ -289,6 +305,7 @@ func (h *DealHandler) Create(c *fiber.Ctx) error {
 		AssignedTo: form.AssignedTo, Channel: form.Channel,
 		BusinessUnit: form.BusinessUnit, BusinessUnitItem: form.BusinessUnitItem,
 		Probability: form.Probability, LostReason: form.LostReason,
+		ForecastCategory: form.ForecastCategory,
 	}
 	if deal.Stage == "" {
 		deal.Stage = models.DealStageLead
@@ -304,6 +321,10 @@ func (h *DealHandler) Create(c *fiber.Ctx) error {
 	if deal.Probability == nil {
 		def := h.defaultProbabilityFor(deal.Stage)
 		deal.Probability = &def
+	}
+	if deal.ForecastCategory == nil || *deal.ForecastCategory == "" {
+		def := h.defaultForecastCategoryFor(deal.Stage)
+		deal.ForecastCategory = &def
 	}
 	if err := h.DB.Create(&deal).Error; err != nil {
 		return utils.Internal(c, "Failed to create deal")
@@ -395,11 +416,16 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	deal.AssignedTo, deal.Channel = form.AssignedTo, form.Channel
 	deal.BusinessUnit, deal.BusinessUnitItem = form.BusinessUnit, form.BusinessUnitItem
 	deal.Probability, deal.LostReason = form.Probability, form.LostReason
+	deal.ForecastCategory = form.ForecastCategory
 	// Keep Status in sync with the resolved stage flags — see Create's comment.
 	h.syncStatusWithStageFlags(&deal)
 	if deal.Probability == nil {
 		def := h.defaultProbabilityFor(deal.Stage)
 		deal.Probability = &def
+	}
+	if deal.ForecastCategory == nil || *deal.ForecastCategory == "" {
+		def := h.defaultForecastCategoryFor(deal.Stage)
+		deal.ForecastCategory = &def
 	}
 	// LostReason only makes sense while the deal is actually Lost — clear a
 	// stale reason left over from a previous Lost stint once it moves elsewhere.
@@ -706,6 +732,8 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	if oldStage != deal.Stage {
 		def := h.defaultProbabilityFor(deal.Stage)
 		deal.Probability = &def
+		catDef := h.defaultForecastCategoryFor(deal.Stage)
+		deal.ForecastCategory = &catDef
 	}
 
 	after := models.JSONMap{"stage": deal.Stage, "status": deal.Status}

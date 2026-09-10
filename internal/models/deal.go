@@ -88,6 +88,50 @@ func StageDefaultProbability(stage DealStage) int {
 	}
 }
 
+// ForecastCategory buckets an open Deal into how confidently its value should
+// be counted toward the sales forecast — Commit (near-certain), Best Case
+// (likely but not certain), or Pipeline (early/speculative). Distinct from
+// Probability (a 0-100 number): the category is the coarse, exec-facing
+// grouping used to break the single blended weighted-forecast figure into
+// three auditable numbers on the dashboard.
+type ForecastCategory string
+
+const (
+	ForecastCategoryCommit   ForecastCategory = "Commit"
+	ForecastCategoryBestCase ForecastCategory = "Best Case"
+	ForecastCategoryPipeline ForecastCategory = "Pipeline"
+)
+
+// ValidForecastCategories lists every accepted ForecastCategory value, for handler-layer validation.
+var ValidForecastCategories = []ForecastCategory{
+	ForecastCategoryCommit, ForecastCategoryBestCase, ForecastCategoryPipeline,
+}
+
+func IsValidForecastCategory(fc ForecastCategory) bool {
+	for _, v := range ValidForecastCategories {
+		if v == fc {
+			return true
+		}
+	}
+	return false
+}
+
+// StageDefaultForecastCategory returns the sensible default ForecastCategory
+// for a given DealStage — used to prefill Deal.ForecastCategory the same way
+// StageDefaultProbability prefills Deal.Probability. Callers may always
+// override it; Won/Lost deals don't need a category (forecast only covers
+// open deals) so those fall through to Pipeline harmlessly rather than nil.
+func StageDefaultForecastCategory(stage DealStage) ForecastCategory {
+	switch stage {
+	case DealStageNegotiation:
+		return ForecastCategoryCommit
+	case DealStageProposalSent:
+		return ForecastCategoryBestCase
+	default:
+		return ForecastCategoryPipeline
+	}
+}
+
 // Deal — api-system-spec.md §7.1. Embeds AuditedModel (not HardDeleteModel) so
 // Delete/bulk-archive is recoverable via trash/restore instead of permanent.
 type Deal struct {
@@ -112,6 +156,10 @@ type Deal struct {
 	// LostReason is required only when Stage/Status is set to Lost (validated
 	// at the handler layer, see DealHandler.Update).
 	LostReason *LostReason `gorm:"type:varchar(16)" json:"lost_reason"`
+	// ForecastCategory is the Commit/Best Case/Pipeline forecast bucket,
+	// defaulted per-stage (StageDefaultForecastCategory) but always manually
+	// overridable, mirroring Probability's own default/override pattern.
+	ForecastCategory *ForecastCategory `gorm:"type:varchar(16)" json:"forecast_category"`
 }
 
 func (Deal) TableName() string { return "deals" }
