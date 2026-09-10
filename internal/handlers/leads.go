@@ -381,6 +381,13 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 		return utils.ValidationError(c, "business_unit must be Project or Product", map[string][]string{"business_unit": {"invalid"}})
 	}
 
+	// oldStatus/oldCompanyID captured ahead of the mutation below, mirroring
+	// Deal's oldStage pattern (deals.go Update) — the only reliable way to
+	// tell the rep actually changed status on this save, since the form
+	// resubmits the Lead's full state every time.
+	oldStatus := lead.Status
+	oldCompanyID := lead.CompanyID
+
 	lead.Name, lead.CompanyID, lead.Email, lead.Phone = form.Name, form.CompanyID, form.Email, form.Phone
 	lead.Source, lead.Status, lead.Notes, lead.AssignedTo = form.Source, form.Status, form.Notes, form.AssignedTo
 	lead.BusinessUnit, lead.BusinessUnitItem = form.BusinessUnit, form.BusinessUnitItem
@@ -399,7 +406,16 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 		return utils.Internal(c, "Failed to score lead")
 	}
 
-	if err := h.DB.Save(&lead).Error; err != nil {
+	// Logs a company-scoped Activity when status actually changed, so
+	// Company.last_activity_at reflects that the customer was contacted —
+	// mirrors ProspectHandler.Update/DealHandler.Update's same treatment.
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&lead).Error; err != nil {
+			return err
+		}
+		return utils.LogStatusChangeActivity(tx, "Lead", oldStatus, lead.Status, lead.CompanyID, oldCompanyID, middleware.CurrentUserID(c))
+	})
+	if err != nil {
 		return utils.Internal(c, "Failed to update lead")
 	}
 	return utils.OK(c, lead)
@@ -706,7 +722,10 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 
 		lead.Status = models.LeadStatusQualified
 		lead.ConvertedDealID = &deal.ID
-		return tx.Save(&lead).Error
+		if err := tx.Save(&lead).Error; err != nil {
+			return err
+		}
+		return utils.LogCompanyActivity(tx, company.ID, "Lead converted to Deal", middleware.CurrentUserID(c))
 	})
 	if err != nil {
 		return utils.Internal(c, "Failed to convert lead")

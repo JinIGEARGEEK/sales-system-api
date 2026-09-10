@@ -3,7 +3,7 @@
 **Companion document to:** `feature-spec.md` (business requirements), `user-story.md` (role acceptance criteria), `design-system.md` (frontend conventions)
 **Purpose:** The contract for this backend API. This document was originally written when the frontend (`sales-system`) was still 100% client-side mock data with no real backend at all — that's no longer the state of either repo (20+ merged PRs, a working Go/Fiber API, and a frontend wired up against it resource by resource). It's kept up to date as a living reference for the current contract rather than as a forward-looking build spec.
 **Audience:** Backend/frontend engineers (and AI coding agents) working against this API.
-**Version:** 1.6 (Deal/Lead/Product route-gate RBAC gaps closed, dashboard ambiguous-column bug fixed, Swagger scaffold expanded — see `CHANGELOG.md`)
+**Version:** 1.7 (Company industry is free text, company-scoped Activity logged on Deal/Lead/Prospect status change, Activity `created_at` backdating, Trash `search` filter — see `CHANGELOG.md`)
 **Date:** 2026-09-10
 
 > **Status legend** (mirrors `feature-spec.md`'s legend, applied per endpoint):
@@ -324,9 +324,9 @@ interface Company {
 }
 ```
 
-> `industry`/`size`/`revenue_size` should be validated against the Admin-configurable option lists in §8.8 (`IndustryOption`/`CompanySizeOption`/`RevenueSizeOption`) rather than free text.
+> `size`/`revenue_size` are validated against the Admin-configurable option lists in §8.8 (`CompanySizeOption`/`RevenueSizeOption`) — Create/Update reject a value that isn't an active row. `industry` is free text: the frontend Company form is a free-typed combobox (not a fixed dropdown), and Create/Update auto-register any non-empty value as an active `IndustryOption` row (reactivating it if an Admin had previously deactivated it) rather than rejecting it. `/admin/industries` (§8.8) still lets an Admin curate the list (rename, deactivate) — it's just no longer the gate on what a Company can be saved with.
 
-`last_activity_at` (dormant-customer / upsell-targeting feature) is `MAX(activities.created_at)` for Activities logged directly against this Company (`related_type = 'company'`) — deliberately **not** rolled up from the Company's Deals/Contacts. `null` when no such Activity exists. Computed at query time (a `LEFT JOIN` subquery), not a stored column, so it needs no backfill and is always current. Returned on both `GET /companies` and `GET /companies/:id`.
+`last_activity_at` (dormant-customer / upsell-targeting feature) is `MAX(activities.created_at)` for Activities logged directly against this Company (`related_type = 'company'`) — deliberately **not** rolled up from the Company's Deals/Contacts. `null` when no such Activity exists. Computed at query time (a `LEFT JOIN` subquery), not a stored column, so it needs no backfill and is always current. Returned on both `GET /companies` and `GET /companies/:id`. Since 2026-09-10, a Deal/Lead/Prospect `stage`/`status` change also writes one of these company-scoped Activities automatically (§7.2's `LogCompanyActivity` row) — still a real Activity row, not a rollup of the parent Deal/Lead/Prospect's own timestamps, so this stays accurate rather than needing a second code path.
 
 | Method | Path | Status | Description |
 |---|---|---|---|
@@ -441,7 +441,10 @@ interface Deal {
 ### 7.2 Activities
 
 ```ts
-type ActivityType = 'call' | 'email' | 'meeting'
+// 'note' added 2026-09-10 — covers both a manually-logged freeform note and
+// a system-generated entry (a Prospect/Lead/Deal status/stage change, see
+// the LogCompanyActivity row below).
+type ActivityType = 'call' | 'email' | 'meeting' | 'note'
 type ActivityRelatedType = 'contact' | 'company' | 'deal' | 'prospect'   // 'prospect' added 2026-09-01 for §3a
 
 interface Activity {
@@ -459,8 +462,9 @@ interface Activity {
 | Method | Path | Status | Description |
 |---|---|---|---|
 | `GET` | `/activities` | 🟢 | Filters: `related_type`, `related_id` (required together), `type`. Backs the timeline on Deal/Company/Contact detail pages. |
-| `POST` | `/activities` | 🟢 | Create — `FR-CRM-031`'s manual entry form. |
+| `POST` | `/activities` | 🟢 | Create — `FR-CRM-031`'s manual entry form. `created_at` (added 2026-09-10, optional) lets a caller backdate a manually-logged Activity — e.g. "mark as contacted on `<past date>`" from the Company page — rejected (`422`) if it's in the future; omitted, GORM's default `created_at` convention stamps the current time as usual. |
 | `DELETE` | `/activities/:id` | 🟢 | Delete. |
+| **Side effect, not a separate endpoint** | — | Added 2026-09-10. `DealHandler.Update`/`UpdateStage`, `LeadHandler.Update`, and `ProspectHandler.Update`/`Convert` each write a `type: "note"` company-scoped Activity (`utils.LogCompanyActivity`, same transaction as the save) whenever the record's `stage`/`status` actually changes — this is what makes `Company.last_activity_at` (§4) reflect that the customer was actually contacted, rather than only counting a manually-logged Activity. A no-op save that resubmits the same `stage`/`status` (the "edit this record" case, not an actual transition) does not log one. |
 
 ### 7.3 Tags
 
@@ -832,7 +836,7 @@ Every write here also invalidates `GET /dashboard/summary`'s response cache (§9
 
 ### 8.8 Admin Configuration (option lists, lead scoring, notifications)
 
-🟢 **Required now** — fully implemented and routed, but previously undocumented here. Replaces several enums/lists that used to be hardcoded (`DealStage`, `LeadSource`) or unconstrained free text (`Company.industry/size/revenue_size`, `Contact.role_title`, Product category) with Admin-editable, DB-backed option rows — every Create/Update endpoint elsewhere in this spec that references one of these values (Lead/Deal `source`/`channel`, Deal `stage`, Contact `role_title`, etc.) validates against the corresponding active row here rather than a fixed Go enum.
+🟢 **Required now** — fully implemented and routed, but previously undocumented here. Replaces several enums/lists that used to be hardcoded (`DealStage`, `LeadSource`) or unconstrained free text (`Company.industry/size/revenue_size`, `Contact.role_title`, Product category) with Admin-editable, DB-backed option rows — every Create/Update endpoint elsewhere in this spec that references one of these values (Lead/Deal `source`/`channel`, Deal `stage`, Contact `role_title`, etc.) validates against the corresponding active row here rather than a fixed Go enum. **Exception (2026-09-10):** `Company.industry` was reverted to free text on the frontend (a free-typed combobox, not a dropdown) — `IndustryOption` rows are no longer a validation gate for it; see §4's note and `/admin/industries` below.
 
 **Auth split (fixed 2026-09-09).** Every option-list resource below (except Lead-scoring criteria/Notification rules, still fully `adminOnly`) splits by verb: `GET` (list) is open to every authenticated role — `authed`, no role check — since these back plain dropdowns/filters on pages with no role restriction of their own (Deal/Lead/Contact/Company/Project create-and-edit forms, the shared Dashboard, the Kanban board, Marketing's own `/prospects*` pages). `POST`/`PATCH`/`DELETE` stay `adminOnly`. Previously the whole resource (including `GET`) was bundled into one Admin-only route group, so any non-Admin role loading one of these dropdowns got a silent 403 that the frontend's axios interceptor turned into a hard redirect away from the page — Marketing's own primary `/prospects*` pages were the worst-hit instance, since Marketing has no other resource to fall back to. Regression-guarded by `TestRBAC_PipelineStagesLeadSourcesListOpenWritesAdminOnly`/`TestProspectSources_ListOpenWritesAdminOnly` in `tests/`.
 
@@ -863,8 +867,8 @@ interface OptionRow {              // LeadSourceOption / IndustryOption / Compan
 | `PATCH` / `DELETE` | `/admin/pipeline-stages/:id` | Update (including `is_active`/`sort_order`/`is_won_stage`/`is_lost_stage`) / delete. **Fixed 2026-09-10**: setting `is_won_stage`/`is_lost_stage` on a stage now clears that flag from every other row (one transaction alongside the save) — `DealHandler.UpdateStage`/`checkDealIdleRule` resolve "the" won/lost stage with a single lookup, so two rows flagged at once used to leave that pick undefined instead of erroring. |
 | `GET` / `POST` | `/admin/lead-sources` | List / create a `LeadSourceOption` — shared by `Lead.source` and `Deal.channel`. Seeded from the retired `LeadSource` enum (`Referral, Website, Event, Ads, Other`). |
 | `PATCH` / `DELETE` | `/admin/lead-sources/:id` | Update / delete. |
-| `GET` / `POST` | `/admin/industries` | List / create an `IndustryOption` for `Company.industry`. Seeded from the frontend's retired `INDUSTRY_OPTIONS` constant. |
-| `PATCH` / `DELETE` | `/admin/industries/:id` | Update / delete. |
+| `GET` / `POST` | `/admin/industries` | List / create an `IndustryOption`. Seeded from the frontend's retired `INDUSTRY_OPTIONS` constant. Curation-only, not a validation gate: `Company` Create/Update auto-register any typed `industry` value as an active row here rather than rejecting it (see §4's note), so this list is best read as "industries seen so far, tunable by an Admin" rather than an enforced whitelist. |
+| `PATCH` / `DELETE` | `/admin/industries/:id` | Update / delete. Deactivating a value here doesn't stop a Company from being re-saved with it — that reactivates the row (§4) rather than being rejected. |
 | `GET` / `POST` | `/admin/company-sizes` | List / create a `CompanySizeOption` for `Company.size`. No prior hardcoded list — the seeded rows (`1-10` … `1000+`) are a tunable starting point, not a fixed business rule. |
 | `PATCH` / `DELETE` | `/admin/company-sizes/:id` | Update / delete. |
 | `GET` / `POST` | `/admin/revenue-sizes` | List / create a `RevenueSizeOption` for `Company.revenue_size`. Same "tunable starting point" framing as company-sizes. |

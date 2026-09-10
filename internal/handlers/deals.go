@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -415,8 +416,20 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	// viewer and the Activities pages' Deal "Pipeline History" section,
 	// which reads this same audit trail.
 	after := models.JSONMap{"stage": deal.Stage, "status": deal.Status}
-	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error { return tx.Save(&deal).Error },
-		oldStage != deal.Stage, "deal", deal.ID, "stage_changed", before, after, middleware.CurrentUserID(c))
+	// Logging a company-scoped Activity alongside the stage_changed audit
+	// row (same oldStage != deal.Stage gate) is what makes
+	// Company.last_activity_at reflect that the customer was contacted —
+	// a stage move, even into Lost, counts as real contact.
+	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error {
+		if err := tx.Save(&deal).Error; err != nil {
+			return err
+		}
+		if oldStage != deal.Stage {
+			subject := fmt.Sprintf("Deal stage changed: %s → %s", oldStage, deal.Stage)
+			return utils.LogCompanyActivity(tx, deal.CompanyID, subject, middleware.CurrentUserID(c))
+		}
+		return nil
+	}, oldStage != deal.Stage, "deal", deal.ID, "stage_changed", before, after, middleware.CurrentUserID(c))
 	if err != nil {
 		return utils.Internal(c, "Failed to update deal")
 	}
@@ -696,8 +709,16 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	}
 
 	after := models.JSONMap{"stage": deal.Stage, "status": deal.Status}
-	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error { return tx.Save(&deal).Error },
-		oldStage != deal.Stage, "deal", deal.ID, "stage_changed", before, after, middleware.CurrentUserID(c))
+	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error {
+		if err := tx.Save(&deal).Error; err != nil {
+			return err
+		}
+		if oldStage != deal.Stage {
+			subject := fmt.Sprintf("Deal stage changed: %s → %s", oldStage, deal.Stage)
+			return utils.LogCompanyActivity(tx, deal.CompanyID, subject, middleware.CurrentUserID(c))
+		}
+		return nil
+	}, oldStage != deal.Stage, "deal", deal.ID, "stage_changed", before, after, middleware.CurrentUserID(c))
 	if err != nil {
 		return utils.Internal(c, "Failed to update deal stage")
 	}

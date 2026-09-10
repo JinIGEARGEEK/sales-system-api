@@ -58,17 +58,51 @@ func IsActiveProspectStage(db *gorm.DB, name string) bool {
 	return count > 0
 }
 
-// IsActiveIndustry reports whether name matches an active IndustryOption
-// row — the DB-backed replacement for the old frontend-only INDUSTRY_OPTIONS
-// whitelist. Empty name is allowed through (Industry has no NOT NULL
-// constraint at the DB level).
-func IsActiveIndustry(db *gorm.DB, name string) bool {
+// EnsureActiveIndustry finds-or-creates an active IndustryOption matching
+// name, reactivating it if it was previously soft-deactivated by an Admin.
+// Runs on Company Create/Update now that the frontend Industry field is a
+// free-typed combobox: any value a user types becomes a real, reusable
+// industry option rather than being bounced with a validation error. Empty
+// name is a no-op — Industry has no NOT NULL constraint at the DB level.
+func EnsureActiveIndustry(db *gorm.DB, name string) error {
 	if name == "" {
-		return true
+		return nil
 	}
-	var count int64
-	db.Model(&models.IndustryOption{}).Where("name = ? AND is_active = ?", name, true).Count(&count)
-	return count > 0
+	opt, err := findIndustryOption(db, name)
+	if err != nil {
+		return err
+	}
+	if opt != nil {
+		if !opt.IsActive {
+			opt.IsActive = true
+			return db.Save(opt).Error
+		}
+		return nil
+	}
+	// name.uniqueIndex means two concurrent Creates of a brand-new industry
+	// can both miss the lookup above and race here — the loser's Create
+	// fails on the unique constraint, not because anything is actually
+	// wrong. Re-resolve by name rather than surfacing that as a 500: the
+	// winner's row is exactly the one this call wanted to ensure exists.
+	if err := db.Create(&models.IndustryOption{Name: name, IsActive: true}).Error; err != nil {
+		if reOpt, reErr := findIndustryOption(db, name); reErr == nil && reOpt != nil {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func findIndustryOption(db *gorm.DB, name string) (*models.IndustryOption, error) {
+	var opt models.IndustryOption
+	err := db.Where("name = ?", name).First(&opt).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &opt, nil
 }
 
 // IsActiveCompanySize reports whether name matches an active

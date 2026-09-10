@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"time"
+
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
@@ -74,6 +76,10 @@ type activityForm struct {
 	Notes       string                     `json:"notes"`
 	RelatedType models.ActivityRelatedType `json:"related_type"`
 	RelatedID   uint                       `json:"related_id"`
+	// CreatedAt lets a caller backdate a manually-logged Activity (e.g.
+	// "mark as contacted on <past date>" from the Company page). Left nil,
+	// GORM's default CreatedAt convention stamps the current time as usual.
+	CreatedAt *time.Time `json:"created_at"`
 }
 
 // Create — POST /activities. Sets CreatedByID from the caller — FR-CRM-031.
@@ -88,11 +94,19 @@ func (h *ActivityHandler) Create(c *fiber.Ctx) error {
 			"related_id":   {"required"},
 		})
 	}
+	if form.CreatedAt != nil && form.CreatedAt.After(time.Now()) {
+		return utils.ValidationError(c, "created_at cannot be in the future", map[string][]string{
+			"created_at": {"invalid"},
+		})
+	}
 
 	actorID := middleware.CurrentUserID(c)
 	activity := models.Activity{
 		Type: form.Type, Subject: form.Subject, Notes: form.Notes,
 		RelatedType: form.RelatedType, RelatedID: form.RelatedID, CreatedByID: actorID,
+	}
+	if form.CreatedAt != nil {
+		activity.CreatedAt = *form.CreatedAt
 	}
 	if err := h.DB.Create(&activity).Error; err != nil {
 		return utils.Internal(c, "Failed to create activity")
