@@ -325,14 +325,18 @@ func checkProspectStaleRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 	}
 }
 
-// companyDormantTiers are the same 60/90/120-day stale-tier boundaries as the
-// dashboard's upsell_opportunities widget (internal/handlers/dashboard.go's
-// upsellOpportunities) and the frontend's composables/utils/useLastContact.ts
-// — kept in sync deliberately, not derived from rule.ThresholdDays, since
-// this rule (unlike checkDealIdleRule/checkQuoteExpiringRule/
-// checkContractStuckRule) escalates through fixed tiers rather than firing
-// once past a single caller-configured threshold; rule.ThresholdDays is still
-// honored as the floor below which nothing fires at all (see the loop below).
+// companyDormantTiers are this rule's own fixed 60/90/120-day escalation
+// boundaries. **Updated 2026-09-09**: these used to be kept deliberately in
+// sync with the dashboard's upsell_opportunities widget, which had the same
+// fixed tiers — but f876697 replaced that widget's tiers with an
+// Admin/user-configurable upsell_min_stale_days threshold
+// (internal/handlers/dashboard.go's upsellOpportunities), so the two are no
+// longer related. This rule still escalates through its own fixed tiers
+// rather than firing once past a single caller-configured threshold, since
+// unlike checkDealIdleRule/checkQuoteExpiringRule/checkContractStuckRule it
+// needs to re-fire as a Company gets progressively more stale;
+// rule.ThresholdDays is still honored as the floor below which nothing fires
+// at all (see the loop below).
 var companyDormantTiers = []int{60, 90, 120}
 
 // checkCompanyDormantRule — dormant-customer / upsell-targeting feature. An

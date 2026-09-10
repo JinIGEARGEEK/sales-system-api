@@ -1,0 +1,555 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "CRM/sales-pipeline API. This spec currently covers the\nProspect stage, Pipeline stage, and Dashboard summary routes\nas a scaffold — the annotation pattern on those handlers\n(see internal/handlers/prospect_stages.go, pipeline_stages.go,\ndashboard.go) extends to the rest of internal/routes/routes.go\nas they're annotated. Run `go run github.com/swaggo/swag/cmd/swag@v1.16.6\ninit -g cmd/api/main.go -o docs --parseDependency --parseInternal` from the\nrepo root to regenerate docs/ after editing annotations (the two flags are\nrequired to resolve gorm.DeletedAt across package boundaries).",
+        "title": "Sales System API",
+        "contact": {},
+        "version": "1.0"
+    },
+    "basePath": "/api/v1",
+    "paths": {
+        "/admin/pipeline-stages": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns every configured pipeline stage (active + inactive), ordered by sort_order.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/pipeline-stages"
+                ],
+                "summary": "List pipeline stages",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.PipelineStage"
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Admin-only. Setting is_won_stage/is_lost_stage clears that flag from every other stage.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/pipeline-stages"
+                ],
+                "summary": "Create a pipeline stage",
+                "parameters": [
+                    {
+                        "description": "Stage fields",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.pipelineStageForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.PipelineStage"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/pipeline-stages/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Admin-only. Soft-delete (is_active: false) — existing Deals may still reference the name.",
+                "tags": [
+                    "admin/pipeline-stages"
+                ],
+                "summary": "Deactivate a pipeline stage",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Pipeline stage ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Admin-only. Setting is_won_stage/is_lost_stage clears that flag from every other stage.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/pipeline-stages"
+                ],
+                "summary": "Update a pipeline stage",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Pipeline stage ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Stage fields",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.pipelineStageForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.PipelineStage"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/prospect-stages": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns every configured Prospect funnel stage (active + inactive), ordered by sort_order.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/prospect-stages"
+                ],
+                "summary": "List Prospect stages",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProspectStage"
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Admin-only. \"Converted\" is reserved and cannot be used as a stage name. Setting is_disqualified_stage clears that flag from every other stage.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/prospect-stages"
+                ],
+                "summary": "Create a Prospect stage",
+                "parameters": [
+                    {
+                        "description": "Stage fields",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.prospectStageForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProspectStage"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/prospect-stages/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Admin-only. Soft-delete (is_active: false) — existing Prospects may still reference the name.",
+                "tags": [
+                    "admin/prospect-stages"
+                ],
+                "summary": "Deactivate a Prospect stage",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Prospect stage ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Admin-only. \"Converted\" is reserved and cannot be used as a stage name. Setting is_disqualified_stage clears that flag from every other stage.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/prospect-stages"
+                ],
+                "summary": "Update a Prospect stage",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Prospect stage ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Stage fields",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.prospectStageForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProspectStage"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/dashboard/summary": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Aggregate sales metrics (pipeline value, win rate, trends, breakdowns, upsell opportunities). api-system-spec.md §9.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "dashboard"
+                ],
+                "summary": "Dashboard summary",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "ISO date lower bound (YYYY-MM-DD), mutually exclusive with period",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "ISO date upper bound (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "One of: month, quarter, last6, year/last12",
+                        "name": "period",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by business unit",
+                        "name": "business_unit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by business unit item",
+                        "name": "business_unit_item",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by Deal channel",
+                        "name": "channel",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by Sales Rep user ID",
+                        "name": "assigned_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by Company tag",
+                        "name": "company_tag",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Upsell Opportunities staleness threshold in days (default 60)",
+                        "name": "upsell_min_stale_days",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid date_from/date_to",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "github_com_igeargeek_sales-system-api_internal_models.PipelineStage": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "integer"
+                },
+                "deleted_at": {
+                    "$ref": "#/definitions/gorm.DeletedAt"
+                },
+                "deleted_by": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "is_lost_stage": {
+                    "type": "boolean"
+                },
+                "is_won_stage": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "sort_order": {
+                    "type": "integer"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_igeargeek_sales-system-api_internal_models.ProspectStage": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "integer"
+                },
+                "deleted_at": {
+                    "$ref": "#/definitions/gorm.DeletedAt"
+                },
+                "deleted_by": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "is_disqualified_stage": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "sort_order": {
+                    "type": "integer"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "integer"
+                }
+            }
+        },
+        "gorm.DeletedAt": {
+            "type": "object",
+            "properties": {
+                "time": {
+                    "type": "string"
+                },
+                "valid": {
+                    "description": "Valid is true if Time is not NULL",
+                    "type": "boolean"
+                }
+            }
+        },
+        "internal_handlers.pipelineStageForm": {
+            "type": "object",
+            "properties": {
+                "is_active": {
+                    "type": "boolean"
+                },
+                "is_lost_stage": {
+                    "type": "boolean"
+                },
+                "is_won_stage": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "sort_order": {
+                    "type": "integer"
+                }
+            }
+        },
+        "internal_handlers.prospectStageForm": {
+            "type": "object",
+            "properties": {
+                "is_active": {
+                    "type": "boolean"
+                },
+                "is_disqualified_stage": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "sort_order": {
+                    "type": "integer"
+                }
+            }
+        }
+    },
+    "securityDefinitions": {
+        "BearerAuth": {
+            "description": "Bearer JWT, e.g. \"Bearer \u003ctoken\u003e\".",
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header"
+        }
+    }
+}

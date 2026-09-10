@@ -61,6 +61,26 @@ func (h *DashboardHandler) baseFilter(c *fiber.Ctx) *gorm.DB {
 	return query
 }
 
+// validateDateRangeParams rejects a malformed date_from/date_to before
+// baseFilter ever passes it to Postgres as a query bound. Without this, an
+// invalid string (e.g. "not-a-date") reaches the DB as a comparison operand,
+// fails the query at the driver level, and — since baseFilter's callers
+// (Summary's ~12 concurrent aggregate queries) discard Scan's error return —
+// silently degrades the whole dashboard to zeroed-out figures instead of
+// telling the caller their filter was wrong.
+func validateDateRangeParams(c *fiber.Ctx) (map[string][]string, string) {
+	for _, param := range []string{"date_from", "date_to"} {
+		v := c.Query(param)
+		if v == "" {
+			continue
+		}
+		if _, err := time.Parse("2006-01-02", v); err != nil {
+			return map[string][]string{param: {"must be a valid YYYY-MM-DD date"}}, param + " is invalid"
+		}
+	}
+	return nil, ""
+}
+
 func periodStart(period string) (time.Time, bool) {
 	now := time.Now()
 	switch period {
@@ -224,8 +244,29 @@ func ResetDashboardCacheForTests() {
 	InvalidateDashboardCache()
 }
 
-// Summary — GET /dashboard/summary. api-system-spec.md §9.
+// Summary godoc
+// @Summary Dashboard summary
+// @Description Aggregate sales metrics (pipeline value, win rate, trends, breakdowns, upsell opportunities). api-system-spec.md §9.
+// @Tags dashboard
+// @Security BearerAuth
+// @Produce json
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), mutually exclusive with period"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD)"
+// @Param period query string false "One of: month, quarter, last6, year/last12"
+// @Param business_unit query string false "Filter by business unit"
+// @Param business_unit_item query string false "Filter by business unit item"
+// @Param channel query string false "Filter by Deal channel"
+// @Param assigned_to query string false "Filter by Sales Rep user ID"
+// @Param company_tag query string false "Filter by Company tag"
+// @Param upsell_min_stale_days query int false "Upsell Opportunities staleness threshold in days (default 60)"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{} "Invalid date_from/date_to"
+// @Router /dashboard/summary [get]
 func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
+	if fields, msg := validateDateRangeParams(c); fields != nil {
+		return utils.ValidationError(c, msg, fields)
+	}
+
 	cacheKey := string(c.Request().URI().QueryString())
 	summaryCacheMu.Lock()
 	if entry, ok := summaryCache[cacheKey]; ok && time.Now().Before(entry.expiresAt) {

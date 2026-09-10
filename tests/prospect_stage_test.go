@@ -101,6 +101,54 @@ func TestProspectCreate_RejectsInactiveStage(t *testing.T) {
 	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 }
 
+// TestProspectStages_OnlyOneDisqualifiedStageAtATime guards that setting
+// is_disqualified_stage on a new/updated row clears it from every other row —
+// checkProspectStaleRule (internal/notifier/workflow_rules.go) resolves "the"
+// disqualified stage with a single `.First()` lookup, so two flagged rows
+// would leave it picking whichever one Postgres returns first.
+func TestProspectStages_OnlyOneDisqualifiedStageAtATime(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	t.Cleanup(func() {
+		db.Unscoped().Where("name = ?", "Lost Cause").Delete(&models.ProspectStage{})
+		db.Model(&models.ProspectStage{}).Where("name = ?", "Disqualified").Update("is_disqualified_stage", true)
+	})
+
+	var seeded []models.ProspectStage
+	require.NoError(t, db.Where("name = ?", "Disqualified").Find(&seeded).Error)
+	require.Len(t, seeded, 1)
+	assert.True(t, seeded[0].IsDisqualifiedStage)
+
+	var created struct {
+		Data models.ProspectStage `json:"data"`
+	}
+	createReq := testutil.AuthRequest(t, http.MethodPost, "/api/v1/admin/prospect-stages", map[string]interface{}{
+		"name": "Lost Cause", "sort_order": 5, "is_disqualified_stage": true,
+	}, admin.ID, admin.Role)
+	createResp := doJSON(t, app, createReq, &created)
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	assert.True(t, created.Data.IsDisqualifiedStage)
+
+	var stages []models.ProspectStage
+	require.NoError(t, db.Where("is_disqualified_stage = ?", true).Find(&stages).Error)
+	require.Len(t, stages, 1, "only the newly-created row should carry is_disqualified_stage after Create")
+	assert.Equal(t, "Lost Cause", stages[0].Name)
+
+	// Flipping it back onto "Disqualified" via Update must clear "Lost Cause".
+	var disqualified models.ProspectStage
+	require.NoError(t, db.Where("name = ?", "Disqualified").First(&disqualified).Error)
+	updateReq := testutil.AuthRequest(t, http.MethodPatch, "/api/v1/admin/prospect-stages/"+itoa(disqualified.ID), map[string]interface{}{
+		"name": disqualified.Name, "sort_order": disqualified.SortOrder, "is_disqualified_stage": true,
+	}, admin.ID, admin.Role)
+	updateResp := doJSON(t, app, updateReq, nil)
+	require.Equal(t, http.StatusOK, updateResp.StatusCode)
+
+	require.NoError(t, db.Where("is_disqualified_stage = ?", true).Find(&stages).Error)
+	require.Len(t, stages, 1, "only the updated row should carry is_disqualified_stage after Update")
+	assert.Equal(t, "Disqualified", stages[0].Name)
+}
+
 // TestProspectStages_DeactivateThenReject covers the full admin lifecycle:
 // create a new stage, use it on a Prospect, deactivate it, then confirm a
 // new Prospect can no longer be created with that now-inactive stage.

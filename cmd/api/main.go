@@ -1,3 +1,21 @@
+// Package main is the sales-system-api server entrypoint.
+//
+// @title Sales System API
+// @version 1.0
+// @description CRM/sales-pipeline API. This spec currently covers the
+// @description Prospect stage, Pipeline stage, and Dashboard summary routes
+// @description as a scaffold — the annotation pattern on those handlers
+// @description (see internal/handlers/prospect_stages.go, pipeline_stages.go,
+// @description dashboard.go) extends to the rest of internal/routes/routes.go
+// @description as they're annotated. Run `go run github.com/swaggo/swag/cmd/swag@v1.16.6
+// @description init -g cmd/api/main.go -o docs --parseDependency --parseInternal` from the
+// @description repo root to regenerate docs/ after editing annotations (the two flags are
+// @description required to resolve gorm.DeletedAt across package boundaries).
+// @BasePath /api/v1
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
+// @description Bearer JWT, e.g. "Bearer <token>".
 package main
 
 import (

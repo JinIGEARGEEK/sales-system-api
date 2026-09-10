@@ -1,0 +1,375 @@
+basePath: /api/v1
+definitions:
+  github_com_igeargeek_sales-system-api_internal_models.PipelineStage:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      is_lost_stage:
+        type: boolean
+      is_won_stage:
+        type: boolean
+      name:
+        type: string
+      sort_order:
+        type: integer
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.ProspectStage:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      is_disqualified_stage:
+        type: boolean
+      name:
+        type: string
+      sort_order:
+        type: integer
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  gorm.DeletedAt:
+    properties:
+      time:
+        type: string
+      valid:
+        description: Valid is true if Time is not NULL
+        type: boolean
+    type: object
+  internal_handlers.pipelineStageForm:
+    properties:
+      is_active:
+        type: boolean
+      is_lost_stage:
+        type: boolean
+      is_won_stage:
+        type: boolean
+      name:
+        type: string
+      sort_order:
+        type: integer
+    type: object
+  internal_handlers.prospectStageForm:
+    properties:
+      is_active:
+        type: boolean
+      is_disqualified_stage:
+        type: boolean
+      name:
+        type: string
+      sort_order:
+        type: integer
+    type: object
+info:
+  contact: {}
+  description: |-
+    CRM/sales-pipeline API. This spec currently covers the
+    Prospect stage, Pipeline stage, and Dashboard summary routes
+    as a scaffold — the annotation pattern on those handlers
+    (see internal/handlers/prospect_stages.go, pipeline_stages.go,
+    dashboard.go) extends to the rest of internal/routes/routes.go
+    as they're annotated. Run `go run github.com/swaggo/swag/cmd/swag@v1.16.6
+    init -g cmd/api/main.go -o docs --parseDependency --parseInternal` from the
+    repo root to regenerate docs/ after editing annotations (the two flags are
+    required to resolve gorm.DeletedAt across package boundaries).
+  title: Sales System API
+  version: "1.0"
+paths:
+  /admin/pipeline-stages:
+    get:
+      description: Returns every configured pipeline stage (active + inactive), ordered
+        by sort_order.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.PipelineStage'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List pipeline stages
+      tags:
+      - admin/pipeline-stages
+    post:
+      consumes:
+      - application/json
+      description: Admin-only. Setting is_won_stage/is_lost_stage clears that flag
+        from every other stage.
+      parameters:
+      - description: Stage fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.pipelineStageForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.PipelineStage'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a pipeline stage
+      tags:
+      - admin/pipeline-stages
+  /admin/pipeline-stages/{id}:
+    delete:
+      description: 'Admin-only. Soft-delete (is_active: false) — existing Deals may
+        still reference the name.'
+      parameters:
+      - description: Pipeline stage ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Deactivate a pipeline stage
+      tags:
+      - admin/pipeline-stages
+    patch:
+      consumes:
+      - application/json
+      description: Admin-only. Setting is_won_stage/is_lost_stage clears that flag
+        from every other stage.
+      parameters:
+      - description: Pipeline stage ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Stage fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.pipelineStageForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.PipelineStage'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a pipeline stage
+      tags:
+      - admin/pipeline-stages
+  /admin/prospect-stages:
+    get:
+      description: Returns every configured Prospect funnel stage (active + inactive),
+        ordered by sort_order.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProspectStage'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List Prospect stages
+      tags:
+      - admin/prospect-stages
+    post:
+      consumes:
+      - application/json
+      description: Admin-only. "Converted" is reserved and cannot be used as a stage
+        name. Setting is_disqualified_stage clears that flag from every other stage.
+      parameters:
+      - description: Stage fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.prospectStageForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProspectStage'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a Prospect stage
+      tags:
+      - admin/prospect-stages
+  /admin/prospect-stages/{id}:
+    delete:
+      description: 'Admin-only. Soft-delete (is_active: false) — existing Prospects
+        may still reference the name.'
+      parameters:
+      - description: Prospect stage ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Deactivate a Prospect stage
+      tags:
+      - admin/prospect-stages
+    patch:
+      consumes:
+      - application/json
+      description: Admin-only. "Converted" is reserved and cannot be used as a stage
+        name. Setting is_disqualified_stage clears that flag from every other stage.
+      parameters:
+      - description: Prospect stage ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Stage fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.prospectStageForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProspectStage'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a Prospect stage
+      tags:
+      - admin/prospect-stages
+  /dashboard/summary:
+    get:
+      description: Aggregate sales metrics (pipeline value, win rate, trends, breakdowns,
+        upsell opportunities). api-system-spec.md §9.
+      parameters:
+      - description: ISO date lower bound (YYYY-MM-DD), mutually exclusive with period
+        in: query
+        name: date_from
+        type: string
+      - description: ISO date upper bound (YYYY-MM-DD)
+        in: query
+        name: date_to
+        type: string
+      - description: 'One of: month, quarter, last6, year/last12'
+        in: query
+        name: period
+        type: string
+      - description: Filter by business unit
+        in: query
+        name: business_unit
+        type: string
+      - description: Filter by business unit item
+        in: query
+        name: business_unit_item
+        type: string
+      - description: Filter by Deal channel
+        in: query
+        name: channel
+        type: string
+      - description: Filter by Sales Rep user ID
+        in: query
+        name: assigned_to
+        type: string
+      - description: Filter by Company tag
+        in: query
+        name: company_tag
+        type: string
+      - description: Upsell Opportunities staleness threshold in days (default 60)
+        in: query
+        name: upsell_min_stale_days
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid date_from/date_to
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Dashboard summary
+      tags:
+      - dashboard
+securityDefinitions:
+  BearerAuth:
+    description: Bearer JWT, e.g. "Bearer <token>".
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

@@ -84,6 +84,8 @@ All routes are prefixed `/api/v1`. Auth is a Bearer JWT (`Authorization: Bearer 
 
 Resources: Auth & Users, Leads, Prospects, Companies, Contacts, Deals, Activities, Tags, Quotes, Payments, Tasks, Contracts, Products & Customer-Products, Projects, Reports, Audit log, Dashboard aggregate. See `biz_spec/api-system-spec.md` for the full endpoint list, request/response shapes, filters, and per-endpoint status (🟢 required / 🔜 planned).
 
+In development (`APP_ENV=development`), a browsable Swagger UI is also served at `GET /swagger/index.html`, generated from `@`-annotated handler doc comments — currently a scaffold covering `/admin/pipeline-stages`, `/admin/prospect-stages`, and `/dashboard/summary` (see `docs/embed.go` for the regen command). `biz_spec/api-system-spec.md` remains the complete, authoritative reference.
+
 `POST /auth/login` is rate-limited to 10 attempts/minute per client IP (resolved from `X-Forwarded-For` behind Railway's proxy, falling back to the raw connection address for local/direct connections) — see `internal/routes/routes.go`.
 
 ### Roles (§1.7 of the spec)

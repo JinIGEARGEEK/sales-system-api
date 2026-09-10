@@ -8,6 +8,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/docs"
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/handlers"
 	"github.com/igeargeek/sales-system-api/internal/middleware"
@@ -35,6 +36,24 @@ func clientIP(c *fiber.Ctx) string {
 	}
 	return c.IP()
 }
+
+// swaggerUIHTML renders swagger-ui-dist (CDN-hosted, not a Go dependency)
+// against the embedded /swagger/doc.json — see docs.JSON's doc for why this
+// is a static page instead of the swaggo/fiber-swagger middleware.
+const swaggerUIHTML = `<!DOCTYPE html>
+<html>
+<head>
+  <title>Sales System API — Swagger UI</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.onload = () => SwaggerUIBundle({ url: "/swagger/doc.json", dom_id: "#swagger-ui" })
+  </script>
+</body>
+</html>`
 
 // Setup registers every route under /api/v1 — api-system-spec.md. storage
 // backs Quote/Contract/Attachment uploads and the /uploads download route —
@@ -76,6 +95,27 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	notificationLogH := handlers.NewNotificationLogHandler(db)
 	settingsH := handlers.NewSettingsHandler(db, cfg)
 	salesTargetH := handlers.NewSalesTargetHandler(db)
+
+	// /swagger/index.html — browsable OpenAPI docs generated from handler
+	// annotations (see docs.JSON's own doc for the regen command). Currently
+	// covers Prospect stage, Pipeline stage, and Dashboard summary as a
+	// scaffold — see main.go's @description for the pattern to extend it to
+	// the rest of this file's routes. Development-only: unlike
+	// biz_spec/api-system-spec.md this isn't hand-curated for external
+	// consumption yet, so it stays off in production until coverage is
+	// broader. Serves the embedded spec + a CDN-loaded Swagger UI directly
+	// (see swaggerUIHTML) rather than depending on swaggo/swag's runtime
+	// package — see docs.JSON's doc for why.
+	if cfg.AppEnv == "development" {
+		app.Get("/swagger/doc.json", func(c *fiber.Ctx) error {
+			c.Set("Content-Type", "application/json")
+			return c.Send(docs.JSON)
+		})
+		app.Get("/swagger/*", func(c *fiber.Ctx) error {
+			c.Set("Content-Type", "text/html")
+			return c.SendString(swaggerUIHTML)
+		})
+	}
 
 	api := app.Group("/api/v1")
 
