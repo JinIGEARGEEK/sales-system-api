@@ -194,11 +194,12 @@ func (h *ContactHandler) Delete(c *fiber.Ctx) error {
 // @Tags contacts
 // @Security BearerAuth
 // @Produce json
+// @Param search query string false "Search by name"
 // @Success 200 {object} map[string]interface{} "Paginated contact list (data, page, per_page, total)"
 // @Failure 403 {object} map[string]interface{} "Not Admin/Sales Manager"
 // @Router /contacts/trash [get]
 func (h *ContactHandler) Trash(c *fiber.Ctx) error {
-	return utils.GenericTrash[models.Contact](c, h.DB, "Failed to list deleted contacts")
+	return utils.GenericTrash[models.Contact](c, h.DB, "Failed to list deleted contacts", "name")
 }
 
 // Restore godoc

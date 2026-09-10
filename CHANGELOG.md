@@ -4,6 +4,11 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-09-10 — Trash `search` filter for Company/Contact/Deal/Lead
+
+`utils.GenericTrash` (the shared handler behind `GET /companies/trash`, `/contacts/trash`, `/deals/trash`, `/leads/trash`, `/prospects/trash`, `/users/trash`) now takes an optional variadic `searchColumns ...string`. When the caller supplies at least one and the request carries `?search=`, it matches (`ILIKE`, OR'd across columns) — Company/Contact/Lead search `name`, Deal searches `title`. Callers that pass none (Prospect, User) leave `?search=` a no-op, same as before this param existed — no behavior change for them. New `tests/trash_search_test.go`. Spec: §2, §7.
+
+
 ## 2026-09-10 — Deal/Lead/Product RBAC gaps, dashboard ambiguous-column fix, notifier/middleware unit tests, Swagger expansion
 
 Follow-up audit on the same day's terminal-stage-exclusivity/dashboard-date-validation/Swagger-scaffold work below.

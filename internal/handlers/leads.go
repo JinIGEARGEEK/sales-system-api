@@ -436,10 +436,11 @@ func (h *LeadHandler) Delete(c *fiber.Ctx) error {
 // @Tags leads
 // @Security BearerAuth
 // @Produce json
+// @Param search query string false "Search by name"
 // @Success 200 {object} map[string]interface{} "Paginated lead list (data, page, per_page, total)"
 // @Router /leads/trash [get]
 func (h *LeadHandler) Trash(c *fiber.Ctx) error {
-	return utils.GenericTrash[models.Lead](c, h.DB, "Failed to list deleted leads")
+	return utils.GenericTrash[models.Lead](c, h.DB, "Failed to list deleted leads", "name")
 }
 
 // Restore godoc

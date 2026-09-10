@@ -1807,6 +1807,14 @@
                     "companies"
                 ],
                 "summary": "List deleted companies (Admin/Sales Manager only)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search by name",
+                        "name": "search",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "Paginated company list (data, page, per_page, total)",
@@ -2400,6 +2408,14 @@
                     "contacts"
                 ],
                 "summary": "List deleted contacts (Admin/Sales Manager only)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search by name",
+                        "name": "search",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "Paginated contact list (data, page, per_page, total)",
@@ -3230,6 +3246,14 @@
                     "deals"
                 ],
                 "summary": "List deleted deals (Admin/Sales Manager)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search by title",
+                        "name": "search",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "Paginated deal list (data, page, per_page, total)",
@@ -4208,6 +4232,14 @@
                     "leads"
                 ],
                 "summary": "List deleted leads (Admin/Sales Manager only)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search by name",
+                        "name": "search",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "Paginated lead list (data, page, per_page, total)",

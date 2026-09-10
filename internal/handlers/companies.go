@@ -222,11 +222,12 @@ func (h *CompanyHandler) Delete(c *fiber.Ctx) error {
 // @Tags companies
 // @Security BearerAuth
 // @Produce json
+// @Param search query string false "Search by name"
 // @Success 200 {object} map[string]interface{} "Paginated company list (data, page, per_page, total)"
 // @Failure 403 {object} map[string]interface{} "Not Admin/Sales Manager"
 // @Router /companies/trash [get]
 func (h *CompanyHandler) Trash(c *fiber.Ctx) error {
-	return utils.GenericTrash[models.Company](c, h.DB, "Failed to list deleted companies")
+	return utils.GenericTrash[models.Company](c, h.DB, "Failed to list deleted companies", "name")
 }
 
 // Restore godoc

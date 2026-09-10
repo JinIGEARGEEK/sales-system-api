@@ -239,7 +239,7 @@ interface Lead {
 | `GET` | `/leads/:id` | 🟢 | Single lead. Deliberately still open to every role (Marketing's read-only "View Lead" access from a converted Prospect) — the one route in this group not gated to Admin/Sales Rep/Sales Manager. |
 | `PUT` | `/leads/:id` | 🟢 | Admin/Sales Rep/Sales Manager only (added 2026-09-09 — previously any authenticated role, including Marketing/Production, could mutate a Lead they have no business touching; `GET` stays open for Marketing's read-only "View Lead" access from a converted Prospect). Update (including status transitions). Same `email`/`source` validation as Create. Omitting `classification` leaves an existing manual `"sql"` override in place rather than letting it fall back to the auto-computed value. |
 | `DELETE` | `/leads/:id` | 🟢 | Admin/Sales Rep/Sales Manager only (route gate added 2026-09-10, same gap as `GET`/`POST` above). Soft-delete (§1.6) — recoverable via Trash/Restore below. |
-| `GET` | `/leads/trash` | 🟢 | Sales Manager/Admin only. List soft-deleted leads, paginated like `GET /leads`. |
+| `GET` | `/leads/trash` | 🟢 | Sales Manager/Admin only. List soft-deleted leads, paginated like `GET /leads`. `?search=` (added 2026-09-10) matches against `name`. |
 | `POST` | `/leads/:id/restore` | 🟢 | Sales Manager/Admin only. Clears `deleted_at`/`deleted_by`. |
 | `PATCH` | `/leads/bulk-reassign` | 🟢 | Sales Manager/Admin only. Body: `{ ids: number[], assigned_to: number \| null }`. |
 | `PATCH` | `/leads/bulk-tag` | 🟢 | Sales Manager/Admin only. Body: `{ ids: number[], tags: string[], mode: 'set' \| 'add' }` — `"set"` replaces each Lead's tags outright, `"add"` merges into the existing set. |
@@ -431,7 +431,7 @@ interface Deal {
 | `PUT` | `/deals/:id` | 🟢 | Admin/Sales Rep/Sales Manager only. Full update. Same validation as Create. **Fixed 2026-09-08** — now writes a `stage_changed` audit log entry when the submitted `stage` differs from the deal's current one, same as the dedicated `PATCH /deals/:id/stage` quick-move endpoint already did; previously a Stage change made from the Overview edit form (rather than the Kanban board) skipped the audit trail entirely, silently missing from both the Admin audit viewer and the frontend Activities pages' Deal "Pipeline History" section. |
 | `PATCH` | `/deals/:id/stage` | 🟢 | Admin/Sales Rep/Sales Manager only. Body: `{ stage: DealStage }`. Dedicated endpoint for the Kanban drag-and-drop (`CrmPipelineBoard`'s `@move`) so the backend can also update `status` (open/won/lost) and fire `FR-CRM-064`'s auto Customer-Product creation (§8.2) in one transaction when stage becomes `Won`. |
 | `DELETE` | `/deals/:id` | 🟢 | Admin/Sales Rep/Sales Manager only. Soft-delete (§1.6) — recoverable via Trash/Restore below. |
-| `GET` | `/deals/trash` | 🟢 | Sales Manager/Admin only. List soft-deleted deals, paginated like `GET /deals`. |
+| `GET` | `/deals/trash` | 🟢 | Sales Manager/Admin only. List soft-deleted deals, paginated like `GET /deals`. `?search=` (added 2026-09-10) matches against `title`. |
 | `POST` | `/deals/:id/restore` | 🟢 | Sales Manager/Admin only. |
 | `PATCH` | `/deals/:id/reassign` | 🟢 | Sales Manager/Admin only. Body: `{ assigned_to: number }`. |
 | `PATCH` | `/deals/bulk-reassign` | 🟢 | Sales Manager/Admin only. Body: `{ ids: number[], assigned_to: number \| null }`. |

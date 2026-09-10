@@ -2997,6 +2997,11 @@ paths:
   /companies/trash:
     get:
       description: Returns soft-deleted Companies.
+      parameters:
+      - description: Search by name
+        in: query
+        name: search
+        type: string
       produces:
       - application/json
       responses:
@@ -3268,6 +3273,11 @@ paths:
   /contacts/trash:
     get:
       description: Returns soft-deleted Contacts.
+      parameters:
+      - description: Search by name
+        in: query
+        name: search
+        type: string
       produces:
       - application/json
       responses:
@@ -4194,6 +4204,11 @@ paths:
   /deals/trash:
     get:
       description: Returns soft-deleted Deals, paginated like GET /deals.
+      parameters:
+      - description: Search by title
+        in: query
+        name: search
+        type: string
       produces:
       - application/json
       responses:
@@ -4560,6 +4575,11 @@ paths:
   /leads/trash:
     get:
       description: Returns soft-deleted Leads.
+      parameters:
+      - description: Search by name
+        in: query
+        name: search
+        type: string
       produces:
       - application/json
       responses:

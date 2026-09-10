@@ -454,10 +454,11 @@ func (h *DealHandler) Delete(c *fiber.Ctx) error {
 // @Tags deals
 // @Security BearerAuth
 // @Produce json
+// @Param search query string false "Search by title"
 // @Success 200 {object} map[string]interface{} "Paginated deal list (data, page, per_page, total)"
 // @Router /deals/trash [get]
 func (h *DealHandler) Trash(c *fiber.Ctx) error {
-	return utils.GenericTrash[models.Deal](c, h.DB, "Failed to list deleted deals")
+	return utils.GenericTrash[models.Deal](c, h.DB, "Failed to list deleted deals", "title")
 }
 
 // Restore godoc

@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"strings"
+
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 )
@@ -8,10 +10,25 @@ import (
 // GenericTrash lists Unscoped soft-deleted rows of T, newest-deleted first,
 // through the same paginated envelope (List) every other list endpoint uses.
 // Shared by Deal/Lead's GET /.../trash — identical apart from the model type
-// and the "failed to list" message.
-func GenericTrash[T any](c *fiber.Ctx, db *gorm.DB, failMsg string) error {
+// and the "failed to list" message. `searchColumns` (optional) names the
+// column(s) a `?search=` query param matches against (ILIKE, OR'd together)
+// — e.g. Deal passes "title", Company/Contact/Lead pass "name". Omit it
+// (Prospect/User's Trash callers do) to leave `search` a no-op, same as
+// before this param existed.
+func GenericTrash[T any](c *fiber.Ctx, db *gorm.DB, failMsg string, searchColumns ...string) error {
 	page, perPage, offset := Pagination(c)
 	query := db.Unscoped().Model(new(T)).Where("deleted_at IS NOT NULL")
+
+	if search := c.Query("search"); search != "" && len(searchColumns) > 0 {
+		like := "%" + search + "%"
+		conds := make([]string, len(searchColumns))
+		args := make([]interface{}, len(searchColumns))
+		for i, col := range searchColumns {
+			conds[i] = col + " ILIKE ?"
+			args[i] = like
+		}
+		query = query.Where(strings.Join(conds, " OR "), args...)
+	}
 
 	var total int64
 	query.Count(&total)
