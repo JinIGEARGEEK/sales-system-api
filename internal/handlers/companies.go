@@ -79,7 +79,7 @@ type companyForm struct {
 
 // Create godoc
 // @Summary Create a company
-// @Description Creates a Company. name is required; industry/size/revenue_size must each match an active configured option (see /admin/industries, /admin/company-sizes, /admin/revenue-sizes). domain is derived server-side from website.
+// @Description Creates a Company. name is required; size/revenue_size must each match an active configured option (see /admin/company-sizes, /admin/revenue-sizes). industry is free text — any non-empty value is auto-registered as an active /admin/industries option if it isn't one already. domain is derived server-side from website.
 // @Tags companies
 // @Security BearerAuth
 // @Accept json
@@ -96,8 +96,8 @@ func (h *CompanyHandler) Create(c *fiber.Ctx) error {
 	if form.Name == "" {
 		return utils.ValidationError(c, "name is required", map[string][]string{"name": {"required"}})
 	}
-	if !utils.IsActiveIndustry(h.DB, form.Industry) {
-		return utils.ValidationError(c, "industry is not a valid active industry", map[string][]string{"industry": {"invalid"}})
+	if err := utils.EnsureActiveIndustry(h.DB, form.Industry); err != nil {
+		return utils.Internal(c, "Failed to save industry option")
 	}
 	if !utils.IsActiveCompanySize(h.DB, form.Size) {
 		return utils.ValidationError(c, "size is not a valid active company size", map[string][]string{"size": {"invalid"}})
@@ -147,7 +147,7 @@ func (h *CompanyHandler) Get(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Update a company
-// @Description Updates a Company. industry/size/revenue_size must each match an active configured option; domain is re-derived from website.
+// @Description Updates a Company. size/revenue_size must each match an active configured option; industry is free text and auto-registers a new active /admin/industries option if needed; domain is re-derived from website.
 // @Tags companies
 // @Security BearerAuth
 // @Accept json
@@ -168,8 +168,8 @@ func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
-	if !utils.IsActiveIndustry(h.DB, form.Industry) {
-		return utils.ValidationError(c, "industry is not a valid active industry", map[string][]string{"industry": {"invalid"}})
+	if err := utils.EnsureActiveIndustry(h.DB, form.Industry); err != nil {
+		return utils.Internal(c, "Failed to save industry option")
 	}
 	if !utils.IsActiveCompanySize(h.DB, form.Size) {
 		return utils.ValidationError(c, "size is not a valid active company size", map[string][]string{"size": {"invalid"}})

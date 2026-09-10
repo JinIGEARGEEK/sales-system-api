@@ -391,7 +391,7 @@ func TestRBAC_ProductCatalogWritesAdminOnly(t *testing.T) {
 
 	t.Run("create is forbidden for sales rep", func(t *testing.T) {
 		req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/products", map[string]interface{}{
-			"name": "Test Product", "category": "Software",
+			"name": "Test Product", "category": "",
 		}, rep.ID, rep.Role)
 		resp := doJSON(t, app, req, nil)
 		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
@@ -399,7 +399,7 @@ func TestRBAC_ProductCatalogWritesAdminOnly(t *testing.T) {
 
 	t.Run("create is allowed for admin, then update/deactivate are forbidden for sales rep", func(t *testing.T) {
 		req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/products", map[string]interface{}{
-			"name": "Test Product", "category": "Software",
+			"name": "Test Product", "category": "",
 		}, admin.ID, admin.Role)
 		var out struct {
 			Data struct {

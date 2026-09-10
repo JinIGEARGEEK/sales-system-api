@@ -6,6 +6,10 @@ const (
 	ActivityTypeCall    ActivityType = "call"
 	ActivityTypeEmail   ActivityType = "email"
 	ActivityTypeMeeting ActivityType = "meeting"
+	// ActivityTypeNote covers both a manually-logged freeform note and a
+	// system-generated entry (e.g. a Prospect/Lead/Deal stage change) — see
+	// utils.LogCompanyActivity.
+	ActivityTypeNote ActivityType = "note"
 )
 
 // ActivityRelatedType is shared by Activity.related_type and Task.related_type.

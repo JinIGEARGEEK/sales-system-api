@@ -231,12 +231,28 @@ func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 		return utils.ValidationError(c, "business_unit must be Project or Product", map[string][]string{"business_unit": {"invalid"}})
 	}
 
+	// oldStatus captured ahead of the mutation below, mirroring Deal's
+	// oldStage pattern (deals.go Update) — the only reliable way to tell the
+	// rep actually changed status on this save, since the form resubmits the
+	// Prospect's full state every time.
+	oldStatus := prospect.Status
+	oldCompanyID := prospect.CompanyID
+
 	prospect.Name, prospect.CompanyID, prospect.Email, prospect.Phone = form.Name, form.CompanyID, form.Email, form.Phone
 	prospect.Source, prospect.Status, prospect.Notes, prospect.AssignedTo = form.Source, form.Status, form.Notes, form.AssignedTo
 	prospect.Tags = pq.StringArray(form.Tags)
 	prospect.BusinessUnit, prospect.BusinessUnitItem = form.BusinessUnit, form.BusinessUnitItem
 
-	if err := h.DB.Save(&prospect).Error; err != nil {
+	// Logs a company-scoped Activity when the stage actually changed, so
+	// Company.last_activity_at reflects that the customer was contacted —
+	// a stage move (including into Disqualified) is treated as real contact.
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&prospect).Error; err != nil {
+			return err
+		}
+		return utils.LogStatusChangeActivity(tx, "Prospect", oldStatus, prospect.Status, prospect.CompanyID, oldCompanyID, middleware.CurrentUserID(c))
+	})
+	if err != nil {
 		return utils.Internal(c, "Failed to update prospect")
 	}
 	return utils.OK(c, prospect)
@@ -519,7 +535,10 @@ func (h *ProspectHandler) Convert(c *fiber.Ctx) error {
 
 		prospect.Status = models.ProspectStatusConverted
 		prospect.ConvertedLeadID = &lead.ID
-		return tx.Save(&prospect).Error
+		if err := tx.Save(&prospect).Error; err != nil {
+			return err
+		}
+		return utils.LogCompanyActivity(tx, company.ID, "Prospect converted to Lead", middleware.CurrentUserID(c))
 	})
 	if err != nil {
 		return utils.Internal(c, "Failed to convert prospect")

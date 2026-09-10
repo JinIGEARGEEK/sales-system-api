@@ -1677,7 +1677,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a Company. name is required; industry/size/revenue_size must each match an active configured option (see /admin/industries, /admin/company-sizes, /admin/revenue-sizes). domain is derived server-side from website.",
+                "description": "Creates a Company. name is required; size/revenue_size must each match an active configured option (see /admin/company-sizes, /admin/revenue-sizes). industry is free text — any non-empty value is auto-registered as an active /admin/industries option if it isn't one already. domain is derived server-side from website.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2069,7 +2069,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Updates a Company. industry/size/revenue_size must each match an active configured option; domain is re-derived from website.",
+                "description": "Updates a Company. size/revenue_size must each match an active configured option; industry is free text and auto-registers a new active /admin/industries option if needed; domain is re-derived from website.",
                 "consumes": [
                     "application/json"
                 ],

@@ -56,6 +56,21 @@ var tables = []string{
 	"projects",
 	"customer_products",
 	"products",
+	// industry_options/company_size_options/revenue_size_options/
+	// job_title_options/product_category_options all have a uniqueIndex'd
+	// name and no seedPipelineConfig-style "seed once, exclude from
+	// truncate" entry of their own — unlike PipelineStage/LeadSourceOption/
+	// ProspectSourceOption/ProspectStage, nothing seeds a default set for
+	// these, so leaving them out of this list (as they were) meant a test
+	// creating one (e.g. EnsureActiveIndustry auto-registering a Company's
+	// free-typed industry) collided with the same row left over from an
+	// earlier test run — the same class of bug notification_rules' comment
+	// above describes for its own uniqueIndex'd name.
+	"industry_options",
+	"company_size_options",
+	"revenue_size_options",
+	"job_title_options",
+	"product_category_options",
 	"contracts",
 	"tasks",
 	"campaigns",
