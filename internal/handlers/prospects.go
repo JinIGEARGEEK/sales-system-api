@@ -21,8 +21,21 @@ func NewProspectHandler(db *gorm.DB) *ProspectHandler {
 	return &ProspectHandler{DB: db}
 }
 
-// List — GET /prospects. Filters: status, source, assigned_to, company_id
-// (exact match), search (name/email/company name). Mirrors LeadHandler.List.
+// List godoc
+// @Summary List prospects (Admin/Marketing/Sales Manager/Sales Rep)
+// @Description Returns a paginated list of Prospects. Filters: status, source, assigned_to ("unassigned" for unassigned), company_id (exact match), search (name/email/company name), exclude_converted ("true" to hide already-converted Prospects). Mirrors LeadHandler.List.
+// @Tags prospects
+// @Security BearerAuth
+// @Produce json
+// @Param status query string false "Filter by status"
+// @Param source query string false "Filter by source"
+// @Param assigned_to query string false "Filter by assigned user ID, or \"unassigned\""
+// @Param company_id query int false "Filter by Company ID"
+// @Param search query string false "Search by name/email/company name"
+// @Param exclude_converted query string false "Set to \"true\" to exclude already-converted prospects"
+// @Param sort query string false "Sort field, prefix with - for descending (created_at, name)"
+// @Success 200 {object} map[string]interface{} "Paginated prospect list (data, page, per_page, total)"
+// @Router /prospects [get]
 func (h *ProspectHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := h.DB.Model(&models.Prospect{})
@@ -100,7 +113,18 @@ type prospectForm struct {
 	BusinessUnitItem *string              `json:"business_unit_item"`
 }
 
-// Create — POST /prospects.
+// Create godoc
+// @Summary Create a prospect (Admin/Marketing/Sales Manager/Sales Rep)
+// @Description Creates a new Prospect. status defaults to "New" if omitted; status "Converted" cannot be set directly (only via POST /prospects/:id/convert). source must be an active Prospect source and status an active Prospect stage. A Sales Rep may only assign to themselves.
+// @Tags prospects
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body prospectForm true "Prospect fields"
+// @Success 201 {object} models.Prospect
+// @Failure 400 {object} map[string]interface{} "Validation error (name required, invalid source/status/business_unit/email)"
+// @Failure 403 {object} map[string]interface{} "Cannot assign a prospect to another team member"
+// @Router /prospects [post]
 func (h *ProspectHandler) Create(c *fiber.Ctx) error {
 	var form prospectForm
 	if err := c.BodyParser(&form); err != nil {
@@ -143,7 +167,16 @@ func (h *ProspectHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, prospect)
 }
 
-// Get — GET /prospects/:id.
+// Get godoc
+// @Summary Get a prospect by ID (Admin/Marketing/Sales Manager/Sales Rep)
+// @Description Returns a single Prospect by ID.
+// @Tags prospects
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "Prospect ID"
+// @Success 200 {object} models.Prospect
+// @Failure 404 {object} map[string]interface{} "Prospect not found"
+// @Router /prospects/{id} [get]
 func (h *ProspectHandler) Get(c *fiber.Ctx) error {
 	var prospect models.Prospect
 	if err := h.DB.First(&prospect, c.Params("id")).Error; err != nil {
@@ -152,7 +185,20 @@ func (h *ProspectHandler) Get(c *fiber.Ctx) error {
 	return utils.OK(c, prospect)
 }
 
-// Update — PUT /prospects/:id (including status transitions).
+// Update godoc
+// @Summary Update a prospect (Admin/Marketing/Sales Manager/Sales Rep)
+// @Description Updates a Prospect, including status transitions. status "Converted" cannot be set directly (only via POST /prospects/:id/convert), except re-submitting an already-Converted record's unchanged status. source must be an active Prospect source and status an active Prospect stage. A Sales Rep may only act on/assign to their own prospects.
+// @Tags prospects
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Prospect ID"
+// @Param body body prospectForm true "Prospect fields"
+// @Success 200 {object} models.Prospect
+// @Failure 400 {object} map[string]interface{} "Validation error (invalid source/status/business_unit/email)"
+// @Failure 403 {object} map[string]interface{} "Not authorized to update this prospect"
+// @Failure 404 {object} map[string]interface{} "Prospect not found"
+// @Router /prospects/{id} [put]
 func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 	var prospect models.Prospect
 	if err := h.DB.First(&prospect, c.Params("id")).Error; err != nil {
@@ -196,8 +242,16 @@ func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, prospect)
 }
 
-// Delete — DELETE /prospects/:id. Soft-delete (AuditedModel) — recoverable via
-// Restore/Trash below.
+// Delete godoc
+// @Summary Delete a prospect (Admin/Marketing/Sales Manager/Sales Rep)
+// @Description Soft-deletes a Prospect (AuditedModel) — recoverable via GET /prospects/trash and POST /prospects/:id/restore. A Sales Rep may only delete their own prospects.
+// @Tags prospects
+// @Security BearerAuth
+// @Param id path int true "Prospect ID"
+// @Success 204 "No Content"
+// @Failure 403 {object} map[string]interface{} "Not authorized to delete this prospect"
+// @Failure 404 {object} map[string]interface{} "Prospect not found"
+// @Router /prospects/{id} [delete]
 func (h *ProspectHandler) Delete(c *fiber.Ctx) error {
 	var prospect models.Prospect
 	if err := h.DB.First(&prospect, c.Params("id")).Error; err != nil {
@@ -213,17 +267,43 @@ func (h *ProspectHandler) Delete(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
-// Trash — GET /prospects/trash. Sales-Manager/Admin only (route-gated).
+// Trash godoc
+// @Summary List deleted prospects (Admin/Sales Manager)
+// @Description Returns soft-deleted Prospects, paginated.
+// @Tags prospects
+// @Security BearerAuth
+// @Produce json
+// @Success 200 {object} map[string]interface{} "Paginated prospect list (data, page, per_page, total)"
+// @Router /prospects/trash [get]
 func (h *ProspectHandler) Trash(c *fiber.Ctx) error {
 	return utils.GenericTrash[models.Prospect](c, h.DB, "Failed to list deleted prospects")
 }
 
-// Restore — POST /prospects/:id/restore. Sales-Manager/Admin only (route-gated).
+// Restore godoc
+// @Summary Restore a deleted prospect (Admin/Sales Manager)
+// @Description Restores a soft-deleted Prospect.
+// @Tags prospects
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "Prospect ID"
+// @Success 200 {object} models.Prospect
+// @Failure 404 {object} map[string]interface{} "Deleted prospect not found"
+// @Router /prospects/{id}/restore [post]
 func (h *ProspectHandler) Restore(c *fiber.Ctx) error {
 	return utils.GenericRestore[models.Prospect](c, h.DB, "Deleted prospect not found", "Failed to restore prospect")
 }
 
-// BulkReassign — PATCH /prospects/bulk-reassign. Sales-Manager/Admin only (route-gated).
+// BulkReassign godoc
+// @Summary Bulk reassign prospects (Admin/Sales Manager)
+// @Description Reassigns a set of Prospects to a new owner in one transaction.
+// @Tags prospects
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body bulkReassignForm true "Prospect IDs and new assignee"
+// @Success 204 "No Content"
+// @Failure 400 {object} map[string]interface{} "ids is required"
+// @Router /prospects/bulk-reassign [patch]
 func (h *ProspectHandler) BulkReassign(c *fiber.Ctx) error {
 	var form bulkReassignForm
 	if err := c.BodyParser(&form); err != nil {
@@ -247,7 +327,17 @@ func (h *ProspectHandler) BulkReassign(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
-// BulkTag — PATCH /prospects/bulk-tag. Sales-Manager/Admin only (route-gated).
+// BulkTag godoc
+// @Summary Bulk tag prospects (Admin/Sales Manager)
+// @Description Adds or replaces tags on a set of Prospects in one transaction. mode "add" (default) merges tags, "set" replaces them.
+// @Tags prospects
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body bulkTagForm true "Prospect IDs, tags, and mode"
+// @Success 204 "No Content"
+// @Failure 400 {object} map[string]interface{} "ids is required"
+// @Router /prospects/bulk-tag [patch]
 func (h *ProspectHandler) BulkTag(c *fiber.Ctx) error {
 	var form bulkTagForm
 	if err := c.BodyParser(&form); err != nil {
@@ -275,8 +365,17 @@ func (h *ProspectHandler) BulkTag(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
-// BulkArchive — PATCH /prospects/bulk-archive. Sales-Manager/Admin only (route-gated).
-// Soft-deletes each prospect (same as Delete), in one transaction.
+// BulkArchive godoc
+// @Summary Bulk archive prospects (Admin/Sales Manager)
+// @Description Soft-deletes a set of Prospects (same effect as Delete), in one transaction.
+// @Tags prospects
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body bulkIDsForm true "Prospect IDs"
+// @Success 204 "No Content"
+// @Failure 400 {object} map[string]interface{} "ids is required"
+// @Router /prospects/bulk-archive [patch]
 func (h *ProspectHandler) BulkArchive(c *fiber.Ctx) error {
 	var form bulkIDsForm
 	if err := c.BodyParser(&form); err != nil {
@@ -309,11 +408,21 @@ type prospectConvertRequest struct {
 	} `json:"lead"`
 }
 
-// Convert — POST /prospects/:id/convert. Converts a Prospect into a Lead (and
-// Company/Contact if new) — mirrors LeadHandler.Convert's Lead→Deal pattern
-// one funnel stage earlier: resolve-or-create Company → resolve-or-create
-// Contact → create the target record with a back-reference → carry over
-// Attachments → mark the source record converted, all in one transaction.
+// Convert godoc
+// @Summary Convert a prospect into a lead (Admin/Marketing/Sales Manager/Sales Rep)
+// @Description Converts a Prospect into a Lead (and a Company/Contact if not supplied or not already linked) in one transaction: resolve-or-create Company, resolve-or-create Contact, create the Lead with a back-reference to the source Prospect, carry over Attachments, then mark the Prospect "Converted" and stamp its converted_lead_id. Fails with 409 if already converted. Source/tags are carried over as-is even if they aren't among the Lead's own configured options.
+// @Tags prospects
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Prospect ID"
+// @Param body body prospectConvertRequest true "Optional company_id/contact_id to link, and lead.assigned_to"
+// @Success 200 {object} map[string]interface{} "lead, company, contact"
+// @Failure 400 {object} map[string]interface{} "Invalid request body"
+// @Failure 403 {object} map[string]interface{} "Not authorized to convert this prospect"
+// @Failure 404 {object} map[string]interface{} "Prospect not found"
+// @Failure 409 {object} map[string]interface{} "Prospect has already been converted"
+// @Router /prospects/{id}/convert [post]
 func (h *ProspectHandler) Convert(c *fiber.Ctx) error {
 	var prospect models.Prospect
 	if err := h.DB.First(&prospect, c.Params("id")).Error; err != nil {

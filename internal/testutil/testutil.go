@@ -7,6 +7,7 @@ package testutil
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -221,14 +222,32 @@ func TruncateAll(db *gorm.DB) error {
 	return nil
 }
 
+// testDBLockKey is an arbitrary constant used with Postgres's session-level
+// advisory lock (pg_advisory_lock/pg_advisory_unlock) to serialize every
+// caller of App across the whole test run — not just within one package.
+// Originally only the `tests` package touched this shared DB, so `go test`'s
+// default per-package parallelism (each package is its own OS process) never
+// raced. Once internal/middleware and internal/notifier grew their own tests
+// against the same DB, running plain `go test ./...` (as CI's `go test ./...
+// -v -race` does) could run those packages' test binaries concurrently,
+// racing TruncateAll's RESTART IDENTITY against another package's in-flight
+// inserts — surfaced as a sporadic "duplicate key value violates unique
+// constraint" on a table's serial primary key. The advisory lock is
+// acquired on a single dedicated connection held for the whole test (via
+// t.Cleanup) so a second process's App() call blocks until the first one's
+// test fully finishes, regardless of how many test binaries `go test` runs
+// side by side.
+const testDBLockKey = 725310
+
 // App returns a fresh Fiber app wired via routes.Setup against the shared
 // test DB connection, with all tables truncated first so each test starts
-// from a clean slate. Safe to call once per test (or subtest) — DB access
-// is sequential given `go test -p 1`, matching the package-level requirement
-// that these tests not run concurrently against the shared connection.
+// from a clean slate. Safe to call once per test (or subtest) from any
+// package — acquireDBLock below serializes concurrent callers across
+// processes, not just within one.
 func App(t *testing.T) (*fiber.App, *gorm.DB) {
 	t.Helper()
 	once.Do(setup)
+	acquireDBLock(t)
 	require.NoError(t, TruncateAll(testDB), "truncate tables before test")
 
 	app := fiber.New()
@@ -236,6 +255,26 @@ func App(t *testing.T) (*fiber.App, *gorm.DB) {
 	// see utils.Storage's doc.
 	routes.Setup(app, testDB, testCfg, utils.NewMemoryStorage())
 	return app, testDB
+}
+
+// acquireDBLock blocks until this test holds testDBLockKey, then releases it
+// via t.Cleanup once the test (including its subtests) finishes.
+func acquireDBLock(t *testing.T) {
+	t.Helper()
+	sqlDB, err := testDB.DB()
+	require.NoError(t, err, "get underlying *sql.DB")
+
+	ctx := context.Background()
+	conn, err := sqlDB.Conn(ctx)
+	require.NoError(t, err, "reserve a dedicated connection for the advisory lock")
+
+	_, err = conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", testDBLockKey)
+	require.NoError(t, err, "acquire cross-process test DB lock")
+
+	t.Cleanup(func() {
+		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", testDBLockKey)
+		_ = conn.Close()
+	})
 }
 
 // Config exposes the test config (in particular JWTSecret) to tests that need

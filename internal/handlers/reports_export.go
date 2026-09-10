@@ -27,7 +27,18 @@ func derefUintStr(p *uint) string {
 	return strconv.FormatUint(uint64(*p), 10)
 }
 
-// LeadSourceConversionExport — GET /reports/lead-source-conversion/export.
+// LeadSourceConversionExport godoc
+// @Summary Export lead source conversion report as CSV (Admin/Sales Manager only)
+// @Description CSV download of the lead source conversion report (see GET /reports/lead-source-conversion). FR-CRM-054, FR-CRM-055 (rep filter). Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce text/csv
+// @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on created_at"
+// @Success 200 {file} file "CSV export"
+// @Failure 500 {object} map[string]interface{} "Failed to export lead source conversion"
+// @Router /reports/lead-source-conversion/export [get]
 func (h *ReportHandler) LeadSourceConversionExport(c *fiber.Ctx) error {
 	rows, err := h.fetchLeadSourceConversion(c)
 	if err != nil {
@@ -47,7 +58,18 @@ func (h *ReportHandler) LeadSourceConversionExport(c *fiber.Ctx) error {
 	})
 }
 
-// ProspectSourceConversionExport — GET /reports/prospect-source-conversion/export.
+// ProspectSourceConversionExport godoc
+// @Summary Export prospect source conversion report as CSV (Admin/Marketing/Sales Manager/Sales Rep)
+// @Description CSV download of the prospect source conversion report (see GET /reports/prospect-source-conversion). Open to Admin, Marketing, Sales Manager, and Sales Rep.
+// @Tags reports
+// @Security BearerAuth
+// @Produce text/csv
+// @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on created_at"
+// @Success 200 {file} file "CSV export"
+// @Failure 500 {object} map[string]interface{} "Failed to export prospect source conversion"
+// @Router /reports/prospect-source-conversion/export [get]
 func (h *ReportHandler) ProspectSourceConversionExport(c *fiber.Ctx) error {
 	rows, err := h.fetchProspectSourceConversion(c)
 	if err != nil {
@@ -67,7 +89,18 @@ func (h *ReportHandler) ProspectSourceConversionExport(c *fiber.Ctx) error {
 	})
 }
 
-// CustomersByProductStatusExport — GET /reports/customers-by-product-status/export.
+// CustomersByProductStatusExport godoc
+// @Summary Export customers by product status report as CSV (Admin/Sales Manager only)
+// @Description CSV download of the customers by product status report (see GET /reports/customers-by-product-status). FR-CRM-056, FR-CRM-055 (company-tag filter). Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce text/csv
+// @Param product_id query int false "Filter by Product ID"
+// @Param status query string false "Filter by CustomerProduct status"
+// @Param company_tag query string false "Filter by Company tag"
+// @Success 200 {file} file "CSV export"
+// @Failure 500 {object} map[string]interface{} "Failed to export customers by product status"
+// @Router /reports/customers-by-product-status/export [get]
 func (h *ReportHandler) CustomersByProductStatusExport(c *fiber.Ctx) error {
 	rows, err := h.fetchCustomersByProductStatus(c)
 	if err != nil {
@@ -86,7 +119,19 @@ func (h *ReportHandler) CustomersByProductStatusExport(c *fiber.Ctx) error {
 	})
 }
 
-// WinLossReasonsExport — GET /reports/win-loss-reasons/export.
+// WinLossReasonsExport godoc
+// @Summary Export win/loss reasons report as CSV (Admin/Sales Manager only)
+// @Description CSV download of the win/loss reasons report (see GET /reports/win-loss-reasons). FR-CRM-093. Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce text/csv
+// @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on deals.created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on deals.created_at"
+// @Param company_tag query string false "Filter by Company tag"
+// @Success 200 {file} file "CSV export"
+// @Failure 500 {object} map[string]interface{} "Failed to export win/loss reasons"
+// @Router /reports/win-loss-reasons/export [get]
 func (h *ReportHandler) WinLossReasonsExport(c *fiber.Ctx) error {
 	rows, err := h.fetchWinLossReasons(c)
 	if err != nil {
@@ -105,7 +150,18 @@ func (h *ReportHandler) WinLossReasonsExport(c *fiber.Ctx) error {
 	})
 }
 
-// StalledDealsExport — GET /reports/stalled-deals/export.
+// StalledDealsExport godoc
+// @Summary Export stalled deals report as CSV (Admin/Sales Manager only)
+// @Description CSV download of the stalled deals report (see GET /reports/stalled-deals). FR-CRM-094. Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce text/csv
+// @Param min_days query int false "Minimum days since last activity to be considered stalled (default 14)"
+// @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
+// @Param company_tag query string false "Filter by Company tag"
+// @Success 200 {file} file "CSV export"
+// @Failure 500 {object} map[string]interface{} "Failed to export stalled deals"
+// @Router /reports/stalled-deals/export [get]
 func (h *ReportHandler) StalledDealsExport(c *fiber.Ctx) error {
 	rows, err := h.fetchStalledDeals(c)
 	if err != nil {
@@ -125,7 +181,17 @@ func (h *ReportHandler) StalledDealsExport(c *fiber.Ctx) error {
 	})
 }
 
-// OutstandingBalanceExport — GET /reports/outstanding-balance/export.
+// OutstandingBalanceExport godoc
+// @Summary Export outstanding balance report as CSV (Admin/Sales Manager only)
+// @Description CSV download of the outstanding balance report (see GET /reports/outstanding-balance). FR-CRM-095. Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce text/csv
+// @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
+// @Param company_tag query string false "Filter by Company tag"
+// @Success 200 {file} file "CSV export"
+// @Failure 500 {object} map[string]interface{} "Failed to export outstanding balance"
+// @Router /reports/outstanding-balance/export [get]
 func (h *ReportHandler) OutstandingBalanceExport(c *fiber.Ctx) error {
 	rows, err := h.fetchOutstandingBalance(c)
 	if err != nil {
@@ -145,7 +211,18 @@ func (h *ReportHandler) OutstandingBalanceExport(c *fiber.Ctx) error {
 	})
 }
 
-// QuotesExpiringSoonExport — GET /reports/quotes-expiring-soon/export.
+// QuotesExpiringSoonExport godoc
+// @Summary Export quotes expiring soon report as CSV (Admin/Sales Manager only)
+// @Description CSV download of the quotes expiring soon report (see GET /reports/quotes-expiring-soon). FR-CRM-096. Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce text/csv
+// @Param within_days query int false "Look-ahead window in days (default 7)"
+// @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
+// @Param company_tag query string false "Filter by Company tag"
+// @Success 200 {file} file "CSV export"
+// @Failure 500 {object} map[string]interface{} "Failed to export quotes expiring soon"
+// @Router /reports/quotes-expiring-soon/export [get]
 func (h *ReportHandler) QuotesExpiringSoonExport(c *fiber.Ctx) error {
 	rows, err := h.fetchQuotesExpiringSoon(c)
 	if err != nil {
@@ -164,7 +241,18 @@ func (h *ReportHandler) QuotesExpiringSoonExport(c *fiber.Ctx) error {
 	})
 }
 
-// ContractsStuckExport — GET /reports/contracts-stuck/export.
+// ContractsStuckExport godoc
+// @Summary Export contracts stuck report as CSV (Admin/Sales Manager only)
+// @Description CSV download of the contracts stuck report (see GET /reports/contracts-stuck). FR-CRM-097. Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce text/csv
+// @Param min_days query int false "Minimum days in Draft/Sent status to be considered stuck (default 14)"
+// @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
+// @Param company_tag query string false "Filter by Company tag"
+// @Success 200 {file} file "CSV export"
+// @Failure 500 {object} map[string]interface{} "Failed to export contracts stuck"
+// @Router /reports/contracts-stuck/export [get]
 func (h *ReportHandler) ContractsStuckExport(c *fiber.Ctx) error {
 	rows, err := h.fetchContractsStuck(c)
 	if err != nil {
@@ -183,7 +271,16 @@ func (h *ReportHandler) ContractsStuckExport(c *fiber.Ctx) error {
 	})
 }
 
-// ProjectsAtRiskExport — GET /reports/projects-at-risk/export.
+// ProjectsAtRiskExport godoc
+// @Summary Export projects at risk report as CSV (Admin/Sales Manager only)
+// @Description CSV download of the projects at risk report (see GET /reports/projects-at-risk). FR-CRM-098. Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce text/csv
+// @Param company_tag query string false "Filter by Company tag"
+// @Success 200 {file} file "CSV export"
+// @Failure 500 {object} map[string]interface{} "Failed to export projects at risk"
+// @Router /reports/projects-at-risk/export [get]
 func (h *ReportHandler) ProjectsAtRiskExport(c *fiber.Ctx) error {
 	rows, err := h.fetchProjectsAtRisk(c)
 	if err != nil {

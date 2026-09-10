@@ -1,5 +1,529 @@
 basePath: /api/v1
 definitions:
+  github_com_igeargeek_sales-system-api_internal_models.ActiveArchivedStatus:
+    enum:
+    - active
+    - archived
+    type: string
+    x-enum-varnames:
+    - StatusActive
+    - StatusArchived
+  github_com_igeargeek_sales-system-api_internal_models.AppSettings:
+    properties:
+      annual_revenue_goal:
+        type: integer
+      id:
+        type: integer
+      lead_scoring_mql_threshold:
+        description: |-
+          LeadScoringMqlThreshold — FR-CRM-007: a Lead whose computed Score meets
+          or exceeds this value is classified "mql". Lives here rather than a new
+          singleton table since it's one more Admin-tunable number, same shape as
+          the two fields above.
+        type: integer
+      quarterly_sales_target:
+        type: integer
+      require_signed_contract_before_won:
+        description: |-
+          RequireSignedContractBeforeWon — FR-CRM-045: "configurable, not
+          hard-enforced by default," so it defaults false. When true,
+          DealHandler blocks a Deal from moving into Won (via Create, Update, or
+          UpdateStage) unless it already has at least one Contract with
+          status Signed.
+        type: boolean
+      smtp_configured:
+        description: |-
+          SMTPConfigured — read-only, derived from config.Config.SMTPHost at
+          request time (SettingsHandler.Get/Update set it), never persisted
+          (gorm:"-"). Task due-date email reminders (internal/notifier,
+          internal/utils/mailer.go) silently no-op with only a server-side log
+          line when SMTP_HOST is unset — this is the only place an Admin can see
+          that from the app itself, closing a "why aren't reminder emails
+          arriving" gap with zero visibility before this.
+        type: boolean
+      updated_at:
+        type: string
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.BusinessUnit:
+    enum:
+    - Project
+    - Product
+    type: string
+    x-enum-varnames:
+    - BusinessUnitProject
+    - BusinessUnitProduct
+  github_com_igeargeek_sales-system-api_internal_models.Company:
+    properties:
+      address:
+        type: string
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      id:
+        type: integer
+      industry:
+        type: string
+      legal_name:
+        type: string
+      name:
+        type: string
+      notes:
+        type: string
+      revenue_size:
+        type: string
+      size:
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ActiveArchivedStatus'
+      tags:
+        items:
+          type: string
+        type: array
+      tax_id:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+      website:
+        type: string
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.CompanySizeOption:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      name:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.Contact:
+    properties:
+      company_id:
+        type: integer
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      email:
+        type: string
+      id:
+        type: integer
+      name:
+        type: string
+      phone:
+        type: string
+      role_title:
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ActiveArchivedStatus'
+      tags:
+        items:
+          type: string
+        type: array
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.Contract:
+    properties:
+      created_at:
+        type: string
+      deal_id:
+        type: integer
+      id:
+        type: integer
+      quote_id:
+        type: integer
+      signed_date:
+        type: string
+      signed_file_url:
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ContractStatus'
+      updated_at:
+        type: string
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.ContractStatus:
+    enum:
+    - draft
+    - sent
+    - signed
+    - expired
+    type: string
+    x-enum-varnames:
+    - ContractStatusDraft
+    - ContractStatusSent
+    - ContractStatusSigned
+    - ContractStatusExpired
+  github_com_igeargeek_sales-system-api_internal_models.CustomerProduct:
+    properties:
+      company_id:
+        type: integer
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      end_date:
+        type: string
+      id:
+        type: integer
+      product_id:
+        type: integer
+      source_deal_id:
+        type: integer
+      start_date:
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.CustomerProductStatus'
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.CustomerProductStatus:
+    enum:
+    - Interested
+    - Trial
+    - Active
+    - Churned
+    type: string
+    x-enum-varnames:
+    - CustomerProductInterested
+    - CustomerProductTrial
+    - CustomerProductActive
+    - CustomerProductChurned
+  github_com_igeargeek_sales-system-api_internal_models.Deal:
+    properties:
+      assigned_to:
+        type: integer
+      business_unit:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.BusinessUnit'
+      business_unit_item:
+        type: string
+      channel:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource'
+      company_id:
+        type: integer
+      contact_id:
+        type: integer
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      expected_close_date:
+        type: string
+      id:
+        type: integer
+      lead_id:
+        description: LeadID traces this Deal back to the Lead it was converted from,
+          if any.
+        type: integer
+      lost_reason:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason'
+        description: |-
+          LostReason is required only when Stage/Status is set to Lost (validated
+          at the handler layer, see DealHandler.Update).
+      probability:
+        description: |-
+          Probability is the 0-100 win-probability, defaulted per-stage
+          (StageDefaultProbability) but always manually overridable.
+        type: integer
+      stage:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage'
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStatus'
+      tags:
+        items:
+          type: string
+        type: array
+      title:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+      value:
+        type: number
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.DealStage:
+    enum:
+    - Lead
+    - Qualified
+    - Proposal Sent
+    - Negotiation
+    - Won
+    - Lost
+    type: string
+    x-enum-varnames:
+    - DealStageLead
+    - DealStageQualified
+    - DealStageProposalSent
+    - DealStageNegotiation
+    - DealStageWon
+    - DealStageLost
+  github_com_igeargeek_sales-system-api_internal_models.DealStatus:
+    enum:
+    - open
+    - won
+    - lost
+    type: string
+    x-enum-varnames:
+    - DealStatusOpen
+    - DealStatusWon
+    - DealStatusLost
+  github_com_igeargeek_sales-system-api_internal_models.IndustryOption:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      name:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.JobTitleOption:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      name:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.Lead:
+    properties:
+      assigned_to:
+        type: integer
+      business_unit:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.BusinessUnit'
+        description: |-
+          BusinessUnit/BusinessUnitItem mirror Deal's own fields (deal.go) — a
+          lightweight tag of which Project or Product this Lead is interested
+          in, not a real FK into the Project/CustomerProduct tables (api-system-
+          spec.md §7.1/§7.4 note this exact distinction for Deal; same applies
+          here). Carried over automatically to the Deal on conversion.
+      business_unit_item:
+        type: string
+      classification:
+        type: string
+      company_id:
+        description: |-
+          CompanyID replaces the free-text CompanyName this Lead used to carry
+          (dropped 2026-08-24) — a real FK to Company, same as Deal/Contact,
+          instead of a bare string. Nullable: unlike Deal/Contact, a Lead can
+          still exist with no company picked yet (matching CompanyName's old
+          optional-ness — Create/Update never required it either). Existing
+          rows were backfilled from their old CompanyName text (exact
+          case-insensitive match against Companies, or a newly created Company
+          when no match existed) — see database.backfillLeadCompanyIDs.
+        type: integer
+      converted_deal_id:
+        description: |-
+          ConvertedDealID is set once this Lead has been converted into a Deal
+          (nil = not yet converted). Prevents double-conversion.
+        type: integer
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      email:
+        type: string
+      id:
+        type: integer
+      name:
+        type: string
+      notes:
+        type: string
+      phone:
+        type: string
+      prospect_id:
+        description: |-
+          ProspectID is set when this Lead originated from a Marketing Prospect
+          via ProspectHandler.Convert (nil for a Lead created directly) — mirrors
+          Deal.LeadID's back-reference to its own originating record.
+        type: integer
+      score:
+        description: |-
+          Score/Classification — FR-CRM-006/007. Score is the sum of matching
+          active LeadScoringCriterion weights, recomputed on Create/Update.
+          Classification is derived from Score vs AppSettings.LeadScoringMqlThreshold
+          ("mql"), or set manually by a rep to "sql"; "none" below threshold.
+        type: integer
+      source:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource'
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadStatus'
+      tags:
+        items:
+          type: string
+        type: array
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.LeadClassification:
+    enum:
+    - none
+    - mql
+    - sql
+    type: string
+    x-enum-varnames:
+    - LeadClassificationNone
+    - LeadClassificationMQL
+    - LeadClassificationSQL
+  github_com_igeargeek_sales-system-api_internal_models.LeadSource:
+    enum:
+    - Referral
+    - Website
+    - Event
+    - Ads
+    - Other
+    type: string
+    x-enum-varnames:
+    - LeadSourceReferral
+    - LeadSourceWebsite
+    - LeadSourceEvent
+    - LeadSourceAds
+    - LeadSourceOther
+  github_com_igeargeek_sales-system-api_internal_models.LeadSourceOption:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      name:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.LeadStatus:
+    enum:
+    - New
+    - Contacted
+    - Qualified
+    - Disqualified
+    type: string
+    x-enum-varnames:
+    - LeadStatusNew
+    - LeadStatusContacted
+    - LeadStatusQualified
+    - LeadStatusDisqualified
+  github_com_igeargeek_sales-system-api_internal_models.LostReason:
+    enum:
+    - price
+    - timing
+    - competitor
+    - no_budget
+    - other
+    type: string
+    x-enum-varnames:
+    - LostReasonPrice
+    - LostReasonTiming
+    - LostReasonCompetitor
+    - LostReasonNoBudget
+    - LostReasonOther
+  github_com_igeargeek_sales-system-api_internal_models.Payment:
+    properties:
+      amount:
+        type: number
+      created_at:
+        type: string
+      deal_id:
+        type: integer
+      id:
+        type: integer
+      method:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.PaymentMethod'
+      note:
+        type: string
+      paid_at:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.PaymentMethod:
+    enum:
+    - cash
+    - transfer
+    - card
+    - other
+    type: string
+    x-enum-varnames:
+    - PaymentMethodCash
+    - PaymentMethodTransfer
+    - PaymentMethodCard
+    - PaymentMethodOther
   github_com_igeargeek_sales-system-api_internal_models.PipelineStage:
     properties:
       created_at:
@@ -22,6 +546,163 @@ definitions:
         type: string
       sort_order:
         type: integer
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.Product:
+    properties:
+      category:
+        type: string
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      description:
+        type: string
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      name:
+        type: string
+      price:
+        type: number
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.ProductCategoryOption:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      name:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.Project:
+    properties:
+      company_id:
+        type: integer
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deal_id:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      expected_proposal_date:
+        description: |-
+          ExpectedProposalDate/ExpectedStartDate are planning estimates set by
+          Sales before work is confirmed — distinct from StartDate (which is
+          record-creation time, not a schedule) and TargetEndDate (the deadline
+          the projects-at-risk report checks). Both nullable: unknown until
+          estimated.
+        type: string
+      expected_start_date:
+        type: string
+      id:
+        type: integer
+      name:
+        type: string
+      notes:
+        type: string
+      production_reference:
+        type: string
+      start_date:
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProjectStatus'
+      target_end_date:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.ProjectStatus:
+    enum:
+    - Not Started
+    - In Progress
+    - On Hold
+    - Completed
+    - Cancelled
+    type: string
+    x-enum-varnames:
+    - ProjectStatusNotStarted
+    - ProjectStatusInProgress
+    - ProjectStatusOnHold
+    - ProjectStatusCompleted
+    - ProjectStatusCancelled
+  github_com_igeargeek_sales-system-api_internal_models.Prospect:
+    properties:
+      assigned_to:
+        type: integer
+      business_unit:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.BusinessUnit'
+        description: |-
+          BusinessUnit/BusinessUnitItem mirror Deal's own fields (deal.go) — a
+          lightweight tag of which Project or Product this Prospect is interested
+          in, not a real FK. Carried over automatically to the Lead on conversion.
+      business_unit_item:
+        type: string
+      company_id:
+        type: integer
+      converted_lead_id:
+        description: |-
+          ConvertedLeadID is set once this Prospect has been converted into a Lead
+          (nil = not yet converted). Prevents double-conversion, same guard as
+          Lead.ConvertedDealID.
+        type: integer
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      email:
+        type: string
+      id:
+        type: integer
+      name:
+        type: string
+      notes:
+        type: string
+      phone:
+        type: string
+      source:
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProspectStatus'
+      tags:
+        items:
+          type: string
+        type: array
       updated_at:
         type: string
       updated_by:
@@ -52,6 +733,313 @@ definitions:
       updated_by:
         type: integer
     type: object
+  github_com_igeargeek_sales-system-api_internal_models.ProspectStatus:
+    enum:
+    - New
+    - Engaging
+    - Nurturing
+    - Disqualified
+    - Converted
+    type: string
+    x-enum-varnames:
+    - ProspectStatusNew
+    - ProspectStatusEngaging
+    - ProspectStatusNurturing
+    - ProspectStatusDisqualified
+    - ProspectStatusConverted
+  github_com_igeargeek_sales-system-api_internal_models.Quote:
+    properties:
+      created_at:
+        type: string
+      credit_days:
+        description: |-
+          CreditDays is purely informational context for ValidityDate (which
+          already serves as the actual due date/"ครบกำหนด") — how many days of
+          credit were granted, not itself used in any date arithmetic here.
+        type: integer
+      deal_id:
+        type: integer
+      discount_total:
+        description: |-
+          DiscountTotal is a flat currency amount subtracted once from the
+          items' summed (already-per-item-discounted) subtotal — independent of
+          each QuoteItem's own DiscountPercent above.
+        type: number
+      extraction_status:
+        description: |-
+          ExtractionStatus/ExtractionWarnings record the outcome of best-effort
+          field extraction from an uploaded FlowAccount PDF (Upload handler,
+          utils.ExtractFlowAccountQuote) — nil/empty for every Quote created the
+          normal line-item way, since extraction never runs for those. "ok": every
+          field extraction looked for was found and self-consistent. "partial":
+          some fields extracted, ExtractionWarnings lists what's missing/suspect
+          (e.g. a recomputed total that doesn't match the PDF's printed one) —
+          the rep should double-check those before Sending. "failed": the upload
+          still succeeded and the file is still attached, but the PDF didn't look
+          like a FlowAccount export at all (or had no readable text layer), so
+          nothing was pre-filled. A pointer for the same AutoMigrate-hazard
+          reason as Number above — existing rows never had this column.
+        type: string
+      extraction_warnings:
+        items:
+          type: string
+        type: array
+      file_name:
+        type: string
+      file_size:
+        type: integer
+      file_url:
+        type: string
+      id:
+        type: integer
+      internal_notes:
+        type: string
+      issue_date:
+        description: |-
+          IssueDate is the quote's "as of" date (rendered as "วันที่" in the
+          quotation-builder reference) — parsed the same permissive way as
+          ValidityDate via ParseFlexDate.
+        type: string
+      items:
+        items:
+          $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuoteItem'
+        type: array
+      notes:
+        description: |-
+          Notes prints on the exported PDF (payment terms, validity terms,
+          etc.) — InternalNotes deliberately never does; see ExportPDF, which
+          only ever reads Notes.
+        type: string
+      number:
+        description: |-
+          Number is a generated, immutable document number (e.g. "QT2026080004")
+          assigned once at Create time via utils.NextDocumentNumber — never
+          user-edited afterward. See internal/utils/document_number.go. A
+          pointer, not a plain string with "not null": AutoMigrate ADD COLUMN
+          NOT NULL on a table that already has rows would fail outright on any
+          pre-existing database (same class of hazard database.go already
+          avoids for other columns) — every Quote row created going forward
+          always gets one, but rows from before this field existed stay nil
+          rather than requiring a backfill. A unique index tolerates any number
+          of NULLs in Postgres, so this doesn't relax uniqueness for quotes that
+          do have a Number.
+        type: string
+      price_type:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuotePriceType'
+      reference_number:
+        description: |-
+          ReferenceNumber is free-text, user-entered (e.g. the customer's own PO
+          number) — unrelated to Number above, which this system generates.
+        type: string
+      scope_of_work:
+        description: |-
+          ScopeOfWork is a free-text narrative describing the overall engagement
+          (deliverables/phases/terms) — separate from each line item's own
+          Description, which stays a short per-item label. Optional; rendered as
+          a wrapped paragraph above the line-items table in ExportPDF.
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuoteStatus'
+      updated_at:
+        type: string
+      uploaded_at:
+        type: string
+      validity_date:
+        type: string
+      vat_enabled:
+        description: |-
+          VatEnabled toggles Thailand's fixed 7% VAT in ComputeQuoteTotals — no
+          separate rate field, since 7% is the statutory rate, not something a
+          quote should be able to override.
+        type: boolean
+      wht_enabled:
+        description: |-
+          WhtEnabled/WhtRate: withholding tax varies by service type in Thailand
+          (commonly 3% or 5%), so unlike VAT it needs its own rate field. Only
+          meaningful when WhtEnabled is true.
+        type: boolean
+      wht_rate:
+        type: number
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.QuoteItem:
+    properties:
+      description:
+        type: string
+      discount_percent:
+        description: |-
+          DiscountPercent (0-100) reduces this item's own line total —
+          independent of Quote.DiscountTotal, which is a further flat-amount
+          discount applied once across the whole quote's subtotal. Defaults to
+          0 (no discount), so every item created before this field existed
+          behaves exactly as before.
+        type: number
+      price:
+        type: number
+      product_id:
+        type: integer
+      qty:
+        type: number
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.QuotePriceType:
+    enum:
+    - excl_tax
+    - incl_tax
+    type: string
+    x-enum-varnames:
+    - QuotePriceTypeExclTax
+    - QuotePriceTypeInclTax
+  github_com_igeargeek_sales-system-api_internal_models.QuoteStatus:
+    enum:
+    - draft
+    - sent
+    - accepted
+    - rejected
+    - expired
+    type: string
+    x-enum-varnames:
+    - QuoteStatusDraft
+    - QuoteStatusSent
+    - QuoteStatusAccepted
+    - QuoteStatusRejected
+    - QuoteStatusExpired
+  github_com_igeargeek_sales-system-api_internal_models.RevenueSizeOption:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      name:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.Role:
+    enum:
+    - Admin
+    - Sales Rep
+    - Sales Manager
+    - Production
+    - Marketing
+    type: string
+    x-enum-varnames:
+    - RoleAdmin
+    - RoleSalesRep
+    - RoleSalesManager
+    - RoleProduction
+    - RoleMarketing
+  github_com_igeargeek_sales-system-api_internal_models.SalesTarget:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      id:
+        type: integer
+      quarter:
+        type: integer
+      target_value:
+        type: integer
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+      year:
+        type: integer
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.Tag:
+    properties:
+      category:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.TagCategory'
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      description:
+        type: string
+      id:
+        type: integer
+      name:
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.TagStatus'
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.TagCategory:
+    enum:
+    - Tier
+    - Industry
+    - Priority
+    type: string
+    x-enum-varnames:
+    - TagCategoryTier
+    - TagCategoryIndustry
+    - TagCategoryPriority
+  github_com_igeargeek_sales-system-api_internal_models.TagStatus:
+    enum:
+    - active
+    - inactive
+    type: string
+    x-enum-varnames:
+    - TagStatusActive
+    - TagStatusInactive
+  github_com_igeargeek_sales-system-api_internal_models.User:
+    properties:
+      accepted_consent_id:
+        type: integer
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      email:
+        type: string
+      first_name:
+        type: string
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      last_name:
+        type: string
+      latest_login:
+        type: string
+      must_change_password:
+        description: |-
+          MustChangePassword is set whenever an Admin assigns this account's password
+          (creation or reset) and cleared once the holder sets their own via
+          POST /auth/change-password — see middleware.RequirePasswordChanged.
+        type: boolean
+      notes:
+        type: string
+      role:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Role'
+      tel:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
   gorm.DeletedAt:
     properties:
       time:
@@ -59,6 +1047,295 @@ definitions:
       valid:
         description: Valid is true if Time is not NULL
         type: boolean
+    type: object
+  internal_handlers.bulkIDsForm:
+    properties:
+      ids:
+        items:
+          type: integer
+        type: array
+    type: object
+  internal_handlers.bulkReassignForm:
+    properties:
+      assigned_to:
+        type: integer
+      ids:
+        items:
+          type: integer
+        type: array
+    type: object
+  internal_handlers.bulkTagForm:
+    properties:
+      ids:
+        items:
+          type: integer
+        type: array
+      mode:
+        description: '"add" (default) or "set"'
+        type: string
+      tags:
+        items:
+          type: string
+        type: array
+    type: object
+  internal_handlers.companyForm:
+    properties:
+      address:
+        type: string
+      industry:
+        type: string
+      legal_name:
+        type: string
+      name:
+        type: string
+      notes:
+        type: string
+      revenue_size:
+        type: string
+      size:
+        type: string
+      status:
+        type: string
+      tags:
+        items:
+          type: string
+        type: array
+      tax_id:
+        type: string
+      website:
+        type: string
+    type: object
+  internal_handlers.companySizeOptionForm:
+    properties:
+      is_active:
+        type: boolean
+      name:
+        type: string
+    type: object
+  internal_handlers.contactForm:
+    properties:
+      company_id:
+        type: integer
+      email:
+        type: string
+      name:
+        type: string
+      phone:
+        type: string
+      role_title:
+        type: string
+      status:
+        type: string
+      tags:
+        items:
+          type: string
+        type: array
+    type: object
+  internal_handlers.contractForm:
+    properties:
+      quote_id:
+        type: integer
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ContractStatus'
+    type: object
+  internal_handlers.convertRequest:
+    properties:
+      company_id:
+        type: integer
+      contact_id:
+        type: integer
+      deal:
+        properties:
+          assigned_to:
+            type: integer
+          business_unit:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.BusinessUnit'
+          business_unit_item:
+            type: string
+          channel:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource'
+          expected_close_date:
+            type: string
+          stage:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage'
+          title:
+            type: string
+          value:
+            type: number
+        type: object
+    type: object
+  internal_handlers.customerProductForm:
+    properties:
+      end_date:
+        type: string
+      product_id:
+        type: integer
+      source_deal_id:
+        type: integer
+      start_date:
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.CustomerProductStatus'
+    type: object
+  internal_handlers.customerProductResponse:
+    properties:
+      company_id:
+        type: integer
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      end_date:
+        type: string
+      id:
+        type: integer
+      product:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Product'
+      product_id:
+        type: integer
+      source_deal_id:
+        type: integer
+      start_date:
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.CustomerProductStatus'
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
+  internal_handlers.customerProductUpdateForm:
+    properties:
+      end_date:
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.CustomerProductStatus'
+    type: object
+  internal_handlers.dealForm:
+    properties:
+      assigned_to:
+        type: integer
+      business_unit:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.BusinessUnit'
+      business_unit_item:
+        type: string
+      channel:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource'
+      company_id:
+        type: integer
+      contact_id:
+        type: integer
+      expected_close_date:
+        type: string
+      lost_reason:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason'
+      probability:
+        type: integer
+      stage:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage'
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStatus'
+      title:
+        type: string
+      value:
+        type: number
+    type: object
+  internal_handlers.dealReassignForm:
+    properties:
+      assigned_to:
+        type: integer
+    type: object
+  internal_handlers.dealStageForm:
+    properties:
+      stage:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage'
+    type: object
+  internal_handlers.importError:
+    properties:
+      message:
+        type: string
+      row:
+        type: integer
+    type: object
+  internal_handlers.importResult:
+    properties:
+      created:
+        type: integer
+      errors:
+        items:
+          $ref: '#/definitions/internal_handlers.importError'
+        type: array
+      skipped:
+        type: integer
+      updated:
+        type: integer
+    type: object
+  internal_handlers.industryOptionForm:
+    properties:
+      is_active:
+        type: boolean
+      name:
+        type: string
+    type: object
+  internal_handlers.jobTitleOptionForm:
+    properties:
+      is_active:
+        type: boolean
+      name:
+        type: string
+    type: object
+  internal_handlers.leadForm:
+    properties:
+      assigned_to:
+        type: integer
+      business_unit:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.BusinessUnit'
+      business_unit_item:
+        type: string
+      classification:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadClassification'
+        description: |-
+          Classification — FR-CRM-007. Only "sql" is honored as an explicit
+          manual override (a rep marking a Lead "sales-ready"); any other value
+          (including empty) falls back to the auto-computed mql/none result from
+          computeAndClassify, so a client can't accidentally set "mql" directly.
+      company_id:
+        type: integer
+      email:
+        type: string
+      name:
+        type: string
+      notes:
+        type: string
+      phone:
+        type: string
+      source:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource'
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadStatus'
+    type: object
+  internal_handlers.leadSourceForm:
+    properties:
+      is_active:
+        type: boolean
+      name:
+        type: string
+    type: object
+  internal_handlers.paymentForm:
+    properties:
+      amount:
+        type: number
+      method:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.PaymentMethod'
+      note:
+        type: string
+      paid_at:
+        type: string
     type: object
   internal_handlers.pipelineStageForm:
     properties:
@@ -73,6 +1350,91 @@ definitions:
       sort_order:
         type: integer
     type: object
+  internal_handlers.productCategoryOptionForm:
+    properties:
+      is_active:
+        type: boolean
+      name:
+        type: string
+    type: object
+  internal_handlers.productForm:
+    properties:
+      category:
+        type: string
+      description:
+        type: string
+      is_active:
+        type: boolean
+      name:
+        type: string
+      price:
+        type: number
+    type: object
+  internal_handlers.projectForm:
+    properties:
+      deal_id:
+        type: integer
+      expected_proposal_date:
+        type: string
+      expected_start_date:
+        type: string
+      name:
+        type: string
+      notes:
+        type: string
+      production_reference:
+        type: string
+      start_date:
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProjectStatus'
+      target_end_date:
+        type: string
+    type: object
+  internal_handlers.prospectConvertRequest:
+    properties:
+      company_id:
+        type: integer
+      contact_id:
+        type: integer
+      lead:
+        properties:
+          assigned_to:
+            type: integer
+        type: object
+    type: object
+  internal_handlers.prospectForm:
+    properties:
+      assigned_to:
+        type: integer
+      business_unit:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.BusinessUnit'
+      business_unit_item:
+        type: string
+      company_id:
+        type: integer
+      email:
+        type: string
+      name:
+        type: string
+      notes:
+        type: string
+      phone:
+        type: string
+      source:
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProspectStatus'
+      tags:
+        description: |-
+          Tags is settable directly here (unlike Lead's own leadForm, which only
+          exposes tags via bulk-tag) — mirrors Contact's simpler pattern instead,
+          since Marketing editing a single Prospect's tags one at a time from its
+          detail page is a real, expected workflow.
+        items:
+          type: string
+        type: array
+    type: object
   internal_handlers.prospectStageForm:
     properties:
       is_active:
@@ -83,6 +1445,112 @@ definitions:
         type: string
       sort_order:
         type: integer
+    type: object
+  internal_handlers.quoteForm:
+    properties:
+      credit_days:
+        type: integer
+      discount_total:
+        type: number
+      internal_notes:
+        type: string
+      issue_date:
+        type: string
+      items:
+        items:
+          $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuoteItem'
+        type: array
+      notes:
+        type: string
+      price_type:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuotePriceType'
+      reference_number:
+        description: |-
+          The rest are all optional/additive (quotation-builder rebuild) — a
+          caller that omits them entirely (any pre-existing client) behaves
+          exactly as before: zero-value CreditDays/WhtRate/DiscountTotal, empty
+          PriceType (defaulted below), VatEnabled/WhtEnabled left at whatever
+          the existing row already has on Update, or their model defaults on
+          Create.
+        type: string
+      scope_of_work:
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuoteStatus'
+      validity_date:
+        type: string
+      vat_enabled:
+        type: boolean
+      wht_enabled:
+        type: boolean
+      wht_rate:
+        type: number
+    type: object
+  internal_handlers.revenueSizeOptionForm:
+    properties:
+      is_active:
+        type: boolean
+      name:
+        type: string
+    type: object
+  internal_handlers.salesTargetForm:
+    properties:
+      quarter:
+        type: integer
+      target_value:
+        type: integer
+      year:
+        type: integer
+    type: object
+  internal_handlers.settingsForm:
+    properties:
+      annual_revenue_goal:
+        type: integer
+      lead_scoring_mql_threshold:
+        type: integer
+      quarterly_sales_target:
+        type: integer
+      require_signed_contract_before_won:
+        type: boolean
+    type: object
+  internal_handlers.tagForm:
+    properties:
+      category:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.TagCategory'
+      description:
+        type: string
+      name:
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.TagStatus'
+    type: object
+  internal_handlers.teamMember:
+    properties:
+      email:
+        type: string
+      id:
+        type: integer
+      name:
+        type: string
+    type: object
+  internal_handlers.userForm:
+    properties:
+      email:
+        type: string
+      first_name:
+        type: string
+      last_name:
+        type: string
+      notes:
+        type: string
+      password:
+        type: string
+      role:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Role'
+      status:
+        type: string
+      tel:
+        type: string
     type: object
 info:
   contact: {}
@@ -99,6 +1567,410 @@ info:
   title: Sales System API
   version: "1.0"
 paths:
+  /admin/company-sizes:
+    get:
+      description: Returns every configured Company size bucket (active + inactive),
+        ordered by name.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.CompanySizeOption'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List company sizes
+      tags:
+      - admin/company-sizes
+    post:
+      consumes:
+      - application/json
+      description: Admin-only.
+      parameters:
+      - description: Company size fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.companySizeOptionForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.CompanySizeOption'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a company size
+      tags:
+      - admin/company-sizes
+  /admin/company-sizes/{id}:
+    delete:
+      description: 'Admin-only. Soft-delete (is_active: false).'
+      parameters:
+      - description: Company size ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Deactivate a company size
+      tags:
+      - admin/company-sizes
+    patch:
+      consumes:
+      - application/json
+      description: Admin-only.
+      parameters:
+      - description: Company size ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Company size fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.companySizeOptionForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.CompanySizeOption'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a company size
+      tags:
+      - admin/company-sizes
+  /admin/industries:
+    get:
+      description: Returns every configured Company industry (active + inactive),
+        ordered by name.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.IndustryOption'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List industries
+      tags:
+      - admin/industries
+    post:
+      consumes:
+      - application/json
+      description: Admin-only.
+      parameters:
+      - description: Industry fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.industryOptionForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.IndustryOption'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create an industry
+      tags:
+      - admin/industries
+  /admin/industries/{id}:
+    delete:
+      description: 'Admin-only. Soft-delete (is_active: false).'
+      parameters:
+      - description: Industry ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Deactivate an industry
+      tags:
+      - admin/industries
+    patch:
+      consumes:
+      - application/json
+      description: Admin-only.
+      parameters:
+      - description: Industry ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Industry fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.industryOptionForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.IndustryOption'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update an industry
+      tags:
+      - admin/industries
+  /admin/job-titles:
+    get:
+      description: Returns every configured Contact job title (active + inactive),
+        ordered by name.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.JobTitleOption'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List job titles
+      tags:
+      - admin/job-titles
+    post:
+      consumes:
+      - application/json
+      description: Admin-only.
+      parameters:
+      - description: Job title fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.jobTitleOptionForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.JobTitleOption'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a job title
+      tags:
+      - admin/job-titles
+  /admin/job-titles/{id}:
+    delete:
+      description: 'Admin-only. Soft-delete (is_active: false).'
+      parameters:
+      - description: Job title ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Deactivate a job title
+      tags:
+      - admin/job-titles
+    patch:
+      consumes:
+      - application/json
+      description: Admin-only.
+      parameters:
+      - description: Job title ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Job title fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.jobTitleOptionForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.JobTitleOption'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a job title
+      tags:
+      - admin/job-titles
+  /admin/lead-sources:
+    get:
+      description: Returns every configured lead/deal source (active + inactive),
+        ordered by name.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSourceOption'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List lead sources
+      tags:
+      - admin/lead-sources
+    post:
+      consumes:
+      - application/json
+      description: Admin-only.
+      parameters:
+      - description: Lead source fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.leadSourceForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSourceOption'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a lead source
+      tags:
+      - admin/lead-sources
+  /admin/lead-sources/{id}:
+    delete:
+      description: 'Admin-only. Soft-delete (is_active: false).'
+      parameters:
+      - description: Lead source ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Deactivate a lead source
+      tags:
+      - admin/lead-sources
+    patch:
+      consumes:
+      - application/json
+      description: Admin-only.
+      parameters:
+      - description: Lead source ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Lead source fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.leadSourceForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSourceOption'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a lead source
+      tags:
+      - admin/lead-sources
   /admin/pipeline-stages:
     get:
       description: Returns every configured pipeline stage (active + inactive), ordered
@@ -203,6 +2075,107 @@ paths:
       summary: Update a pipeline stage
       tags:
       - admin/pipeline-stages
+  /admin/product-categories:
+    get:
+      description: Returns every configured Product category (active + inactive),
+        ordered by name.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProductCategoryOption'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List product categories
+      tags:
+      - admin/product-categories
+    post:
+      consumes:
+      - application/json
+      description: Admin-only.
+      parameters:
+      - description: Product category fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.productCategoryOptionForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProductCategoryOption'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a product category
+      tags:
+      - admin/product-categories
+  /admin/product-categories/{id}:
+    delete:
+      description: 'Admin-only. Soft-delete (is_active: false).'
+      parameters:
+      - description: Product category ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Deactivate a product category
+      tags:
+      - admin/product-categories
+    patch:
+      consumes:
+      - application/json
+      description: Admin-only.
+      parameters:
+      - description: Product category ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Product category fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.productCategoryOptionForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProductCategoryOption'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a product category
+      tags:
+      - admin/product-categories
   /admin/prospect-stages:
     get:
       description: Returns every configured Prospect funnel stage (active + inactive),
@@ -307,6 +2280,1189 @@ paths:
       summary: Update a Prospect stage
       tags:
       - admin/prospect-stages
+  /admin/revenue-sizes:
+    get:
+      description: Returns every configured Company revenue bucket (active + inactive),
+        ordered by name.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.RevenueSizeOption'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List revenue sizes
+      tags:
+      - admin/revenue-sizes
+    post:
+      consumes:
+      - application/json
+      description: Admin-only.
+      parameters:
+      - description: Revenue size fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.revenueSizeOptionForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.RevenueSizeOption'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a revenue size
+      tags:
+      - admin/revenue-sizes
+  /admin/revenue-sizes/{id}:
+    delete:
+      description: 'Admin-only. Soft-delete (is_active: false).'
+      parameters:
+      - description: Revenue size ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Deactivate a revenue size
+      tags:
+      - admin/revenue-sizes
+    patch:
+      consumes:
+      - application/json
+      description: Admin-only.
+      parameters:
+      - description: Revenue size ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Revenue size fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.revenueSizeOptionForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.RevenueSizeOption'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a revenue size
+      tags:
+      - admin/revenue-sizes
+  /admin/sales-targets:
+    get:
+      description: Admin-only. Returns every configured per-quarter/per-year sales
+        target, optionally filtered to one year, ordered oldest-to-newest.
+      parameters:
+      - description: Filter to a single year
+        in: query
+        name: year
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.SalesTarget'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List sales targets
+      tags:
+      - admin/sales-targets
+    post:
+      consumes:
+      - application/json
+      description: Admin-only. One row per (year, quarter); creating a second row
+        for the same period is rejected — PATCH the existing one instead. quarter
+        must be 1-4, year must be a valid year, and target_value must be non-negative.
+      parameters:
+      - description: Sales target fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.salesTargetForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.SalesTarget'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a sales target
+      tags:
+      - admin/sales-targets
+  /admin/sales-targets/{id}:
+    delete:
+      description: Admin-only. A hard delete (unlike PipelineStage's soft-delete)
+        — nothing else references a SalesTarget row by ID, and removing one just reverts
+        that period to the flat AppSettings.QuarterlySalesTarget/4 fallback.
+      parameters:
+      - description: Sales target ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a sales target
+      tags:
+      - admin/sales-targets
+    patch:
+      consumes:
+      - application/json
+      description: Admin-only. Only target_value is editable in practice (year/quarter
+        identify the row); changing year/quarter to collide with another existing
+        row is rejected the same way Create is.
+      parameters:
+      - description: Sales target ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Sales target fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.salesTargetForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.SalesTarget'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a sales target
+      tags:
+      - admin/sales-targets
+  /admin/settings:
+    get:
+      description: Admin-only. Returns the AppSettings singleton row (quarterly sales
+        quota, annual revenue goal, and related app-wide config).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.AppSettings'
+      security:
+      - BearerAuth: []
+      summary: Get app settings
+      tags:
+      - admin/settings
+    patch:
+      consumes:
+      - application/json
+      description: Admin-only. quarterly_sales_target and annual_revenue_goal are
+        required on every PATCH (this is a singleton row, not a per-field partial-update
+        resource); both must be non-negative. lead_scoring_mql_threshold and require_signed_contract_before_won
+        are optional and left unchanged if omitted.
+      parameters:
+      - description: Settings fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.settingsForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.AppSettings'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update app settings
+      tags:
+      - admin/settings
+  /audit-log:
+    get:
+      description: 'Append-only audit log, read-only (NFR-007) — no write handlers
+        exist for this resource at all. Non-Admin callers are hard-restricted server-side
+        (not just route-gated) to a fixed slice of Deal history: entity_type=deal,
+        ignoring any entity_type/actor_id they pass. Within that slice, allowed actions
+        differ by role — Sales Rep sees stage_changed only; Sales Manager additionally
+        sees reassigned/bulk_reassigned (the Deal detail page''s "Owner History" card,
+        FR-CRM-025/M-8). Admin has full reach across all entity types (settings, project,
+        customer_product, deal, etc.) and may filter by entity_type/actor_id. entity_id/date_from/date_to
+        apply to every role, so a non-Admin can still request a specific Deal''s history
+        or a date-bounded slice.'
+      parameters:
+      - description: Filter by entity type (Admin only — ignored for Sales Rep/Sales
+          Manager, who are hard-restricted to entity_type=deal)
+        in: query
+        name: entity_type
+        type: string
+      - description: Filter by acting user ID (Admin only — ignored for Sales Rep/Sales
+          Manager)
+        in: query
+        name: actor_id
+        type: string
+      - description: Filter by entity ID (e.g. a specific Deal ID) — applies to all
+          roles
+        in: query
+        name: entity_id
+        type: string
+      - description: ISO date lower bound (YYYY-MM-DD), filters on created_at
+        in: query
+        name: date_from
+        type: string
+      - description: ISO date upper bound (YYYY-MM-DD), filters on created_at
+        in: query
+        name: date_to
+        type: string
+      - description: Sort field, prefix with - for descending (default -created_at)
+        in: query
+        name: sort
+        type: string
+      - description: Page number (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: Items per page
+        in: query
+        name: per_page
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to list audit log
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List audit log entries (Admin/Sales Rep/Sales Manager)
+      tags:
+      - audit-log
+  /companies:
+    get:
+      description: 'Paginated, filterable Company list, each row annotated with last_activity_at
+        (from any company-scoped Activity). Filters: status, tag, industry, search
+        (name), stale_days, has_won_deal.'
+      parameters:
+      - description: active or archived
+        in: query
+        name: status
+        type: string
+      - description: Filter by Company tag
+        in: query
+        name: tag
+        type: string
+      - description: Filter by industry
+        in: query
+        name: industry
+        type: string
+      - description: Search by name
+        in: query
+        name: search
+        type: string
+      - description: Filter to companies with no activity in N days
+        in: query
+        name: stale_days
+        type: integer
+      - description: Filter to companies with (or without) a won Deal
+        in: query
+        name: has_won_deal
+        type: boolean
+      - description: Sort field, prefix - for descending (created_at, name, industry)
+        in: query
+        name: sort
+        type: string
+      - description: Page number
+        in: query
+        name: page
+        type: integer
+      - description: Items per page
+        in: query
+        name: per_page
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated company list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List companies
+      tags:
+      - companies
+    post:
+      consumes:
+      - application/json
+      description: Creates a Company. name is required; industry/size/revenue_size
+        must each match an active configured option (see /admin/industries, /admin/company-sizes,
+        /admin/revenue-sizes). domain is derived server-side from website.
+      parameters:
+      - description: Company fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.companyForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Company'
+        "400":
+          description: Invalid body or missing name
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a company
+      tags:
+      - companies
+  /companies/{companyId}/products:
+    get:
+      description: Lists a Company's Customer-Product records with the Product merged
+        in — powers the Company profile's "Products in use" section. FR-CRM-066.
+      parameters:
+      - description: Company ID
+        in: path
+        name: companyId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/internal_handlers.customerProductResponse'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List a Company's Customer-Products
+      tags:
+      - products
+    post:
+      consumes:
+      - application/json
+      description: Manually adds a Customer-Product record (a Product linked to a
+        Company as a customer), or changes its status, independent of a Deal. FR-CRM-065.
+        source_deal_id, if given, must reference a Deal belonging to this Company.
+        start_date defaults to now when omitted; status defaults to "Interested".
+      parameters:
+      - description: Company ID
+        in: path
+        name: companyId
+        required: true
+        type: integer
+      - description: Customer-Product fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.customerProductForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.CustomerProduct'
+        "400":
+          description: Invalid body
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Company not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Add/link a Product to a Company
+      tags:
+      - products
+  /companies/{companyId}/projects:
+    get:
+      description: Lists a Company's Projects, newest first — powers the Company profile's
+        "Projects" section. FR-CRM-070.
+      parameters:
+      - description: Company ID
+        in: path
+        name: companyId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Project'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List a Company's Projects
+      tags:
+      - projects
+    post:
+      consumes:
+      - application/json
+      description: Admin/SalesRep/SalesManager only. Creates a Project for a Company,
+        manually or when a Deal is marked Won. FR-CRM-068. start_date defaults to
+        now and status defaults to "Not Started" when omitted.
+      parameters:
+      - description: Company ID
+        in: path
+        name: companyId
+        required: true
+        type: integer
+      - description: Project fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.projectForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Project'
+        "400":
+          description: Invalid body or missing name
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Company not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a project (Admin/SalesRep/SalesManager only)
+      tags:
+      - projects
+  /companies/{id}:
+    delete:
+      description: Soft-delete (AuditedModel) — recoverable via Restore/Trash below.
+        Never a hard delete, since Deals/Contacts/Payments reference company_id.
+      parameters:
+      - description: Company ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Company not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a company
+      tags:
+      - companies
+    get:
+      description: Returns a single Company, including its last_activity_at.
+      parameters:
+      - description: Company ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Company'
+        "404":
+          description: Company not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get a company
+      tags:
+      - companies
+    put:
+      consumes:
+      - application/json
+      description: Updates a Company. industry/size/revenue_size must each match an
+        active configured option; domain is re-derived from website.
+      parameters:
+      - description: Company ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Company fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.companyForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Company'
+        "400":
+          description: Invalid body or invalid option
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Company not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a company
+      tags:
+      - companies
+  /companies/{id}/restore:
+    post:
+      description: Un-deletes a soft-deleted Company.
+      parameters:
+      - description: Company ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Company'
+        "403":
+          description: Not Admin/Sales Manager
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Deleted company not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Restore a deleted company (Admin/Sales Manager only)
+      tags:
+      - companies
+  /companies/export:
+    get:
+      description: CSV download of the full (non-deleted, non-paginated) Company dataset.
+        Filters mirror CompanyHandler.List. Admin/Sales Manager only.
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV export
+          schema:
+            type: file
+        "500":
+          description: Failed to export data
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export companies as CSV (Admin/Sales Manager only)
+      tags:
+      - export
+  /companies/import:
+    post:
+      consumes:
+      - multipart/form-data
+      description: 'Uploads a CSV file (header row skipped, up to 10MB / 5000 data
+        rows) with columns name,industry,size,website — name is required per row.
+        Dedupes primarily by normalized website domain, falling back to a case-insensitive/whitespace-trimmed
+        name match when either side has no website (FR-CRM-014): a match updates the
+        existing Company, otherwise a new one is created. Runs as one all-or-nothing
+        transaction; per-row failures are collected into the result rather than aborting
+        the whole import.'
+      parameters:
+      - description: 'CSV file: name,industry,size,website'
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: created/updated/skipped counts plus a per-row error list
+          schema:
+            $ref: '#/definitions/internal_handlers.importResult'
+        "400":
+          description: Missing/invalid file, unsupported format (non-.csv), or row
+            limit exceeded
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Bulk-import companies from CSV
+      tags:
+      - companies
+  /companies/trash:
+    get:
+      description: Returns soft-deleted Companies.
+      parameters:
+      - description: Search by name
+        in: query
+        name: search
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated company list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not Admin/Sales Manager
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List deleted companies (Admin/Sales Manager only)
+      tags:
+      - companies
+  /contacts:
+    get:
+      description: 'Paginated, filterable Contact list. Filters: company_id, status,
+        tag, search (name/email).'
+      parameters:
+      - description: Filter by Company ID
+        in: query
+        name: company_id
+        type: integer
+      - description: active or archived
+        in: query
+        name: status
+        type: string
+      - description: Filter by Contact tag
+        in: query
+        name: tag
+        type: string
+      - description: Search by name or email
+        in: query
+        name: search
+        type: string
+      - description: Sort field, prefix - for descending (created_at, name, email,
+          company_name)
+        in: query
+        name: sort
+        type: string
+      - description: Page number
+        in: query
+        name: page
+        type: integer
+      - description: Items per page
+        in: query
+        name: per_page
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated contact list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List contacts
+      tags:
+      - contacts
+    post:
+      consumes:
+      - application/json
+      description: Creates a Contact. company_id and name are required; role_title
+        must match an active configured job title (see /admin/job-titles).
+      parameters:
+      - description: Contact fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.contactForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Contact'
+        "400":
+          description: Invalid body, missing fields, or invalid role_title
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a contact
+      tags:
+      - contacts
+  /contacts/{id}:
+    delete:
+      description: Soft-delete (AuditedModel) — recoverable via Restore/Trash below.
+        Never a hard delete, since Deal/Activity/Task records reference contact_id.
+      parameters:
+      - description: Contact ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Contact not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a contact
+      tags:
+      - contacts
+    get:
+      description: Returns a single Contact.
+      parameters:
+      - description: Contact ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Contact'
+        "404":
+          description: Contact not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get a contact
+      tags:
+      - contacts
+    put:
+      consumes:
+      - application/json
+      description: Updates a Contact. role_title must match an active configured job
+        title.
+      parameters:
+      - description: Contact ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Contact fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.contactForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Contact'
+        "400":
+          description: Invalid body or invalid role_title
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Contact not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a contact
+      tags:
+      - contacts
+  /contacts/{id}/restore:
+    post:
+      description: Un-deletes a soft-deleted Contact.
+      parameters:
+      - description: Contact ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Contact'
+        "403":
+          description: Not Admin/Sales Manager
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Deleted contact not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Restore a deleted contact (Admin/Sales Manager only)
+      tags:
+      - contacts
+  /contacts/export:
+    get:
+      description: CSV download of the full (non-deleted, non-paginated) Contact dataset,
+        with company_id resolved to the Company name. Filters mirror ContactHandler.List.
+        Admin/Sales Manager only.
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV export
+          schema:
+            type: file
+        "500":
+          description: Failed to export data
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export contacts as CSV (Admin/Sales Manager only)
+      tags:
+      - export
+  /contacts/import:
+    post:
+      consumes:
+      - multipart/form-data
+      description: 'Uploads a CSV file (header row skipped, up to 10MB / 5000 data
+        rows) with columns company_id,name,email,phone,role_title — company_id and
+        name are required per row. Dedupes by email per FR-CRM-014: an existing Contact
+        with the same email is updated, otherwise a new one is created. Same all-or-nothing
+        transaction treatment as ImportCompanies; per-row failures are collected into
+        the result rather than aborting the whole import.'
+      parameters:
+      - description: 'CSV file: company_id,name,email,phone,role_title'
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: created/updated/skipped counts plus a per-row error list
+          schema:
+            $ref: '#/definitions/internal_handlers.importResult'
+        "400":
+          description: Missing/invalid file, unsupported format (non-.csv), row limit
+            exceeded, or invalid company_id
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Bulk-import contacts from CSV
+      tags:
+      - contacts
+  /contacts/trash:
+    get:
+      description: Returns soft-deleted Contacts.
+      parameters:
+      - description: Search by name
+        in: query
+        name: search
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated contact list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not Admin/Sales Manager
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List deleted contacts (Admin/Sales Manager only)
+      tags:
+      - contacts
+  /contracts/{id}:
+    put:
+      consumes:
+      - application/json
+      description: Updates status and/or quote_id. Only the parent Deal's assigned
+        Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §8.1.
+      parameters:
+      - description: Contract ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Contract fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.contractForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Contract'
+        "400":
+          description: Invalid request body
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not authorized to modify this deal's records
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Contract not found, or deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a contract
+      tags:
+      - contracts
+  /contracts/{id}/export-pdf:
+    get:
+      description: 'Renders a plain (unbranded, same style as the Quote export) PDF:
+        party details (Company legal name/address/tax ID, Contact name/role), Deal
+        info, the linked Quote''s scope_of_work and line items/total (if quote_id
+        is set), status, and a signature-line placeholder. Read-only, same access
+        level as List (no CanWrite ownership check). api-system-spec.md §8.1.'
+      parameters:
+      - description: Contract ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/pdf
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "404":
+          description: Contract not found, or deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export a contract as PDF
+      tags:
+      - contracts
+  /contracts/{id}/upload:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Uploads the signed document, sets signed_file_url/signed_date,
+        and sets status to Signed. Only the parent Deal's assigned Sales Rep (or Admin/Sales
+        Manager) may upload. api-system-spec.md §8.1.
+      parameters:
+      - description: Contract ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Signed contract file
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Contract'
+        "400":
+          description: Missing file, or unsupported file type
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not authorized to modify this deal's records
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Contract not found, or deal not found
+          schema:
+            additionalProperties: true
+            type: object
+        "413":
+          description: File exceeds 10MB limit
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Upload a signed contract document
+      tags:
+      - contracts
+  /customer-products/{id}:
+    patch:
+      consumes:
+      - application/json
+      description: Updates a Customer-Product record — the Company/Product link created
+        via AddForCompany (or auto-created when a Deal is won, FR-CRM-064). company_id/product_id
+        are immutable after creation; only status (and end_date, e.g. when moving
+        to Churned) can change. Writes an audit-log entry when status changes (FR-CRM-082).
+      parameters:
+      - description: Customer-Product ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Fields to update
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.customerProductUpdateForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.CustomerProduct'
+        "400":
+          description: Invalid body or invalid status
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Customer product not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a Customer-Product's status
+      tags:
+      - products
   /dashboard/summary:
     get:
       description: Aggregate sales metrics (pipeline value, win rate, trends, breakdowns,
@@ -366,6 +3522,2844 @@ paths:
       summary: Dashboard summary
       tags:
       - dashboard
+  /deals:
+    get:
+      description: Returns deals, filterable by stage, status, company_id, assigned_to,
+        business_unit, channel, and search (title). Backs the Kanban board and dashboard.
+        api-system-spec.md §7.1.
+      parameters:
+      - description: Filter by DealStage
+        in: query
+        name: stage
+        type: string
+      - description: Filter by DealStatus (open/won/lost)
+        in: query
+        name: status
+        type: string
+      - description: Filter by Company ID
+        in: query
+        name: company_id
+        type: integer
+      - description: Filter by assigned Sales Rep user ID
+        in: query
+        name: assigned_to
+        type: integer
+      - description: Filter by BusinessUnit
+        in: query
+        name: business_unit
+        type: string
+      - description: Filter by lead source channel
+        in: query
+        name: channel
+        type: string
+      - description: Search by title
+        in: query
+        name: search
+        type: string
+      - description: Sort field (created_at, title, value, company_name), prefix -
+          for descending
+        in: query
+        name: sort
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated deal list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List deals (Admin/Sales Rep/Sales Manager)
+      tags:
+      - deals
+    post:
+      consumes:
+      - application/json
+      description: Creates a Deal. value must be >= 0; expected_close_date, if supplied,
+        must parse as YYYY-MM-DD or RFC3339; stage/channel must be an active PipelineStage/LeadSourceOption;
+        probability (if supplied) must be 0-100; lost_reason is required once stage/status
+        moves to Lost; a Sales Rep cannot assign to another rep. api-system-spec.md
+        §7.1.
+      parameters:
+      - description: Deal fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.dealForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal'
+        "400":
+          description: Invalid request body, or validation error (required fields,
+            value, expected_close_date, probability, lost_reason, stage/channel/business_unit)
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Cannot assign a deal to another sales rep
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a deal (Admin/Sales Rep/Sales Manager)
+      tags:
+      - deals
+  /deals/{dealId}/contracts:
+    get:
+      description: Returns contracts for a Deal, ordered newest first. api-system-spec.md
+        §8.1.
+      parameters:
+      - description: Deal ID
+        in: path
+        name: dealId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Contract'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List contracts for a deal (Admin/Sales Rep/Sales Manager)
+      tags:
+      - contracts
+    post:
+      consumes:
+      - application/json
+      description: Creates a Contract on a Deal, optionally linked to a Quote (quote_id)
+        for PDF line items. status defaults to draft. Only the Deal's assigned Sales
+        Rep (or Admin/Sales Manager) may create. api-system-spec.md §8.1.
+      parameters:
+      - description: Deal ID
+        in: path
+        name: dealId
+        required: true
+        type: integer
+      - description: Contract fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.contractForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Contract'
+        "400":
+          description: Invalid request body
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not authorized to modify this deal's records
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a contract (Admin/Sales Rep/Sales Manager)
+      tags:
+      - contracts
+  /deals/{dealId}/payments:
+    get:
+      description: Returns installments for a Deal, plus a computed total_paid. Backs
+        the Deal detail page's Payments tab. api-system-spec.md §7.5.
+      parameters:
+      - description: Deal ID
+        in: path
+        name: dealId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{ payments: []models.Payment, total_paid: number }'
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List payments for a deal (Admin/Sales Rep/Sales Manager)
+      tags:
+      - payments
+    post:
+      consumes:
+      - application/json
+      description: Creates a Payment installment on a Deal. amount must be > 0; method
+        must be a valid PaymentMethod; paid_at defaults to now if omitted. Only the
+        Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md
+        §7.5.
+      parameters:
+      - description: Deal ID
+        in: path
+        name: dealId
+        required: true
+        type: integer
+      - description: Payment fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.paymentForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Payment'
+        "400":
+          description: Invalid request body, amount is required, or method is invalid
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not authorized to modify this deal's records
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Record a payment (Admin/Sales Rep/Sales Manager)
+      tags:
+      - payments
+  /deals/{dealId}/quotes:
+    get:
+      description: Returns quotes for a Deal, ordered newest first. Each row's status
+        reflects EffectiveStatus (may report "expired") rather than necessarily the
+        raw stored value. api-system-spec.md §7.4.
+      parameters:
+      - description: Deal ID
+        in: path
+        name: dealId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Quote'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List quotes for a deal (Admin/Sales Rep/Sales Manager)
+      tags:
+      - quotes
+    post:
+      consumes:
+      - application/json
+      description: Creates a line-item Quote on a Deal. number is always server-generated,
+        not client-settable. Line items carrying a product_id have their description/price
+        snapshotted from the current Product. Only the Deal's assigned Sales Rep (or
+        Admin/Sales Manager) may create. api-system-spec.md §7.4.
+      parameters:
+      - description: Deal ID
+        in: path
+        name: dealId
+        required: true
+        type: integer
+      - description: Quote fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.quoteForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Quote'
+        "400":
+          description: Invalid request body, or validation error (status, price_type,
+            credit_days, wht_rate, discount_total)
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not authorized to modify this deal's records
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a quote (Admin/Sales Rep/Sales Manager)
+      tags:
+      - quotes
+  /deals/{dealId}/quotes/upload:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Uploads a PDF quote in place of line items — sets file_name/file_url/file_size/uploaded_at.
+        If the PDF looks like a FlowAccount quotation export, best-effort extraction
+        also pre-fills items/scope_of_work/reference_number/issue_date/vat/wht/notes
+        (see extraction_status/extraction_warnings on the response); extraction is
+        never fatal — a PDF that isn't a FlowAccount export still uploads with extraction_status
+        "failed". Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may
+        upload. api-system-spec.md §7.4.
+      parameters:
+      - description: Deal ID
+        in: path
+        name: dealId
+        required: true
+        type: integer
+      - description: Quote PDF file
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Quote'
+        "400":
+          description: Missing file, or unsupported file type
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not authorized to modify this deal's records
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+        "413":
+          description: File exceeds 10MB limit
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Upload a PDF quote (Admin/Sales Rep/Sales Manager)
+      tags:
+      - quotes
+  /deals/{id}:
+    delete:
+      description: Soft-delete (AuditedModel) — recoverable via Restore/Trash below.
+        Only the assigned Sales Rep (or Admin/Sales Manager) may delete.
+      parameters:
+      - description: Deal ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "403":
+          description: Not authorized to delete this deal
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a deal (Admin/Sales Rep/Sales Manager)
+      tags:
+      - deals
+    get:
+      description: Returns a single Deal by ID.
+      parameters:
+      - description: Deal ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal'
+        "404":
+          description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get a deal (Admin/Sales Rep/Sales Manager)
+      tags:
+      - deals
+    put:
+      consumes:
+      - application/json
+      description: Full update of a Deal — same validation as Create. Writes a stage_changed
+        audit log entry when the submitted stage differs from the deal's current one.
+        Only the assigned Sales Rep (or Admin/Sales Manager) may update; a Sales Rep
+        cannot reassign to another rep. api-system-spec.md §7.1.
+      parameters:
+      - description: Deal ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Deal fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.dealForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal'
+        "400":
+          description: Invalid request body, or validation error (required fields,
+            value, expected_close_date, probability, lost_reason, stage/channel/business_unit)
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not authorized to update this deal, or cannot assign a deal
+            to another sales rep
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a deal (Admin/Sales Rep/Sales Manager)
+      tags:
+      - deals
+  /deals/{id}/reassign:
+    patch:
+      consumes:
+      - application/json
+      description: Sets the Deal's assigned_to, writing a reassigned audit log entry.
+        Stricter than the deals group's default access — Sales Rep cannot call this.
+      parameters:
+      - description: Deal ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: New assignee
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.dealReassignForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal'
+        "400":
+          description: Invalid request body
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Reassign a deal (Admin/Sales Manager)
+      tags:
+      - deals
+  /deals/{id}/restore:
+    post:
+      description: Restores a soft-deleted Deal.
+      parameters:
+      - description: Deal ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal'
+        "404":
+          description: Deleted deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Restore a deleted deal (Admin/Sales Manager)
+      tags:
+      - deals
+  /deals/{id}/stage:
+    patch:
+      consumes:
+      - application/json
+      description: Dedicated endpoint for the Kanban drag-and-drop quick-move. Sets
+        status to won/lost alongside stage (and re-derives probability) in the same
+        transaction; writes a stage_changed audit log entry per §8.5's explicit minimum
+        scope. Moving into a stage resolved as Won is blocked (422-style validation
+        error) if AppSettings.RequireSignedContractBeforeWon is enabled and the deal
+        has no Contract with status Signed. Only the assigned Sales Rep (or Admin/Sales
+        Manager) may move it.
+      parameters:
+      - description: Deal ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: New stage
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.dealStageForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal'
+        "400":
+          description: Invalid request body, stage is required, stage is not a valid
+            active pipeline stage, or a signed contract is required before marking
+            this deal Won
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not authorized to update this deal
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Move a deal to a new pipeline stage (Admin/Sales Rep/Sales Manager)
+      tags:
+      - deals
+  /deals/bulk-archive:
+    patch:
+      consumes:
+      - application/json
+      description: Soft-deletes every listed Deal (same as Delete), in one transaction,
+        writing a bulk_archived audit entry per row.
+      parameters:
+      - description: Deal IDs
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.bulkIDsForm'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Invalid request body, or ids is required
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Bulk archive deals (Admin/Sales Manager)
+      tags:
+      - deals
+  /deals/bulk-reassign:
+    patch:
+      consumes:
+      - application/json
+      description: Reassigns every listed Deal to assigned_to (or unassigns if null)
+        in one transaction, writing a bulk_reassigned audit entry per row.
+      parameters:
+      - description: Deal IDs and new assignee
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.bulkReassignForm'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Invalid request body, or ids is required
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Bulk reassign deals (Admin/Sales Manager)
+      tags:
+      - deals
+  /deals/bulk-tag:
+    patch:
+      consumes:
+      - application/json
+      description: Applies tags to every listed Deal in one transaction (mode "add"
+        merges, "set" replaces), writing a bulk_tagged audit entry per row.
+      parameters:
+      - description: Deal IDs, tags, and mode (add/set)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.bulkTagForm'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Invalid request body, or ids is required
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Bulk tag deals (Admin/Sales Manager)
+      tags:
+      - deals
+  /deals/export:
+    get:
+      description: CSV download of the full (non-deleted, non-paginated) Deal dataset,
+        with company_id/assigned_to resolved to names. Filters mirror DealHandler.List.
+        Admin/Sales Manager only.
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV export
+          schema:
+            type: file
+        "500":
+          description: Failed to export data
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export deals as CSV (Admin/Sales Manager only)
+      tags:
+      - export
+  /deals/trash:
+    get:
+      description: Returns soft-deleted Deals, paginated like GET /deals.
+      parameters:
+      - description: Search by title
+        in: query
+        name: search
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated deal list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List deleted deals (Admin/Sales Manager)
+      tags:
+      - deals
+  /leads:
+    get:
+      description: Paginated, filterable list of Leads. Admin/Sales Rep/Sales Manager
+        only.
+      parameters:
+      - description: Filter by lead status
+        in: query
+        name: status
+        type: string
+      - description: Filter by lead source
+        in: query
+        name: source
+        type: string
+      - description: Filter by assigned Sales Rep user ID, or \
+        in: query
+        name: assigned_to
+        type: string
+      - description: Filter by Company ID
+        in: query
+        name: company_id
+        type: integer
+      - description: Search by name, email, or company name
+        in: query
+        name: search
+        type: string
+      - description: Sort field, prefix with - for descending (e.g. -created_at, name)
+        in: query
+        name: sort
+        type: string
+      - description: Exclude leads already converted to a Deal
+        in: query
+        name: exclude_converted
+        type: boolean
+      - description: Page number (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: Items per page (default 20, max 200)
+        in: query
+        name: per_page
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated lead list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List leads (Sales pipeline roles)
+      tags:
+      - leads
+    post:
+      consumes:
+      - application/json
+      description: Admin/Sales Rep/Sales Manager only. A Sales Rep cannot assign the
+        new lead to another rep. If assigned_to is omitted, the lead is auto-assigned
+        round-robin among active Sales Reps by current open-record load.
+      parameters:
+      - description: Lead fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.leadForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Lead'
+        "400":
+          description: Invalid body
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Cannot assign a lead to another sales rep
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a lead (Sales pipeline roles)
+      tags:
+      - leads
+  /leads/{id}:
+    delete:
+      description: Admin/Sales Rep/Sales Manager, and only if the caller owns the
+        lead or has manager-level write access. Soft-delete — recoverable via Restore/Trash.
+      parameters:
+      - description: Lead ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "403":
+          description: Not authorized to delete this lead
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Lead not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a lead (Sales pipeline roles)
+      tags:
+      - leads
+    get:
+      description: Any authenticated role (deliberately open — e.g. reachable from
+        Prospect conversion).
+      parameters:
+      - description: Lead ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Lead'
+        "404":
+          description: Lead not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get a lead
+      tags:
+      - leads
+    put:
+      consumes:
+      - application/json
+      description: Admin/Sales Rep/Sales Manager, and only if the caller owns the
+        lead or has manager-level write access. Reassigning to another rep is likewise
+        restricted. Omitting classification leaves an existing manual "sql" override
+        in place rather than letting it be auto-recomputed away.
+      parameters:
+      - description: Lead ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Lead fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.leadForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Lead'
+        "400":
+          description: Invalid body
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not authorized to update this lead
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Lead not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a lead (Sales pipeline roles)
+      tags:
+      - leads
+  /leads/{id}/convert:
+    post:
+      consumes:
+      - application/json
+      description: Admin/Sales Rep/Sales Manager, and only if the caller owns the
+        lead or has manager-level write access. Converts a Lead into a Deal, reusing
+        or creating the linked Company/Contact as needed — FR-CRM-004, api-system-spec.md
+        §3. Fails if the lead was already converted.
+      parameters:
+      - description: Lead ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Optional company_id/contact_id overrides and the new deal's fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.convertRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: deal, company, and contact objects
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid body, or stage/channel not a valid active value
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not authorized to convert this lead
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Lead not found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Lead has already been converted
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Convert a lead to a deal (Sales pipeline roles)
+      tags:
+      - leads
+  /leads/{id}/restore:
+    post:
+      description: Un-does a soft-delete.
+      parameters:
+      - description: Lead ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Lead'
+        "404":
+          description: Deleted lead not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Restore a deleted lead (Admin/Sales Manager only)
+      tags:
+      - leads
+  /leads/bulk-archive:
+    patch:
+      consumes:
+      - application/json
+      description: Soft-deletes every listed Lead (same as Delete), in one transaction.
+      parameters:
+      - description: Lead IDs
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.bulkIDsForm'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: ids is required
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Bulk-archive leads (Admin/Sales Manager only)
+      tags:
+      - leads
+  /leads/bulk-reassign:
+    patch:
+      consumes:
+      - application/json
+      description: Reassigns every listed Lead to a new owner in one transaction.
+      parameters:
+      - description: Lead IDs and new assignee
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.bulkReassignForm'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: ids is required
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Bulk-reassign leads (Admin/Sales Manager only)
+      tags:
+      - leads
+  /leads/bulk-tag:
+    patch:
+      consumes:
+      - application/json
+      description: Adds ("add", default) or replaces ("set") tags on every listed
+        Lead in one transaction.
+      parameters:
+      - description: Lead IDs, tags, and mode (add/set)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.bulkTagForm'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: ids is required
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Bulk-tag leads (Admin/Sales Manager only)
+      tags:
+      - leads
+  /leads/trash:
+    get:
+      description: Returns soft-deleted Leads.
+      parameters:
+      - description: Search by name
+        in: query
+        name: search
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated lead list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List deleted leads (Admin/Sales Manager only)
+      tags:
+      - leads
+  /payments/{id}:
+    delete:
+      description: Hard delete of a Payment. Only the parent Deal's assigned Sales
+        Rep (or Admin/Sales Manager) may delete.
+      parameters:
+      - description: Payment ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "403":
+          description: Not authorized to modify this deal's records
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Payment not found, or deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a payment
+      tags:
+      - payments
+  /products:
+    get:
+      description: Paginated Product catalog, open to any authenticated role (Deal/Quote
+        line-item forms need the catalog). FR-CRM-060.
+      parameters:
+      - description: Filter by category
+        in: query
+        name: category
+        type: string
+      - description: Filter by name (ILIKE substring match)
+        in: query
+        name: search
+        type: string
+      - description: Sort field, optionally prefixed with - for descending (created_at,
+          name)
+        in: query
+        name: sort
+        type: string
+      - description: Page number
+        in: query
+        name: page
+        type: integer
+      - description: Items per page
+        in: query
+        name: per_page
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated product list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List products
+      tags:
+      - products
+    post:
+      consumes:
+      - application/json
+      description: Admin-only. Adds a Product to the catalog. category must be an
+        active product category (see admin/product-categories). FR-CRM-060.
+      parameters:
+      - description: Product fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.productForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Product'
+        "400":
+          description: Invalid body, missing name, or invalid category
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a product (Admin only)
+      tags:
+      - products
+  /products/{id}:
+    patch:
+      consumes:
+      - application/json
+      description: Admin-only. Full edit of the catalog entry's own fields — distinct
+        from Deactivate, which only ever flips is_active off and is left as the dedicated
+        "remove from catalog" action.
+      parameters:
+      - description: Product ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Product fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.productForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Product'
+        "400":
+          description: Invalid body, missing name, or invalid category
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Product not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a product (Admin only)
+      tags:
+      - products
+  /products/{id}/deactivate:
+    patch:
+      description: 'Admin-only. Sets is_active: false — the dedicated "remove from
+        catalog" action, leaving existing Customer-Product references intact.'
+      parameters:
+      - description: Product ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Product'
+        "404":
+          description: Product not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Deactivate a product (Admin only)
+      tags:
+      - products
+  /products/export:
+    get:
+      description: CSV download of the full (non-deleted, non-paginated) Product dataset.
+        Filters mirror ProductHandler.List. Admin/Sales Manager only.
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV export
+          schema:
+            type: file
+        "500":
+          description: Failed to export data
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export products as CSV (Admin/Sales Manager only)
+      tags:
+      - export
+  /projects:
+    get:
+      description: Paginated cross-company Project view (the single-Company view ListForCompany
+        can't provide) — merges the Company name into each Project. Open to any authenticated
+        role; no field-level RBAC applies to List (the Production-role field restriction
+        only affects Update). FR-CRM-067.
+      parameters:
+      - description: Filter by status
+        in: query
+        name: status
+        type: string
+      - description: Filter by Company ID
+        in: query
+        name: company_id
+        type: integer
+      - description: Sort field, optionally prefixed with - for descending (created_at,
+          name, target_end_date)
+        in: query
+        name: sort
+        type: string
+      - description: Page number
+        in: query
+        name: page
+        type: integer
+      - description: Items per page
+        in: query
+        name: per_page
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated project list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List projects
+      tags:
+      - projects
+  /projects/{id}:
+    patch:
+      consumes:
+      - application/json
+      description: 'Any authenticated role may call this endpoint, but field access
+        is enforced inside the handler by the caller''s role (§8.3/§1.7): Sales/Admin/other
+        roles may update any field in projectForm; a caller with the Production role
+        is restricted to only status and production_reference — sending any other
+        JSON body key as Production returns 403. Writes an audit-log entry when status
+        changes (FR-CRM-082).'
+      parameters:
+      - description: Project ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 'Project fields (Production role: status/production_reference
+          only)'
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.projectForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Project'
+        "400":
+          description: Invalid body
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Production role attempted to update a field other than status/production_reference
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Project not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a project
+      tags:
+      - projects
+  /projects/export:
+    get:
+      description: CSV download of the full (non-deleted, non-paginated) Project dataset,
+        with company_id resolved to the Company name. Filters mirror ProjectHandler.List.
+        Admin/Sales Manager only.
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV export
+          schema:
+            type: file
+        "500":
+          description: Failed to export data
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export projects as CSV (Admin/Sales Manager only)
+      tags:
+      - export
+  /prospects:
+    get:
+      description: 'Returns a paginated list of Prospects. Filters: status, source,
+        assigned_to ("unassigned" for unassigned), company_id (exact match), search
+        (name/email/company name), exclude_converted ("true" to hide already-converted
+        Prospects). Mirrors LeadHandler.List.'
+      parameters:
+      - description: Filter by status
+        in: query
+        name: status
+        type: string
+      - description: Filter by source
+        in: query
+        name: source
+        type: string
+      - description: Filter by assigned user ID, or \
+        in: query
+        name: assigned_to
+        type: string
+      - description: Filter by Company ID
+        in: query
+        name: company_id
+        type: integer
+      - description: Search by name/email/company name
+        in: query
+        name: search
+        type: string
+      - description: Set to \
+        in: query
+        name: exclude_converted
+        type: string
+      - description: Sort field, prefix with - for descending (created_at, name)
+        in: query
+        name: sort
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated prospect list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List prospects (Admin/Marketing/Sales Manager/Sales Rep)
+      tags:
+      - prospects
+    post:
+      consumes:
+      - application/json
+      description: Creates a new Prospect. status defaults to "New" if omitted; status
+        "Converted" cannot be set directly (only via POST /prospects/:id/convert).
+        source must be an active Prospect source and status an active Prospect stage.
+        A Sales Rep may only assign to themselves.
+      parameters:
+      - description: Prospect fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.prospectForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Prospect'
+        "400":
+          description: Validation error (name required, invalid source/status/business_unit/email)
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Cannot assign a prospect to another team member
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a prospect (Admin/Marketing/Sales Manager/Sales Rep)
+      tags:
+      - prospects
+  /prospects/{id}:
+    delete:
+      description: Soft-deletes a Prospect (AuditedModel) — recoverable via GET /prospects/trash
+        and POST /prospects/:id/restore. A Sales Rep may only delete their own prospects.
+      parameters:
+      - description: Prospect ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "403":
+          description: Not authorized to delete this prospect
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Prospect not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a prospect (Admin/Marketing/Sales Manager/Sales Rep)
+      tags:
+      - prospects
+    get:
+      description: Returns a single Prospect by ID.
+      parameters:
+      - description: Prospect ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Prospect'
+        "404":
+          description: Prospect not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get a prospect by ID (Admin/Marketing/Sales Manager/Sales Rep)
+      tags:
+      - prospects
+    put:
+      consumes:
+      - application/json
+      description: Updates a Prospect, including status transitions. status "Converted"
+        cannot be set directly (only via POST /prospects/:id/convert), except re-submitting
+        an already-Converted record's unchanged status. source must be an active Prospect
+        source and status an active Prospect stage. A Sales Rep may only act on/assign
+        to their own prospects.
+      parameters:
+      - description: Prospect ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Prospect fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.prospectForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Prospect'
+        "400":
+          description: Validation error (invalid source/status/business_unit/email)
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not authorized to update this prospect
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Prospect not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a prospect (Admin/Marketing/Sales Manager/Sales Rep)
+      tags:
+      - prospects
+  /prospects/{id}/convert:
+    post:
+      consumes:
+      - application/json
+      description: 'Converts a Prospect into a Lead (and a Company/Contact if not
+        supplied or not already linked) in one transaction: resolve-or-create Company,
+        resolve-or-create Contact, create the Lead with a back-reference to the source
+        Prospect, carry over Attachments, then mark the Prospect "Converted" and stamp
+        its converted_lead_id. Fails with 409 if already converted. Source/tags are
+        carried over as-is even if they aren''t among the Lead''s own configured options.'
+      parameters:
+      - description: Prospect ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Optional company_id/contact_id to link, and lead.assigned_to
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.prospectConvertRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: lead, company, contact
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request body
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not authorized to convert this prospect
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Prospect not found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Prospect has already been converted
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Convert a prospect into a lead (Admin/Marketing/Sales Manager/Sales
+        Rep)
+      tags:
+      - prospects
+  /prospects/{id}/restore:
+    post:
+      description: Restores a soft-deleted Prospect.
+      parameters:
+      - description: Prospect ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Prospect'
+        "404":
+          description: Deleted prospect not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Restore a deleted prospect (Admin/Sales Manager)
+      tags:
+      - prospects
+  /prospects/bulk-archive:
+    patch:
+      consumes:
+      - application/json
+      description: Soft-deletes a set of Prospects (same effect as Delete), in one
+        transaction.
+      parameters:
+      - description: Prospect IDs
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.bulkIDsForm'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: ids is required
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Bulk archive prospects (Admin/Sales Manager)
+      tags:
+      - prospects
+  /prospects/bulk-reassign:
+    patch:
+      consumes:
+      - application/json
+      description: Reassigns a set of Prospects to a new owner in one transaction.
+      parameters:
+      - description: Prospect IDs and new assignee
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.bulkReassignForm'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: ids is required
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Bulk reassign prospects (Admin/Sales Manager)
+      tags:
+      - prospects
+  /prospects/bulk-tag:
+    patch:
+      consumes:
+      - application/json
+      description: Adds or replaces tags on a set of Prospects in one transaction.
+        mode "add" (default) merges tags, "set" replaces them.
+      parameters:
+      - description: Prospect IDs, tags, and mode
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.bulkTagForm'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: ids is required
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Bulk tag prospects (Admin/Sales Manager)
+      tags:
+      - prospects
+  /prospects/trash:
+    get:
+      description: Returns soft-deleted Prospects, paginated.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated prospect list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List deleted prospects (Admin/Sales Manager)
+      tags:
+      - prospects
+  /quotes/{id}:
+    delete:
+      description: Hard delete of a Quote. Only the parent Deal's assigned Sales Rep
+        (or Admin/Sales Manager) may delete.
+      parameters:
+      - description: Quote ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "403":
+          description: Not authorized to modify this deal's records
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Quote not found, or deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a quote
+      tags:
+      - quotes
+    put:
+      consumes:
+      - application/json
+      description: Updates status/items and every other Quote field (number excepted
+        — immutable after Create). Only the parent Deal's assigned Sales Rep (or Admin/Sales
+        Manager) may update. api-system-spec.md §7.4.
+      parameters:
+      - description: Quote ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Quote fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.quoteForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Quote'
+        "400":
+          description: Invalid request body, or validation error (status, price_type,
+            credit_days, wht_rate, discount_total)
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not authorized to modify this deal's records
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Quote not found, or deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a quote
+      tags:
+      - quotes
+  /quotes/{id}/export-pdf:
+    get:
+      description: Renders the quote's line items as a PDF — document number, scope
+        of work, line items table (with per-item discount and tax/WHT totals), Deal/Company/Contact
+        header, validity date, status, and notes (never internal_notes). Read-only,
+        same access level as List (no CanWrite ownership check). FR-CRM-042, api-system-spec.md
+        §7.4.
+      parameters:
+      - description: Quote ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/pdf
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "404":
+          description: Quote not found, or deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export a quote as PDF
+      tags:
+      - quotes
+  /reports/contracts-stuck:
+    get:
+      description: Contracts sitting in Draft or Sent for at least min_days without
+        being signed, sorted by days in status descending. FR-CRM-097. Admin/Sales
+        Manager only.
+      parameters:
+      - description: Minimum days in Draft/Sent status to be considered stuck (default
+          14)
+        in: query
+        name: min_days
+        type: integer
+      - description: Filter by assigned Sales Rep user ID
+        in: query
+        name: assigned_to
+        type: string
+      - description: Filter by Company tag
+        in: query
+        name: company_tag
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to compute contracts stuck
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Contracts stuck report (Admin/Sales Manager only)
+      tags:
+      - reports
+  /reports/contracts-stuck/export:
+    get:
+      description: CSV download of the contracts stuck report (see GET /reports/contracts-stuck).
+        FR-CRM-097. Admin/Sales Manager only.
+      parameters:
+      - description: Minimum days in Draft/Sent status to be considered stuck (default
+          14)
+        in: query
+        name: min_days
+        type: integer
+      - description: Filter by assigned Sales Rep user ID
+        in: query
+        name: assigned_to
+        type: string
+      - description: Filter by Company tag
+        in: query
+        name: company_tag
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV export
+          schema:
+            type: file
+        "500":
+          description: Failed to export contracts stuck
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export contracts stuck report as CSV (Admin/Sales Manager only)
+      tags:
+      - reports
+  /reports/customers-by-product-status:
+    get:
+      description: Every CustomerProduct row (company/product/status/start_date),
+        sorted by start_date descending. FR-CRM-056, FR-CRM-055 (company-tag filter).
+        Admin/Sales Manager only.
+      parameters:
+      - description: Filter by Product ID
+        in: query
+        name: product_id
+        type: integer
+      - description: Filter by CustomerProduct status
+        in: query
+        name: status
+        type: string
+      - description: Filter by Company tag
+        in: query
+        name: company_tag
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to compute customers by product status
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Customers by product status report (Admin/Sales Manager only)
+      tags:
+      - reports
+  /reports/customers-by-product-status/export:
+    get:
+      description: CSV download of the customers by product status report (see GET
+        /reports/customers-by-product-status). FR-CRM-056, FR-CRM-055 (company-tag
+        filter). Admin/Sales Manager only.
+      parameters:
+      - description: Filter by Product ID
+        in: query
+        name: product_id
+        type: integer
+      - description: Filter by CustomerProduct status
+        in: query
+        name: status
+        type: string
+      - description: Filter by Company tag
+        in: query
+        name: company_tag
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV export
+          schema:
+            type: file
+        "500":
+          description: Failed to export customers by product status
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export customers by product status report as CSV (Admin/Sales Manager
+        only)
+      tags:
+      - reports
+  /reports/lead-source-conversion:
+    get:
+      description: Total vs. Qualified Lead counts and conversion rate, grouped by
+        lead source. FR-CRM-054, FR-CRM-055 (rep filter). Admin/Sales Manager only.
+      parameters:
+      - description: Filter by assigned Sales Rep user ID
+        in: query
+        name: assigned_to
+        type: string
+      - description: ISO date lower bound (YYYY-MM-DD), filters on created_at
+        in: query
+        name: date_from
+        type: string
+      - description: ISO date upper bound (YYYY-MM-DD), filters on created_at
+        in: query
+        name: date_to
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to compute lead source conversion
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Lead source conversion report (Admin/Sales Manager only)
+      tags:
+      - reports
+  /reports/lead-source-conversion/export:
+    get:
+      description: CSV download of the lead source conversion report (see GET /reports/lead-source-conversion).
+        FR-CRM-054, FR-CRM-055 (rep filter). Admin/Sales Manager only.
+      parameters:
+      - description: Filter by assigned Sales Rep user ID
+        in: query
+        name: assigned_to
+        type: string
+      - description: ISO date lower bound (YYYY-MM-DD), filters on created_at
+        in: query
+        name: date_from
+        type: string
+      - description: ISO date upper bound (YYYY-MM-DD), filters on created_at
+        in: query
+        name: date_to
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV export
+          schema:
+            type: file
+        "500":
+          description: Failed to export lead source conversion
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export lead source conversion report as CSV (Admin/Sales Manager only)
+      tags:
+      - reports
+  /reports/outstanding-balance:
+    get:
+      description: Won Deals whose recorded Payments sum to less than the Deal value,
+        sorted by outstanding amount descending. FR-CRM-095. Admin/Sales Manager only.
+      parameters:
+      - description: Filter by assigned Sales Rep user ID
+        in: query
+        name: assigned_to
+        type: string
+      - description: Filter by Company tag
+        in: query
+        name: company_tag
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to compute outstanding balance
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Outstanding balance report (Admin/Sales Manager only)
+      tags:
+      - reports
+  /reports/outstanding-balance/export:
+    get:
+      description: CSV download of the outstanding balance report (see GET /reports/outstanding-balance).
+        FR-CRM-095. Admin/Sales Manager only.
+      parameters:
+      - description: Filter by assigned Sales Rep user ID
+        in: query
+        name: assigned_to
+        type: string
+      - description: Filter by Company tag
+        in: query
+        name: company_tag
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV export
+          schema:
+            type: file
+        "500":
+          description: Failed to export outstanding balance
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export outstanding balance report as CSV (Admin/Sales Manager only)
+      tags:
+      - reports
+  /reports/projects-at-risk:
+    get:
+      description: Projects whose target_end_date has passed but aren't Completed
+        or Cancelled, sorted by days overdue descending. FR-CRM-098, §3.7/FR-CRM-071.
+        Admin/Sales Manager only.
+      parameters:
+      - description: Filter by Company tag
+        in: query
+        name: company_tag
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to compute projects at risk
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Projects at risk report (Admin/Sales Manager only)
+      tags:
+      - reports
+  /reports/projects-at-risk/export:
+    get:
+      description: CSV download of the projects at risk report (see GET /reports/projects-at-risk).
+        FR-CRM-098. Admin/Sales Manager only.
+      parameters:
+      - description: Filter by Company tag
+        in: query
+        name: company_tag
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV export
+          schema:
+            type: file
+        "500":
+          description: Failed to export projects at risk
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export projects at risk report as CSV (Admin/Sales Manager only)
+      tags:
+      - reports
+  /reports/prospect-source-conversion:
+    get:
+      description: Total vs. Converted Prospect counts and conversion rate, grouped
+        by prospect source — Marketing's own funnel report, one stage earlier than
+        the Lead source conversion report. Open to Admin, Marketing, Sales Manager,
+        and Sales Rep (a wider role set than the rest of the reports group, which
+        is Admin/Sales Manager only).
+      parameters:
+      - description: Filter by assigned Sales Rep user ID
+        in: query
+        name: assigned_to
+        type: string
+      - description: ISO date lower bound (YYYY-MM-DD), filters on created_at
+        in: query
+        name: date_from
+        type: string
+      - description: ISO date upper bound (YYYY-MM-DD), filters on created_at
+        in: query
+        name: date_to
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to compute prospect source conversion
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Prospect source conversion report (Admin/Marketing/Sales Manager/Sales
+        Rep)
+      tags:
+      - reports
+  /reports/prospect-source-conversion/export:
+    get:
+      description: CSV download of the prospect source conversion report (see GET
+        /reports/prospect-source-conversion). Open to Admin, Marketing, Sales Manager,
+        and Sales Rep.
+      parameters:
+      - description: Filter by assigned Sales Rep user ID
+        in: query
+        name: assigned_to
+        type: string
+      - description: ISO date lower bound (YYYY-MM-DD), filters on created_at
+        in: query
+        name: date_from
+        type: string
+      - description: ISO date upper bound (YYYY-MM-DD), filters on created_at
+        in: query
+        name: date_to
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV export
+          schema:
+            type: file
+        "500":
+          description: Failed to export prospect source conversion
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export prospect source conversion report as CSV (Admin/Marketing/Sales
+        Manager/Sales Rep)
+      tags:
+      - reports
+  /reports/quotes-expiring-soon:
+    get:
+      description: Sent quotes whose validity_date falls within the next within_days,
+        sorted by validity_date ascending. FR-CRM-096. Admin/Sales Manager only.
+      parameters:
+      - description: Look-ahead window in days (default 7)
+        in: query
+        name: within_days
+        type: integer
+      - description: Filter by assigned Sales Rep user ID
+        in: query
+        name: assigned_to
+        type: string
+      - description: Filter by Company tag
+        in: query
+        name: company_tag
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to compute quotes expiring soon
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Quotes expiring soon report (Admin/Sales Manager only)
+      tags:
+      - reports
+  /reports/quotes-expiring-soon/export:
+    get:
+      description: CSV download of the quotes expiring soon report (see GET /reports/quotes-expiring-soon).
+        FR-CRM-096. Admin/Sales Manager only.
+      parameters:
+      - description: Look-ahead window in days (default 7)
+        in: query
+        name: within_days
+        type: integer
+      - description: Filter by assigned Sales Rep user ID
+        in: query
+        name: assigned_to
+        type: string
+      - description: Filter by Company tag
+        in: query
+        name: company_tag
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV export
+          schema:
+            type: file
+        "500":
+          description: Failed to export quotes expiring soon
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export quotes expiring soon report as CSV (Admin/Sales Manager only)
+      tags:
+      - reports
+  /reports/sales-cycle:
+    get:
+      description: Average time-in-stage/cycle length broken down by pipeline stage,
+        Sales Rep, and lead source, derived from "deal" stage_changed audit log entries.
+        FR-CRM-099, extending FR-CRM-057's single running average. Admin/Sales Manager
+        only.
+      parameters:
+      - description: Filter by assigned Sales Rep user ID
+        in: query
+        name: assigned_to
+        type: string
+      - description: ISO date lower bound (YYYY-MM-DD), filters on deals.created_at
+        in: query
+        name: date_from
+        type: string
+      - description: ISO date upper bound (YYYY-MM-DD), filters on deals.created_at
+        in: query
+        name: date_to
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to compute sales cycle report
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Sales cycle report (Admin/Sales Manager only)
+      tags:
+      - reports
+  /reports/stalled-deals:
+    get:
+      description: Open Deals with no logged Activity for at least min_days, sorted
+        by days stalled descending. FR-CRM-094. Admin/Sales Manager only.
+      parameters:
+      - description: Minimum days since last activity to be considered stalled (default
+          14)
+        in: query
+        name: min_days
+        type: integer
+      - description: Filter by assigned Sales Rep user ID
+        in: query
+        name: assigned_to
+        type: string
+      - description: Filter by Company tag
+        in: query
+        name: company_tag
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to compute stalled deals
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Stalled deals report (Admin/Sales Manager only)
+      tags:
+      - reports
+  /reports/stalled-deals/export:
+    get:
+      description: CSV download of the stalled deals report (see GET /reports/stalled-deals).
+        FR-CRM-094. Admin/Sales Manager only.
+      parameters:
+      - description: Minimum days since last activity to be considered stalled (default
+          14)
+        in: query
+        name: min_days
+        type: integer
+      - description: Filter by assigned Sales Rep user ID
+        in: query
+        name: assigned_to
+        type: string
+      - description: Filter by Company tag
+        in: query
+        name: company_tag
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV export
+          schema:
+            type: file
+        "500":
+          description: Failed to export stalled deals
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export stalled deals report as CSV (Admin/Sales Manager only)
+      tags:
+      - reports
+  /reports/win-loss-reasons:
+    get:
+      description: Closed Deals (won or lost) grouped by "won" or lost_reason, with
+        count and total value. FR-CRM-093. Admin/Sales Manager only.
+      parameters:
+      - description: Filter by assigned Sales Rep user ID
+        in: query
+        name: assigned_to
+        type: string
+      - description: ISO date lower bound (YYYY-MM-DD), filters on deals.created_at
+        in: query
+        name: date_from
+        type: string
+      - description: ISO date upper bound (YYYY-MM-DD), filters on deals.created_at
+        in: query
+        name: date_to
+        type: string
+      - description: Filter by Company tag
+        in: query
+        name: company_tag
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to compute win/loss reasons
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Win/loss reasons report (Admin/Sales Manager only)
+      tags:
+      - reports
+  /reports/win-loss-reasons/export:
+    get:
+      description: CSV download of the win/loss reasons report (see GET /reports/win-loss-reasons).
+        FR-CRM-093. Admin/Sales Manager only.
+      parameters:
+      - description: Filter by assigned Sales Rep user ID
+        in: query
+        name: assigned_to
+        type: string
+      - description: ISO date lower bound (YYYY-MM-DD), filters on deals.created_at
+        in: query
+        name: date_from
+        type: string
+      - description: ISO date upper bound (YYYY-MM-DD), filters on deals.created_at
+        in: query
+        name: date_to
+        type: string
+      - description: Filter by Company tag
+        in: query
+        name: company_tag
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV export
+          schema:
+            type: file
+        "500":
+          description: Failed to export win/loss reasons
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export win/loss reasons report as CSV (Admin/Sales Manager only)
+      tags:
+      - reports
+  /tags:
+    get:
+      description: 'Any authenticated role — open so tag pickers on Companies/Deals/Contacts
+        can populate. Returns a paginated list of tags. Filters: category, status,
+        search (matches name).'
+      parameters:
+      - description: Filter by category
+        in: query
+        name: category
+        type: string
+      - description: Filter by status
+        in: query
+        name: status
+        type: string
+      - description: Search name
+        in: query
+        name: search
+        type: string
+      - description: Sort field, prefix with - for descending (default -created_at)
+        in: query
+        name: sort
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated tag list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List tags (any authenticated role)
+      tags:
+      - tags
+    post:
+      consumes:
+      - application/json
+      description: Admin/SalesManager only. Shared taxonomy across Companies/Deals/Contacts.
+        Defaults status to active when omitted.
+      parameters:
+      - description: Tag fields (name, category, description, status)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.tagForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Tag'
+        "400":
+          description: Invalid body
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a tag (Admin/SalesManager only)
+      tags:
+      - tags
+  /tags/{id}:
+    delete:
+      description: Admin/SalesManager only. Soft-delete (sets status to inactive),
+        not a hard delete.
+      parameters:
+      - description: Tag ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Tag not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a tag (Admin/SalesManager only)
+      tags:
+      - tags
+    put:
+      consumes:
+      - application/json
+      description: Admin/SalesManager only. Full update; status is only overwritten
+        if provided.
+      parameters:
+      - description: Tag ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Tag fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.tagForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Tag'
+        "400":
+          description: Invalid body
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Tag not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a tag (Admin/SalesManager only)
+      tags:
+      - tags
+  /team-members:
+    get:
+      description: Any authenticated role — not Admin-restricted, §2.2. Lightweight
+        active-user list (id, name, email) for assignee dropdowns.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/internal_handlers.teamMember'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List team members (any authenticated role)
+      tags:
+      - users
+  /users:
+    get:
+      description: 'Returns a paginated list of users. Admin only. Filters: role,
+        status (active/inactive), search (matches first_name/last_name/email). Sortable
+        by created_at, first_name, email.'
+      parameters:
+      - description: Filter by role
+        in: query
+        name: role
+        type: string
+      - description: Filter by status (active/inactive)
+        in: query
+        name: status
+        type: string
+      - description: Search first_name/last_name/email
+        in: query
+        name: search
+        type: string
+      - description: Sort field, prefix with - for descending (default -created_at)
+        in: query
+        name: sort
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated user list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List users (Admin only)
+      tags:
+      - users
+    post:
+      consumes:
+      - application/json
+      description: Admin only. Creates a user account; email must be on the allowed
+        company domain. If password is omitted, a temporary password is generated
+        and must_change_password is forced true. The response never includes password_hash
+        (excluded via json:"-").
+      parameters:
+      - description: User fields (first_name, last_name, email, tel, password, role,
+          status, notes)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.userForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.User'
+        "400":
+          description: Invalid body or missing required fields
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a user (Admin only)
+      tags:
+      - users
+  /users/{id}:
+    delete:
+      description: Admin only. Soft-delete (deactivates and gorm soft-deletes the
+        row), not a hard delete §1.6. Also invalidates the user's cached auth state.
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: User not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a user (Admin only)
+      tags:
+      - users
+    get:
+      description: Admin only. Returns a single user by ID. The response never includes
+        password_hash (excluded via json:"-").
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.User'
+        "404":
+          description: User not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get a user (Admin only)
+      tags:
+      - users
+    put:
+      consumes:
+      - application/json
+      description: Admin only. Full update; email must be on the allowed company domain.
+        Password is only changed if provided (forces must_change_password true). The
+        response never includes password_hash (excluded via json:"-").
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: User fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.userForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.User'
+        "400":
+          description: Invalid body or missing required fields
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: User not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a user (Admin only)
+      tags:
+      - users
+  /users/{id}/restore:
+    post:
+      description: Admin only. Restores a soft-deleted user. Leaves is_active false
+        — an Admin re-activates separately via Update.
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.User'
+        "404":
+          description: Deleted user not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Restore a deleted user (Admin only)
+      tags:
+      - users
+  /users/trash:
+    get:
+      description: Admin only. Returns soft-deleted users.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated user list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List deleted users (Admin only)
+      tags:
+      - users
 securityDefinitions:
   BearerAuth:
     description: Bearer JWT, e.g. "Bearer <token>".

@@ -111,7 +111,15 @@ func derefStr(s *string) string {
 	return *s
 }
 
-// Companies — GET /companies/export. Filters mirror CompanyHandler.List.
+// Companies godoc
+// @Summary Export companies as CSV (Admin/Sales Manager only)
+// @Description CSV download of the full (non-deleted, non-paginated) Company dataset. Filters mirror CompanyHandler.List. Admin/Sales Manager only.
+// @Tags export
+// @Security BearerAuth
+// @Produce text/csv
+// @Success 200 {file} file "CSV export"
+// @Failure 500 {object} map[string]interface{} "Failed to export data"
+// @Router /companies/export [get]
 func (h *ExportHandler) Companies(c *fiber.Ctx) error {
 	query := applyCompanyFilters(h.DB.Model(&models.Company{}), c).Order("created_at DESC")
 
@@ -130,8 +138,15 @@ func (h *ExportHandler) Companies(c *fiber.Ctx) error {
 	})
 }
 
-// Contacts — GET /contacts/export. Filters mirror ContactHandler.List. Resolves
-// company_id to the Company name, matching what the list page displays.
+// Contacts godoc
+// @Summary Export contacts as CSV (Admin/Sales Manager only)
+// @Description CSV download of the full (non-deleted, non-paginated) Contact dataset, with company_id resolved to the Company name. Filters mirror ContactHandler.List. Admin/Sales Manager only.
+// @Tags export
+// @Security BearerAuth
+// @Produce text/csv
+// @Success 200 {file} file "CSV export"
+// @Failure 500 {object} map[string]interface{} "Failed to export data"
+// @Router /contacts/export [get]
 func (h *ExportHandler) Contacts(c *fiber.Ctx) error {
 	query := applyContactFilters(h.DB.Model(&models.Contact{}), c).Order("created_at DESC")
 
@@ -150,8 +165,15 @@ func (h *ExportHandler) Contacts(c *fiber.Ctx) error {
 	})
 }
 
-// Deals — GET /deals/export. Filters mirror DealHandler.List. Resolves
-// company_id/assigned_to to names.
+// Deals godoc
+// @Summary Export deals as CSV (Admin/Sales Manager only)
+// @Description CSV download of the full (non-deleted, non-paginated) Deal dataset, with company_id/assigned_to resolved to names. Filters mirror DealHandler.List. Admin/Sales Manager only.
+// @Tags export
+// @Security BearerAuth
+// @Produce text/csv
+// @Success 200 {file} file "CSV export"
+// @Failure 500 {object} map[string]interface{} "Failed to export data"
+// @Router /deals/export [get]
 func (h *ExportHandler) Deals(c *fiber.Ctx) error {
 	query := applyDealFilters(h.DB.Model(&models.Deal{}), c).Order("created_at DESC")
 
@@ -185,7 +207,15 @@ func (h *ExportHandler) Deals(c *fiber.Ctx) error {
 	})
 }
 
-// Products — GET /products/export. Filters mirror ProductHandler.List.
+// Products godoc
+// @Summary Export products as CSV (Admin/Sales Manager only)
+// @Description CSV download of the full (non-deleted, non-paginated) Product dataset. Filters mirror ProductHandler.List. Admin/Sales Manager only.
+// @Tags export
+// @Security BearerAuth
+// @Produce text/csv
+// @Success 200 {file} file "CSV export"
+// @Failure 500 {object} map[string]interface{} "Failed to export data"
+// @Router /products/export [get]
 func (h *ExportHandler) Products(c *fiber.Ctx) error {
 	query := applyProductFilters(h.DB.Model(&models.Product{}), c).Order("created_at DESC")
 
@@ -202,8 +232,15 @@ func (h *ExportHandler) Products(c *fiber.Ctx) error {
 	})
 }
 
-// Projects — GET /projects/export. Filters mirror ProjectHandler.List.
-// Resolves company_id to the Company name.
+// Projects godoc
+// @Summary Export projects as CSV (Admin/Sales Manager only)
+// @Description CSV download of the full (non-deleted, non-paginated) Project dataset, with company_id resolved to the Company name. Filters mirror ProjectHandler.List. Admin/Sales Manager only.
+// @Tags export
+// @Security BearerAuth
+// @Produce text/csv
+// @Success 200 {file} file "CSV export"
+// @Failure 500 {object} map[string]interface{} "Failed to export data"
+// @Router /projects/export [get]
 func (h *ExportHandler) Projects(c *fiber.Ctx) error {
 	query := applyProjectFilters(h.DB.Model(&models.Project{}), c).Order("created_at DESC")
 

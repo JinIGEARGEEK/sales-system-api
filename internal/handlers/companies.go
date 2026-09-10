@@ -29,8 +29,23 @@ func NewCompanyHandler(db *gorm.DB) *CompanyHandler {
 	return &CompanyHandler{DB: db}
 }
 
-// List — GET /companies. Filters: status, tag, industry, search (name),
-// stale_days, has_won_deal.
+// List godoc
+// @Summary List companies
+// @Description Paginated, filterable Company list, each row annotated with last_activity_at (from any company-scoped Activity). Filters: status, tag, industry, search (name), stale_days, has_won_deal.
+// @Tags companies
+// @Security BearerAuth
+// @Produce json
+// @Param status query string false "active or archived"
+// @Param tag query string false "Filter by Company tag"
+// @Param industry query string false "Filter by industry"
+// @Param search query string false "Search by name"
+// @Param stale_days query int false "Filter to companies with no activity in N days"
+// @Param has_won_deal query bool false "Filter to companies with (or without) a won Deal"
+// @Param sort query string false "Sort field, prefix - for descending (created_at, name, industry)"
+// @Param page query int false "Page number"
+// @Param per_page query int false "Items per page"
+// @Success 200 {object} map[string]interface{} "Paginated company list (data, page, per_page, total)"
+// @Router /companies [get]
 func (h *CompanyHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := applyCompanyFilters(h.DB.Model(&models.Company{}), c)
@@ -62,7 +77,17 @@ type companyForm struct {
 	TaxID       *string  `json:"tax_id"`
 }
 
-// Create — POST /companies.
+// Create godoc
+// @Summary Create a company
+// @Description Creates a Company. name is required; industry/size/revenue_size must each match an active configured option (see /admin/industries, /admin/company-sizes, /admin/revenue-sizes). domain is derived server-side from website.
+// @Tags companies
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body companyForm true "Company fields"
+// @Success 201 {object} models.Company
+// @Failure 400 {object} map[string]interface{} "Invalid body or missing name"
+// @Router /companies [post]
 func (h *CompanyHandler) Create(c *fiber.Ctx) error {
 	var form companyForm
 	if err := c.BodyParser(&form); err != nil {
@@ -100,7 +125,16 @@ func (h *CompanyHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, company)
 }
 
-// Get — GET /companies/:id.
+// Get godoc
+// @Summary Get a company
+// @Description Returns a single Company, including its last_activity_at.
+// @Tags companies
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "Company ID"
+// @Success 200 {object} models.Company
+// @Failure 404 {object} map[string]interface{} "Company not found"
+// @Router /companies/{id} [get]
 func (h *CompanyHandler) Get(c *fiber.Ctx) error {
 	var company companyWithActivity
 	query := withLastActivityAt(h.DB.Model(&models.Company{})).
@@ -111,7 +145,19 @@ func (h *CompanyHandler) Get(c *fiber.Ctx) error {
 	return utils.OK(c, company)
 }
 
-// Update — PUT /companies/:id.
+// Update godoc
+// @Summary Update a company
+// @Description Updates a Company. industry/size/revenue_size must each match an active configured option; domain is re-derived from website.
+// @Tags companies
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Company ID"
+// @Param body body companyForm true "Company fields"
+// @Success 200 {object} models.Company
+// @Failure 400 {object} map[string]interface{} "Invalid body or invalid option"
+// @Failure 404 {object} map[string]interface{} "Company not found"
+// @Router /companies/{id} [put]
 func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 	var company models.Company
 	if err := h.DB.First(&company, c.Params("id")).Error; err != nil {
@@ -149,9 +195,15 @@ func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, company)
 }
 
-// Delete — DELETE /companies/:id. Soft-delete (AuditedModel) — recoverable via
-// Restore/Trash below. Never a hard delete, since Deals/Contacts/Payments
-// reference company_id.
+// Delete godoc
+// @Summary Delete a company
+// @Description Soft-delete (AuditedModel) — recoverable via Restore/Trash below. Never a hard delete, since Deals/Contacts/Payments reference company_id.
+// @Tags companies
+// @Security BearerAuth
+// @Param id path int true "Company ID"
+// @Success 204 "No Content"
+// @Failure 404 {object} map[string]interface{} "Company not found"
+// @Router /companies/{id} [delete]
 func (h *CompanyHandler) Delete(c *fiber.Ctx) error {
 	var company models.Company
 	if err := h.DB.First(&company, c.Params("id")).Error; err != nil {
@@ -164,12 +216,31 @@ func (h *CompanyHandler) Delete(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
-// Trash — GET /companies/trash. Sales-Manager/Admin only (route-gated).
+// Trash godoc
+// @Summary List deleted companies (Admin/Sales Manager only)
+// @Description Returns soft-deleted Companies.
+// @Tags companies
+// @Security BearerAuth
+// @Produce json
+// @Param search query string false "Search by name"
+// @Success 200 {object} map[string]interface{} "Paginated company list (data, page, per_page, total)"
+// @Failure 403 {object} map[string]interface{} "Not Admin/Sales Manager"
+// @Router /companies/trash [get]
 func (h *CompanyHandler) Trash(c *fiber.Ctx) error {
-	return utils.GenericTrash[models.Company](c, h.DB, "Failed to list deleted companies")
+	return utils.GenericTrash[models.Company](c, h.DB, "Failed to list deleted companies", "name")
 }
 
-// Restore — POST /companies/:id/restore. Sales-Manager/Admin only (route-gated).
+// Restore godoc
+// @Summary Restore a deleted company (Admin/Sales Manager only)
+// @Description Un-deletes a soft-deleted Company.
+// @Tags companies
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "Company ID"
+// @Success 200 {object} models.Company
+// @Failure 403 {object} map[string]interface{} "Not Admin/Sales Manager"
+// @Failure 404 {object} map[string]interface{} "Deleted company not found"
+// @Router /companies/{id}/restore [post]
 func (h *CompanyHandler) Restore(c *fiber.Ctx) error {
 	return utils.GenericRestore[models.Company](c, h.DB, "Deleted company not found", "Failed to restore company")
 }

@@ -19,7 +19,15 @@ func NewPaymentHandler(db *gorm.DB) *PaymentHandler {
 	return &PaymentHandler{DB: db}
 }
 
-// List — GET /deals/:dealId/payments. Returns payments plus a computed total_paid.
+// List godoc
+// @Summary List payments for a deal (Admin/Sales Rep/Sales Manager)
+// @Description Returns installments for a Deal, plus a computed total_paid. Backs the Deal detail page's Payments tab. api-system-spec.md §7.5.
+// @Tags payments
+// @Security BearerAuth
+// @Produce json
+// @Param dealId path int true "Deal ID"
+// @Success 200 {object} map[string]interface{} "{ payments: []models.Payment, total_paid: number }"
+// @Router /deals/{dealId}/payments [get]
 func (h *PaymentHandler) List(c *fiber.Ctx) error {
 	dealID := c.Params("dealId")
 	var payments []models.Payment
@@ -42,7 +50,20 @@ type paymentForm struct {
 	Note   string               `json:"note"`
 }
 
-// Create — POST /deals/:dealId/payments.
+// Create godoc
+// @Summary Record a payment (Admin/Sales Rep/Sales Manager)
+// @Description Creates a Payment installment on a Deal. amount must be > 0; method must be a valid PaymentMethod; paid_at defaults to now if omitted. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §7.5.
+// @Tags payments
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param dealId path int true "Deal ID"
+// @Param body body paymentForm true "Payment fields"
+// @Success 201 {object} models.Payment
+// @Failure 400 {object} map[string]interface{} "Invalid request body, amount is required, or method is invalid"
+// @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
+// @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Router /deals/{dealId}/payments [post]
 func (h *PaymentHandler) Create(c *fiber.Ctx) error {
 	deal, err := dealForSubResource(c, h.DB, c.Params("dealId"))
 	if err != nil {
@@ -72,7 +93,16 @@ func (h *PaymentHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, payment)
 }
 
-// Delete — DELETE /payments/:id (hard delete).
+// Delete godoc
+// @Summary Delete a payment
+// @Description Hard delete of a Payment. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.
+// @Tags payments
+// @Security BearerAuth
+// @Param id path int true "Payment ID"
+// @Success 204 "No Content"
+// @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
+// @Failure 404 {object} map[string]interface{} "Payment not found, or deal not found"
+// @Router /payments/{id} [delete]
 func (h *PaymentHandler) Delete(c *fiber.Ctx) error {
 	var payment models.Payment
 	if err := h.DB.First(&payment, c.Params("id")).Error; err != nil {

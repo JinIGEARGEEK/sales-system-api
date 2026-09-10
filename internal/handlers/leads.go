@@ -45,8 +45,23 @@ func NewLeadHandler(db *gorm.DB) *LeadHandler {
 	return &LeadHandler{DB: db}
 }
 
-// List — GET /leads. Filters: status, source, assigned_to, company_id
-// (exact match), search (name/email/company name).
+// List godoc
+// @Summary List leads (Sales pipeline roles)
+// @Description Paginated, filterable list of Leads. Admin/Sales Rep/Sales Manager only.
+// @Tags leads
+// @Security BearerAuth
+// @Produce json
+// @Param status query string false "Filter by lead status"
+// @Param source query string false "Filter by lead source"
+// @Param assigned_to query string false "Filter by assigned Sales Rep user ID, or \"unassigned\""
+// @Param company_id query int false "Filter by Company ID"
+// @Param search query string false "Search by name, email, or company name"
+// @Param sort query string false "Sort field, prefix with - for descending (e.g. -created_at, name)"
+// @Param exclude_converted query bool false "Exclude leads already converted to a Deal"
+// @Param page query int false "Page number (default 1)"
+// @Param per_page query int false "Items per page (default 20, max 200)"
+// @Success 200 {object} map[string]interface{} "Paginated lead list (data, page, per_page, total)"
+// @Router /leads [get]
 func (h *LeadHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := h.DB.Model(&models.Lead{})
@@ -118,7 +133,18 @@ type leadForm struct {
 	BusinessUnitItem *string                   `json:"business_unit_item"`
 }
 
-// Create — POST /leads.
+// Create godoc
+// @Summary Create a lead (Sales pipeline roles)
+// @Description Admin/Sales Rep/Sales Manager only. A Sales Rep cannot assign the new lead to another rep. If assigned_to is omitted, the lead is auto-assigned round-robin among active Sales Reps by current open-record load.
+// @Tags leads
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body leadForm true "Lead fields"
+// @Success 201 {object} models.Lead
+// @Failure 400 {object} map[string]interface{} "Invalid body"
+// @Failure 403 {object} map[string]interface{} "Cannot assign a lead to another sales rep"
+// @Router /leads [post]
 func (h *LeadHandler) Create(c *fiber.Ctx) error {
 	var form leadForm
 	if err := c.BodyParser(&form); err != nil {
@@ -297,7 +323,16 @@ func (h *LeadHandler) pickAutoAssignee() (*uint, error) {
 	return &id, nil
 }
 
-// Get — GET /leads/:id.
+// Get godoc
+// @Summary Get a lead
+// @Description Any authenticated role (deliberately open — e.g. reachable from Prospect conversion).
+// @Tags leads
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "Lead ID"
+// @Success 200 {object} models.Lead
+// @Failure 404 {object} map[string]interface{} "Lead not found"
+// @Router /leads/{id} [get]
 func (h *LeadHandler) Get(c *fiber.Ctx) error {
 	var lead models.Lead
 	if err := h.DB.First(&lead, c.Params("id")).Error; err != nil {
@@ -306,7 +341,20 @@ func (h *LeadHandler) Get(c *fiber.Ctx) error {
 	return utils.OK(c, lead)
 }
 
-// Update — PUT /leads/:id (including status transitions).
+// Update godoc
+// @Summary Update a lead (Sales pipeline roles)
+// @Description Admin/Sales Rep/Sales Manager, and only if the caller owns the lead or has manager-level write access. Reassigning to another rep is likewise restricted. Omitting classification leaves an existing manual "sql" override in place rather than letting it be auto-recomputed away.
+// @Tags leads
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Lead ID"
+// @Param body body leadForm true "Lead fields"
+// @Success 200 {object} models.Lead
+// @Failure 400 {object} map[string]interface{} "Invalid body"
+// @Failure 403 {object} map[string]interface{} "Not authorized to update this lead"
+// @Failure 404 {object} map[string]interface{} "Lead not found"
+// @Router /leads/{id} [put]
 func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	var lead models.Lead
 	if err := h.DB.First(&lead, c.Params("id")).Error; err != nil {
@@ -357,8 +405,16 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, lead)
 }
 
-// Delete — DELETE /leads/:id. Soft-delete (AuditedModel) — recoverable via
-// Restore/Trash below.
+// Delete godoc
+// @Summary Delete a lead (Sales pipeline roles)
+// @Description Admin/Sales Rep/Sales Manager, and only if the caller owns the lead or has manager-level write access. Soft-delete — recoverable via Restore/Trash.
+// @Tags leads
+// @Security BearerAuth
+// @Param id path int true "Lead ID"
+// @Success 204 "No Content"
+// @Failure 403 {object} map[string]interface{} "Not authorized to delete this lead"
+// @Failure 404 {object} map[string]interface{} "Lead not found"
+// @Router /leads/{id} [delete]
 func (h *LeadHandler) Delete(c *fiber.Ctx) error {
 	var lead models.Lead
 	if err := h.DB.First(&lead, c.Params("id")).Error; err != nil {
@@ -374,17 +430,44 @@ func (h *LeadHandler) Delete(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
-// Trash — GET /leads/trash. Sales-Manager/Admin only (route-gated).
+// Trash godoc
+// @Summary List deleted leads (Admin/Sales Manager only)
+// @Description Returns soft-deleted Leads.
+// @Tags leads
+// @Security BearerAuth
+// @Produce json
+// @Param search query string false "Search by name"
+// @Success 200 {object} map[string]interface{} "Paginated lead list (data, page, per_page, total)"
+// @Router /leads/trash [get]
 func (h *LeadHandler) Trash(c *fiber.Ctx) error {
-	return utils.GenericTrash[models.Lead](c, h.DB, "Failed to list deleted leads")
+	return utils.GenericTrash[models.Lead](c, h.DB, "Failed to list deleted leads", "name")
 }
 
-// Restore — POST /leads/:id/restore. Sales-Manager/Admin only (route-gated).
+// Restore godoc
+// @Summary Restore a deleted lead (Admin/Sales Manager only)
+// @Description Un-does a soft-delete.
+// @Tags leads
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "Lead ID"
+// @Success 200 {object} models.Lead
+// @Failure 404 {object} map[string]interface{} "Deleted lead not found"
+// @Router /leads/{id}/restore [post]
 func (h *LeadHandler) Restore(c *fiber.Ctx) error {
 	return utils.GenericRestore[models.Lead](c, h.DB, "Deleted lead not found", "Failed to restore lead")
 }
 
-// BulkReassign — PATCH /leads/bulk-reassign. Sales-Manager/Admin only (route-gated).
+// BulkReassign godoc
+// @Summary Bulk-reassign leads (Admin/Sales Manager only)
+// @Description Reassigns every listed Lead to a new owner in one transaction.
+// @Tags leads
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body bulkReassignForm true "Lead IDs and new assignee"
+// @Success 204 "No Content"
+// @Failure 400 {object} map[string]interface{} "ids is required"
+// @Router /leads/bulk-reassign [patch]
 func (h *LeadHandler) BulkReassign(c *fiber.Ctx) error {
 	var form bulkReassignForm
 	if err := c.BodyParser(&form); err != nil {
@@ -408,7 +491,17 @@ func (h *LeadHandler) BulkReassign(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
-// BulkTag — PATCH /leads/bulk-tag. Sales-Manager/Admin only (route-gated).
+// BulkTag godoc
+// @Summary Bulk-tag leads (Admin/Sales Manager only)
+// @Description Adds ("add", default) or replaces ("set") tags on every listed Lead in one transaction.
+// @Tags leads
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body bulkTagForm true "Lead IDs, tags, and mode (add/set)"
+// @Success 204 "No Content"
+// @Failure 400 {object} map[string]interface{} "ids is required"
+// @Router /leads/bulk-tag [patch]
 func (h *LeadHandler) BulkTag(c *fiber.Ctx) error {
 	var form bulkTagForm
 	if err := c.BodyParser(&form); err != nil {
@@ -436,8 +529,17 @@ func (h *LeadHandler) BulkTag(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
-// BulkArchive — PATCH /leads/bulk-archive. Sales-Manager/Admin only (route-gated).
-// Soft-deletes each lead (same as Delete), in one transaction.
+// BulkArchive godoc
+// @Summary Bulk-archive leads (Admin/Sales Manager only)
+// @Description Soft-deletes every listed Lead (same as Delete), in one transaction.
+// @Tags leads
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body bulkIDsForm true "Lead IDs"
+// @Success 204 "No Content"
+// @Failure 400 {object} map[string]interface{} "ids is required"
+// @Router /leads/bulk-archive [patch]
 func (h *LeadHandler) BulkArchive(c *fiber.Ctx) error {
 	var form bulkIDsForm
 	if err := c.BodyParser(&form); err != nil {
@@ -477,8 +579,21 @@ type convertRequest struct {
 	} `json:"deal"`
 }
 
-// Convert — POST /leads/:id/convert. Converts a Qualified Lead into a Deal
-// (and Company/Contact if new) — FR-CRM-004, api-system-spec.md §3.
+// Convert godoc
+// @Summary Convert a lead to a deal (Sales pipeline roles)
+// @Description Admin/Sales Rep/Sales Manager, and only if the caller owns the lead or has manager-level write access. Converts a Lead into a Deal, reusing or creating the linked Company/Contact as needed — FR-CRM-004, api-system-spec.md §3. Fails if the lead was already converted.
+// @Tags leads
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Lead ID"
+// @Param body body convertRequest true "Optional company_id/contact_id overrides and the new deal's fields"
+// @Success 200 {object} map[string]interface{} "deal, company, and contact objects"
+// @Failure 400 {object} map[string]interface{} "Invalid body, or stage/channel not a valid active value"
+// @Failure 403 {object} map[string]interface{} "Not authorized to convert this lead"
+// @Failure 404 {object} map[string]interface{} "Lead not found"
+// @Failure 409 {object} map[string]interface{} "Lead has already been converted"
+// @Router /leads/{id}/convert [post]
 func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 	var lead models.Lead
 	if err := h.DB.First(&lead, c.Params("id")).Error; err != nil {

@@ -17,7 +17,18 @@ func NewTagHandler(db *gorm.DB) *TagHandler {
 	return &TagHandler{DB: db}
 }
 
-// List — GET /tags. Filters: category, status, search (name).
+// List godoc
+// @Summary List tags (any authenticated role)
+// @Description Any authenticated role — open so tag pickers on Companies/Deals/Contacts can populate. Returns a paginated list of tags. Filters: category, status, search (matches name).
+// @Tags tags
+// @Security BearerAuth
+// @Produce json
+// @Param category query string false "Filter by category"
+// @Param status query string false "Filter by status"
+// @Param search query string false "Search name"
+// @Param sort query string false "Sort field, prefix with - for descending (default -created_at)"
+// @Success 200 {object} map[string]interface{} "Paginated tag list (data, page, per_page, total)"
+// @Router /tags [get]
 func (h *TagHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := h.DB.Model(&models.Tag{})
@@ -50,7 +61,17 @@ type tagForm struct {
 	Status      models.TagStatus   `json:"status"`
 }
 
-// Create — POST /tags.
+// Create godoc
+// @Summary Create a tag (Admin/SalesManager only)
+// @Description Admin/SalesManager only. Shared taxonomy across Companies/Deals/Contacts. Defaults status to active when omitted.
+// @Tags tags
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body tagForm true "Tag fields (name, category, description, status)"
+// @Success 201 {object} models.Tag
+// @Failure 400 {object} map[string]interface{} "Invalid body"
+// @Router /tags [post]
 func (h *TagHandler) Create(c *fiber.Ctx) error {
 	var form tagForm
 	if err := c.BodyParser(&form); err != nil {
@@ -73,7 +94,19 @@ func (h *TagHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, tag)
 }
 
-// Update — PUT /tags/:id.
+// Update godoc
+// @Summary Update a tag (Admin/SalesManager only)
+// @Description Admin/SalesManager only. Full update; status is only overwritten if provided.
+// @Tags tags
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Tag ID"
+// @Param body body tagForm true "Tag fields"
+// @Success 200 {object} models.Tag
+// @Failure 400 {object} map[string]interface{} "Invalid body"
+// @Failure 404 {object} map[string]interface{} "Tag not found"
+// @Router /tags/{id} [put]
 func (h *TagHandler) Update(c *fiber.Ctx) error {
 	var tag models.Tag
 	if err := h.DB.First(&tag, c.Params("id")).Error; err != nil {
@@ -98,7 +131,15 @@ func (h *TagHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, tag)
 }
 
-// Delete — DELETE /tags/:id. Soft-delete (status: 'inactive').
+// Delete godoc
+// @Summary Delete a tag (Admin/SalesManager only)
+// @Description Admin/SalesManager only. Soft-delete (sets status to inactive), not a hard delete.
+// @Tags tags
+// @Security BearerAuth
+// @Param id path int true "Tag ID"
+// @Success 204 "No Content"
+// @Failure 404 {object} map[string]interface{} "Tag not found"
+// @Router /tags/{id} [delete]
 func (h *TagHandler) Delete(c *fiber.Ctx) error {
 	var tag models.Tag
 	if err := h.DB.First(&tag, c.Params("id")).Error; err != nil {

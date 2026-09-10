@@ -20,7 +20,19 @@ func NewProductHandler(db *gorm.DB) *ProductHandler {
 	return &ProductHandler{DB: db}
 }
 
-// List — GET /products (any authenticated role, route-gated).
+// List godoc
+// @Summary List products
+// @Description Paginated Product catalog, open to any authenticated role (Deal/Quote line-item forms need the catalog). FR-CRM-060.
+// @Tags products
+// @Security BearerAuth
+// @Produce json
+// @Param category query string false "Filter by category"
+// @Param search query string false "Filter by name (ILIKE substring match)"
+// @Param sort query string false "Sort field, optionally prefixed with - for descending (created_at, name)"
+// @Param page query int false "Page number"
+// @Param per_page query int false "Items per page"
+// @Success 200 {object} map[string]interface{} "Paginated product list (data, page, per_page, total)"
+// @Router /products [get]
 func (h *ProductHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := applyProductFilters(h.DB.Model(&models.Product{}), c)
@@ -44,7 +56,17 @@ type productForm struct {
 	IsActive    *bool   `json:"is_active"`
 }
 
-// Create — POST /products (any authenticated role).
+// Create godoc
+// @Summary Create a product (Admin only)
+// @Description Admin-only. Adds a Product to the catalog. category must be an active product category (see admin/product-categories). FR-CRM-060.
+// @Tags products
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body productForm true "Product fields"
+// @Success 201 {object} models.Product
+// @Failure 400 {object} map[string]interface{} "Invalid body, missing name, or invalid category"
+// @Router /products [post]
 func (h *ProductHandler) Create(c *fiber.Ctx) error {
 	var form productForm
 	if err := c.BodyParser(&form); err != nil {
@@ -73,6 +95,19 @@ func (h *ProductHandler) Create(c *fiber.Ctx) error {
 // Update — PATCH /products/:id (any authenticated role). Full edit of the
 // catalog entry's own fields — distinct from Deactivate, which only ever
 // flips is_active off and is left as the dedicated "remove from catalog" action.
+// Update godoc
+// @Summary Update a product (Admin only)
+// @Description Admin-only. Full edit of the catalog entry's own fields — distinct from Deactivate, which only ever flips is_active off and is left as the dedicated "remove from catalog" action.
+// @Tags products
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Product ID"
+// @Param body body productForm true "Product fields"
+// @Success 200 {object} models.Product
+// @Failure 400 {object} map[string]interface{} "Invalid body, missing name, or invalid category"
+// @Failure 404 {object} map[string]interface{} "Product not found"
+// @Router /products/{id} [patch]
 func (h *ProductHandler) Update(c *fiber.Ctx) error {
 	var product models.Product
 	if err := h.DB.First(&product, c.Params("id")).Error; err != nil {
@@ -105,7 +140,16 @@ func (h *ProductHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, product)
 }
 
-// Deactivate — PATCH /products/:id/deactivate (any authenticated role). Sets is_active: false.
+// Deactivate godoc
+// @Summary Deactivate a product (Admin only)
+// @Description Admin-only. Sets is_active: false — the dedicated "remove from catalog" action, leaving existing Customer-Product references intact.
+// @Tags products
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "Product ID"
+// @Success 200 {object} models.Product
+// @Failure 404 {object} map[string]interface{} "Product not found"
+// @Router /products/{id}/deactivate [patch]
 func (h *ProductHandler) Deactivate(c *fiber.Ctx) error {
 	var product models.Product
 	if err := h.DB.First(&product, c.Params("id")).Error; err != nil {
@@ -125,8 +169,15 @@ type customerProductResponse struct {
 	Product models.Product `json:"product"`
 }
 
-// ListForCompany — GET /companies/:companyId/products. Lists a Company's
-// Customer-Product records with the Product merged in.
+// ListForCompany godoc
+// @Summary List a Company's Customer-Products
+// @Description Lists a Company's Customer-Product records with the Product merged in — powers the Company profile's "Products in use" section. FR-CRM-066.
+// @Tags products
+// @Security BearerAuth
+// @Produce json
+// @Param companyId path int true "Company ID"
+// @Success 200 {array} handlers.customerProductResponse
+// @Router /companies/{companyId}/products [get]
 func (h *ProductHandler) ListForCompany(c *fiber.Ctx) error {
 	var records []models.CustomerProduct
 	if err := h.DB.Where("company_id = ?", c.Params("companyId")).Find(&records).Error; err != nil {
@@ -161,8 +212,19 @@ type customerProductForm struct {
 	SourceDealID *uint                        `json:"source_deal_id"`
 }
 
-// AddForCompany — POST /companies/:companyId/products. Manually add/change
-// status independent of a Deal — FR-CRM-065.
+// AddForCompany godoc
+// @Summary Add/link a Product to a Company
+// @Description Manually adds a Customer-Product record (a Product linked to a Company as a customer), or changes its status, independent of a Deal. FR-CRM-065. source_deal_id, if given, must reference a Deal belonging to this Company. start_date defaults to now when omitted; status defaults to "Interested".
+// @Tags products
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param companyId path int true "Company ID"
+// @Param body body customerProductForm true "Customer-Product fields"
+// @Success 201 {object} models.CustomerProduct
+// @Failure 400 {object} map[string]interface{} "Invalid body"
+// @Failure 404 {object} map[string]interface{} "Company not found"
+// @Router /companies/{companyId}/products [post]
 func (h *ProductHandler) AddForCompany(c *fiber.Ctx) error {
 	var company models.Company
 	if err := h.DB.First(&company, c.Params("companyId")).Error; err != nil {
@@ -225,9 +287,19 @@ type customerProductUpdateForm struct {
 	EndDate *string                      `json:"end_date"`
 }
 
-// UpdateCustomerProduct — PATCH /customer-products/:id (any authenticated).
-// company_id/product_id are immutable after creation — only the relationship's
-// own status (and end_date, e.g. when moving to Churned) can change.
+// UpdateCustomerProduct godoc
+// @Summary Update a Customer-Product's status
+// @Description Updates a Customer-Product record — the Company/Product link created via AddForCompany (or auto-created when a Deal is won, FR-CRM-064). company_id/product_id are immutable after creation; only status (and end_date, e.g. when moving to Churned) can change. Writes an audit-log entry when status changes (FR-CRM-082).
+// @Tags products
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Customer-Product ID"
+// @Param body body customerProductUpdateForm true "Fields to update"
+// @Success 200 {object} models.CustomerProduct
+// @Failure 400 {object} map[string]interface{} "Invalid body or invalid status"
+// @Failure 404 {object} map[string]interface{} "Customer product not found"
+// @Router /customer-products/{id} [patch]
 func (h *ProductHandler) UpdateCustomerProduct(c *fiber.Ctx) error {
 	var record models.CustomerProduct
 	if err := h.DB.First(&record, c.Params("id")).Error; err != nil {

@@ -179,20 +179,22 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 
 	// Leads
 	bulkRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesManager)
-	// Sales-pipeline roles only for actual Lead mutations (update/convert) —
+	// Sales-pipeline roles for every Lead route except single-record GET —
 	// Marketing has no nav access to /crm/leads (deliberately, per
 	// user-story.md §4: "Production is not a full user of this CRM" mirrors
-	// Marketing's own Prospect-only scope, FR-CRM-105/106) but could still
-	// reach a specific Lead via the Prospect "View Lead" link once converted,
-	// and until this fix these two routes had no role check at all — the
-	// frontend's Mark SQL/Convert to Deal buttons were only ever hidden by
+	// Marketing's own Prospect-only scope, FR-CRM-105/106; spec §1.7 states
+	// Marketing/Production have "no access to Leads/Deals/any other
+	// resource") but could still reach a specific Lead via the Prospect
+	// "View Lead" link once converted, so GET stays open (that's the
+	// View Lead read access this is meant to preserve). List/Create/Delete
+	// had no role check at all until this fix, same gap Update/Convert had
+	// until 2026-09-09 — the frontend's buttons/nav were only ever hidden by
 	// convention, not actually blocked, so a Marketing (or Production) caller
-	// hitting either endpoint directly would have succeeded. GET stays open
-	// (that's the View Lead read access this is meant to preserve).
+	// hitting any of these directly would have succeeded.
 	salesPipelineRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager)
 	leads := authed.Group("/leads")
-	leads.Get("/", leadH.List)
-	leads.Post("/", leadH.Create)
+	leads.Get("/", salesPipelineRoles, leadH.List)
+	leads.Post("/", salesPipelineRoles, leadH.Create)
 	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
 	leads.Get("/trash", bulkRoles, leadH.Trash)
 	leads.Patch("/bulk-reassign", bulkRoles, leadH.BulkReassign)
@@ -200,7 +202,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	leads.Patch("/bulk-archive", bulkRoles, leadH.BulkArchive)
 	leads.Get("/:id", leadH.Get)
 	leads.Put("/:id", salesPipelineRoles, leadH.Update)
-	leads.Delete("/:id", leadH.Delete)
+	leads.Delete("/:id", salesPipelineRoles, leadH.Delete)
 	leads.Post("/:id/convert", salesPipelineRoles, leadH.Convert)
 	leads.Post("/:id/restore", bulkRoles, leadH.Restore)
 
@@ -254,8 +256,13 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	contacts.Delete("/:id", contactH.Delete)
 	contacts.Post("/:id/restore", bulkRoles, contactH.Restore)
 
-	// Deals
-	deals := authed.Group("/deals")
+	// Deals — Admin/Sales Rep/Sales Manager only (spec §1.7: Marketing/
+	// Production have "no access to Leads/Deals/any other resource"). Every
+	// route in this group, including the Quote/Payment/Contract sub-resources
+	// nested under a Deal, was previously open to any authenticated role —
+	// same bug class the 2026-09-09 Lead-mutation fix caught, just never
+	// carried over here.
+	deals := authed.Group("/deals", salesPipelineRoles)
 	deals.Get("/", dealH.List)
 	deals.Post("/", dealH.Create)
 	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
@@ -339,13 +346,19 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	campaigns.Post("/:id/tasks", campaignH.BulkCreateTasks)
 	campaigns.Get("/:id/progress", campaignH.Progress)
 
-	// Products — any authenticated role manages the shared catalog.
+	// Products — spec §8.2: "Product Catalog CRUD (Admin only)". List stays
+	// open to every authenticated role, same list-open/write-admin split as
+	// the §8.8 option-list resources below, since Deal/Quote line-item forms
+	// need the catalog regardless of role; Create/Update/Deactivate were
+	// previously open to any authenticated role (including Marketing/
+	// Production) despite the spec explicitly reserving catalog writes for
+	// Admin.
 	products := authed.Group("/products")
 	products.Get("/", productH.List)
-	products.Post("/", productH.Create)
+	products.Post("/", adminOnly, productH.Create)
 	products.Get("/export", bulkRoles, exportH.Products)
-	products.Patch("/:id", productH.Update)
-	products.Patch("/:id/deactivate", productH.Deactivate)
+	products.Patch("/:id", adminOnly, productH.Update)
+	products.Patch("/:id/deactivate", adminOnly, productH.Deactivate)
 
 	// Customer-Product link — any authenticated (mirrors AddForCompany's access level).
 	authed.Patch("/customer-products/:id", productH.UpdateCustomerProduct)

@@ -18,7 +18,21 @@ func NewContactHandler(db *gorm.DB) *ContactHandler {
 	return &ContactHandler{DB: db}
 }
 
-// List — GET /contacts. Filters: company_id, status, tag, search (name/email).
+// List godoc
+// @Summary List contacts
+// @Description Paginated, filterable Contact list. Filters: company_id, status, tag, search (name/email).
+// @Tags contacts
+// @Security BearerAuth
+// @Produce json
+// @Param company_id query int false "Filter by Company ID"
+// @Param status query string false "active or archived"
+// @Param tag query string false "Filter by Contact tag"
+// @Param search query string false "Search by name or email"
+// @Param sort query string false "Sort field, prefix - for descending (created_at, name, email, company_name)"
+// @Param page query int false "Page number"
+// @Param per_page query int false "Items per page"
+// @Success 200 {object} map[string]interface{} "Paginated contact list (data, page, per_page, total)"
+// @Router /contacts [get]
 func (h *ContactHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := applyContactFilters(h.DB.Model(&models.Contact{}), c)
@@ -48,7 +62,17 @@ type contactForm struct {
 	Status    string   `json:"status"`
 }
 
-// Create — POST /contacts.
+// Create godoc
+// @Summary Create a contact
+// @Description Creates a Contact. company_id and name are required; role_title must match an active configured job title (see /admin/job-titles).
+// @Tags contacts
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body contactForm true "Contact fields"
+// @Success 201 {object} models.Contact
+// @Failure 400 {object} map[string]interface{} "Invalid body, missing fields, or invalid role_title"
+// @Router /contacts [post]
 func (h *ContactHandler) Create(c *fiber.Ctx) error {
 	var form contactForm
 	if err := c.BodyParser(&form); err != nil {
@@ -81,7 +105,16 @@ func (h *ContactHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, contact)
 }
 
-// Get — GET /contacts/:id.
+// Get godoc
+// @Summary Get a contact
+// @Description Returns a single Contact.
+// @Tags contacts
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "Contact ID"
+// @Success 200 {object} models.Contact
+// @Failure 404 {object} map[string]interface{} "Contact not found"
+// @Router /contacts/{id} [get]
 func (h *ContactHandler) Get(c *fiber.Ctx) error {
 	var contact models.Contact
 	if err := h.DB.First(&contact, c.Params("id")).Error; err != nil {
@@ -90,7 +123,19 @@ func (h *ContactHandler) Get(c *fiber.Ctx) error {
 	return utils.OK(c, contact)
 }
 
-// Update — PUT /contacts/:id.
+// Update godoc
+// @Summary Update a contact
+// @Description Updates a Contact. role_title must match an active configured job title.
+// @Tags contacts
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Contact ID"
+// @Param body body contactForm true "Contact fields"
+// @Success 200 {object} models.Contact
+// @Failure 400 {object} map[string]interface{} "Invalid body or invalid role_title"
+// @Failure 404 {object} map[string]interface{} "Contact not found"
+// @Router /contacts/{id} [put]
 func (h *ContactHandler) Update(c *fiber.Ctx) error {
 	var contact models.Contact
 	if err := h.DB.First(&contact, c.Params("id")).Error; err != nil {
@@ -122,9 +167,15 @@ func (h *ContactHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, contact)
 }
 
-// Delete — DELETE /contacts/:id. Soft-delete (AuditedModel) — recoverable via
-// Restore/Trash below. Never a hard delete, since Deal/Activity/Task records
-// reference contact_id.
+// Delete godoc
+// @Summary Delete a contact
+// @Description Soft-delete (AuditedModel) — recoverable via Restore/Trash below. Never a hard delete, since Deal/Activity/Task records reference contact_id.
+// @Tags contacts
+// @Security BearerAuth
+// @Param id path int true "Contact ID"
+// @Success 204 "No Content"
+// @Failure 404 {object} map[string]interface{} "Contact not found"
+// @Router /contacts/{id} [delete]
 func (h *ContactHandler) Delete(c *fiber.Ctx) error {
 	var contact models.Contact
 	if err := h.DB.First(&contact, c.Params("id")).Error; err != nil {
@@ -137,12 +188,31 @@ func (h *ContactHandler) Delete(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
-// Trash — GET /contacts/trash. Sales-Manager/Admin only (route-gated).
+// Trash godoc
+// @Summary List deleted contacts (Admin/Sales Manager only)
+// @Description Returns soft-deleted Contacts.
+// @Tags contacts
+// @Security BearerAuth
+// @Produce json
+// @Param search query string false "Search by name"
+// @Success 200 {object} map[string]interface{} "Paginated contact list (data, page, per_page, total)"
+// @Failure 403 {object} map[string]interface{} "Not Admin/Sales Manager"
+// @Router /contacts/trash [get]
 func (h *ContactHandler) Trash(c *fiber.Ctx) error {
-	return utils.GenericTrash[models.Contact](c, h.DB, "Failed to list deleted contacts")
+	return utils.GenericTrash[models.Contact](c, h.DB, "Failed to list deleted contacts", "name")
 }
 
-// Restore — POST /contacts/:id/restore. Sales-Manager/Admin only (route-gated).
+// Restore godoc
+// @Summary Restore a deleted contact (Admin/Sales Manager only)
+// @Description Un-deletes a soft-deleted Contact.
+// @Tags contacts
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "Contact ID"
+// @Success 200 {object} models.Contact
+// @Failure 403 {object} map[string]interface{} "Not Admin/Sales Manager"
+// @Failure 404 {object} map[string]interface{} "Deleted contact not found"
+// @Router /contacts/{id}/restore [post]
 func (h *ContactHandler) Restore(c *fiber.Ctx) error {
 	return utils.GenericRestore[models.Contact](c, h.DB, "Deleted contact not found", "Failed to restore contact")
 }

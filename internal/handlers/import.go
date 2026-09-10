@@ -190,15 +190,17 @@ func (idx *companyIndex) put(company *models.Company) {
 	}
 }
 
-// ImportCompanies — POST /companies/import. Expects columns: name,industry,size,website.
-// Dedupes primarily by normalized website domain, falling back to a
-// case-insensitive/whitespace-trimmed name match when either side has no
-// website, per FR-CRM-014.
-//
-// Runs as one transaction and pre-loads every candidate match up front (two
-// SELECTs total) instead of a SELECT-then-write per row — a large file used
-// to mean thousands of sequential round trips to Postgres inside a single
-// request, with no all-or-nothing guarantee if it failed partway through.
+// ImportCompanies godoc
+// @Summary Bulk-import companies from CSV
+// @Description Uploads a CSV file (header row skipped, up to 10MB / 5000 data rows) with columns name,industry,size,website — name is required per row. Dedupes primarily by normalized website domain, falling back to a case-insensitive/whitespace-trimmed name match when either side has no website (FR-CRM-014): a match updates the existing Company, otherwise a new one is created. Runs as one all-or-nothing transaction; per-row failures are collected into the result rather than aborting the whole import.
+// @Tags companies
+// @Security BearerAuth
+// @Accept multipart/form-data
+// @Produce json
+// @Param file formData file true "CSV file: name,industry,size,website"
+// @Success 200 {object} importResult "created/updated/skipped counts plus a per-row error list"
+// @Failure 400 {object} map[string]interface{} "Missing/invalid file, unsupported format (non-.csv), or row limit exceeded"
+// @Router /companies/import [post]
 func (h *ImportHandler) ImportCompanies(c *fiber.Ctx) error {
 	rows, err := openImportFile(c)
 	if err != nil {
@@ -274,12 +276,17 @@ func (h *ImportHandler) ImportCompanies(c *fiber.Ctx) error {
 	return utils.OK(c, result)
 }
 
-// ImportContacts — POST /contacts/import. Expects columns:
-// company_id,name,email,phone,role_title. Dedupes by email per FR-CRM-014.
-//
-// Same batching/transaction treatment as ImportCompanies: one preloaded
-// email→Contact map (one SELECT) instead of a SELECT-then-write per row, the
-// whole import committed atomically.
+// ImportContacts godoc
+// @Summary Bulk-import contacts from CSV
+// @Description Uploads a CSV file (header row skipped, up to 10MB / 5000 data rows) with columns company_id,name,email,phone,role_title — company_id and name are required per row. Dedupes by email per FR-CRM-014: an existing Contact with the same email is updated, otherwise a new one is created. Same all-or-nothing transaction treatment as ImportCompanies; per-row failures are collected into the result rather than aborting the whole import.
+// @Tags contacts
+// @Security BearerAuth
+// @Accept multipart/form-data
+// @Produce json
+// @Param file formData file true "CSV file: company_id,name,email,phone,role_title"
+// @Success 200 {object} importResult "created/updated/skipped counts plus a per-row error list"
+// @Failure 400 {object} map[string]interface{} "Missing/invalid file, unsupported format (non-.csv), row limit exceeded, or invalid company_id"
+// @Router /contacts/import [post]
 func (h *ImportHandler) ImportContacts(c *fiber.Ctx) error {
 	rows, err := openImportFile(c)
 	if err != nil {

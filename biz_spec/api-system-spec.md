@@ -3,8 +3,8 @@
 **Companion document to:** `feature-spec.md` (business requirements), `user-story.md` (role acceptance criteria), `design-system.md` (frontend conventions)
 **Purpose:** The contract for this backend API. This document was originally written when the frontend (`sales-system`) was still 100% client-side mock data with no real backend at all — that's no longer the state of either repo (20+ merged PRs, a working Go/Fiber API, and a frontend wired up against it resource by resource). It's kept up to date as a living reference for the current contract rather than as a forward-looking build spec.
 **Audience:** Backend/frontend engineers (and AI coding agents) working against this API.
-**Version:** 1.5 (Admin config-list reads opened to every role, Lead mutation RBAC fixed, admin-configurable Prospect stages, Deal reassignment history for Sales Manager — see `CHANGELOG.md`)
-**Date:** 2026-09-09
+**Version:** 1.6 (Deal/Lead/Product route-gate RBAC gaps closed, dashboard ambiguous-column bug fixed, Swagger scaffold expanded — see `CHANGELOG.md`)
+**Date:** 2026-09-10
 
 > **Status legend** (mirrors `feature-spec.md`'s legend, applied per endpoint):
 > 🟢 **Required now** — replaces an existing mock Pinia store; needed to take this frontend off mock data as-is.
@@ -43,7 +43,7 @@ These apply to every endpoint below unless a section says otherwise.
 - Base URL comes from a single env var the frontend already reads: `API_URL` (see `nuxtApp.$config.public.API_URL` in `plugins/axios.ts`). No hardcoded host anywhere in the frontend.
 - Prefix all routes with `/api/v1` (not yet reflected in the frontend's config value, but assumed by this spec so the backend can version breaking changes later without touching every consumer).
 - JSON only. `Content-Type: application/json` for all requests except file uploads (§6), which use `multipart/form-data`.
-- **Interactive docs (added 2026-09-10, scaffold).** `GET /swagger/index.html` (dev-only, `APP_ENV=development`) serves a browsable OpenAPI 2.0 UI generated from `@`-annotated handler doc comments (`swag init -g cmd/api/main.go -o docs --parseDependency --parseInternal`, see `docs/embed.go`). This spec (`api-system-spec.md`) stays the authoritative, hand-curated reference for every endpoint; the Swagger UI currently only covers `/admin/pipeline-stages`, `/admin/prospect-stages`, and `/dashboard/summary` as a starting pattern for annotating the rest of `internal/routes/routes.go` incrementally — don't assume a route's absence from it means the route doesn't exist.
+- **Interactive docs (added 2026-09-10, expanded same day).** `GET /swagger/index.html` (dev-only, `APP_ENV=development`) serves a browsable OpenAPI 2.0 UI generated from `@`-annotated handler doc comments (`swag init -g cmd/api/main.go -o docs --parseDependency --parseInternal`, see `docs/embed.go`). This spec (`api-system-spec.md`) stays the authoritative, hand-curated reference for every endpoint; the Swagger UI covers 105 paths / 151 operations — Leads, Prospects, Deals (+ Quotes/Payments/Contracts), Companies/Contacts (+ CSV import), Users, Tags, Products/Projects, Reports (+ exports), Audit log, Settings, Sales Targets, and the §8.8 admin config-list resources. Not yet annotated: Activities, Attachments, Tasks, Campaigns, Notification rules/log, Lead-scoring criteria, Auth, `/team-members`, `/uploads/:key`, and Prospect sources — don't assume a route's absence from it means the route doesn't exist.
 
 ### 1.2 Authentication
 
@@ -234,12 +234,12 @@ interface Lead {
 
 | Method | Path | Status | Description |
 |---|---|---|---|
-| `GET` | `/leads` | 🟢 | Filters: `status`, `source`, `assigned_to` (`unassigned` for `assigned_to IS NULL`), `company_id` (exact match), `exclude_converted=true`, `search` (name/email/**the joined Company's name**), `sort` (including `sort=company_name`, resolved via a join since it isn't a real column). Backs `pages/crm/leads/index.vue`. |
-| `POST` | `/leads` | 🟢 | Create. `email`, if supplied, must be a syntactically valid address (not domain-restricted like staff `User.email` — a Lead's email belongs to an external contact) — `422` otherwise. Empty is fine; the field stays optional. `source` must be an active `LeadSourceOption` (§8.8). If `assigned_to` is omitted, the backend auto-assigns to whichever active Sales Rep currently has the fewest open Leads+Deals (round-robin by load). `classification` accepts only an explicit `"sql"` as a manual override — any other value defers to the auto-computed `score`/`classification` result. |
-| `GET` | `/leads/:id` | 🟢 | Single lead. |
+| `GET` | `/leads` | 🟢 | Admin/Sales Rep/Sales Manager only (route gate added 2026-09-10 — had no role check at all until then, the same gap `PUT`/`convert` had until 2026-09-09, just never carried over to this route). Filters: `status`, `source`, `assigned_to` (`unassigned` for `assigned_to IS NULL`), `company_id` (exact match), `exclude_converted=true`, `search` (name/email/**the joined Company's name**), `sort` (including `sort=company_name`, resolved via a join since it isn't a real column). Backs `pages/crm/leads/index.vue`. |
+| `POST` | `/leads` | 🟢 | Admin/Sales Rep/Sales Manager only (same 2026-09-10 fix as `GET` above). Create. `email`, if supplied, must be a syntactically valid address (not domain-restricted like staff `User.email` — a Lead's email belongs to an external contact) — `422` otherwise. Empty is fine; the field stays optional. `source` must be an active `LeadSourceOption` (§8.8). If `assigned_to` is omitted, the backend auto-assigns to whichever active Sales Rep currently has the fewest open Leads+Deals (round-robin by load). `classification` accepts only an explicit `"sql"` as a manual override — any other value defers to the auto-computed `score`/`classification` result. |
+| `GET` | `/leads/:id` | 🟢 | Single lead. Deliberately still open to every role (Marketing's read-only "View Lead" access from a converted Prospect) — the one route in this group not gated to Admin/Sales Rep/Sales Manager. |
 | `PUT` | `/leads/:id` | 🟢 | Admin/Sales Rep/Sales Manager only (added 2026-09-09 — previously any authenticated role, including Marketing/Production, could mutate a Lead they have no business touching; `GET` stays open for Marketing's read-only "View Lead" access from a converted Prospect). Update (including status transitions). Same `email`/`source` validation as Create. Omitting `classification` leaves an existing manual `"sql"` override in place rather than letting it fall back to the auto-computed value. |
-| `DELETE` | `/leads/:id` | 🟢 | Soft-delete (§1.6) — recoverable via Trash/Restore below. |
-| `GET` | `/leads/trash` | 🟢 | Sales Manager/Admin only. List soft-deleted leads, paginated like `GET /leads`. |
+| `DELETE` | `/leads/:id` | 🟢 | Admin/Sales Rep/Sales Manager only (route gate added 2026-09-10, same gap as `GET`/`POST` above). Soft-delete (§1.6) — recoverable via Trash/Restore below. |
+| `GET` | `/leads/trash` | 🟢 | Sales Manager/Admin only. List soft-deleted leads, paginated like `GET /leads`. `?search=` (added 2026-09-10) matches against `name`. |
 | `POST` | `/leads/:id/restore` | 🟢 | Sales Manager/Admin only. Clears `deleted_at`/`deleted_by`. |
 | `PATCH` | `/leads/bulk-reassign` | 🟢 | Sales Manager/Admin only. Body: `{ ids: number[], assigned_to: number \| null }`. |
 | `PATCH` | `/leads/bulk-tag` | 🟢 | Sales Manager/Admin only. Body: `{ ids: number[], tags: string[], mode: 'set' \| 'add' }` — `"set"` replaces each Lead's tags outright, `"add"` merges into the existing set. |
@@ -421,15 +421,17 @@ interface Deal {
 }
 ```
 
+**Route gate fixed 2026-09-10.** Every route below (including the nested Quote/Payment/Contract sub-resources further down this section) was previously open to any authenticated role — including Marketing/Production, despite §1.7 stating those two roles have "no access to Leads/Deals/any other resource." All are now Admin/Sales Rep/Sales Manager only (`PATCH /deals/:id/reassign`, further down, keeps its own stricter Admin/Sales-Manager-only gate).
+
 | Method | Path | Status | Description |
 |---|---|---|---|
-| `GET` | `/deals` | 🟢 | Filters: `stage`, `status`, `company_id`, `assigned_to`, `business_unit`, `channel`, `search` (title). `sort=company_name` resolved via a join (Deal has no such column). Backs both `pages/crm/deals/index.vue` (Kanban) and the dashboard's `filteredDeals`. |
-| `POST` | `/deals` | 🟢 | Create. `value` must be ≥ 0; `expected_close_date`, if supplied, must parse as either a plain `YYYY-MM-DD` date or a full ISO 8601 timestamp (the two shapes the frontend actually sends) — `422` otherwise on either field. `stage`/`channel` must be an active `PipelineStage`/`LeadSourceOption` (§8.8); `probability`, if supplied, must be 0–100; `lost_reason` is required once `stage`/`status` moves to Lost. |
-| `GET` | `/deals/:id` | 🟢 | Single deal — `pages/crm/deals/[id].vue` Overview tab. |
-| `PUT` | `/deals/:id` | 🟢 | Full update. Same validation as Create. **Fixed 2026-09-08** — now writes a `stage_changed` audit log entry when the submitted `stage` differs from the deal's current one, same as the dedicated `PATCH /deals/:id/stage` quick-move endpoint already did; previously a Stage change made from the Overview edit form (rather than the Kanban board) skipped the audit trail entirely, silently missing from both the Admin audit viewer and the frontend Activities pages' Deal "Pipeline History" section. |
-| `PATCH` | `/deals/:id/stage` | 🟢 | Body: `{ stage: DealStage }`. Dedicated endpoint for the Kanban drag-and-drop (`CrmPipelineBoard`'s `@move`) so the backend can also update `status` (open/won/lost) and fire `FR-CRM-064`'s auto Customer-Product creation (§8.2) in one transaction when stage becomes `Won`. |
-| `DELETE` | `/deals/:id` | 🟢 | Soft-delete (§1.6) — recoverable via Trash/Restore below. |
-| `GET` | `/deals/trash` | 🟢 | Sales Manager/Admin only. List soft-deleted deals, paginated like `GET /deals`. |
+| `GET` | `/deals` | 🟢 | Admin/Sales Rep/Sales Manager only (see route-gate note above). Filters: `stage`, `status`, `company_id`, `assigned_to`, `business_unit`, `channel`, `search` (title). `sort=company_name` resolved via a join (Deal has no such column). Backs both `pages/crm/deals/index.vue` (Kanban) and the dashboard's `filteredDeals`. |
+| `POST` | `/deals` | 🟢 | Admin/Sales Rep/Sales Manager only. Create. `value` must be ≥ 0; `expected_close_date`, if supplied, must parse as either a plain `YYYY-MM-DD` date or a full ISO 8601 timestamp (the two shapes the frontend actually sends) — `422` otherwise on either field. `stage`/`channel` must be an active `PipelineStage`/`LeadSourceOption` (§8.8); `probability`, if supplied, must be 0–100; `lost_reason` is required once `stage`/`status` moves to Lost. |
+| `GET` | `/deals/:id` | 🟢 | Admin/Sales Rep/Sales Manager only. Single deal — `pages/crm/deals/[id].vue` Overview tab. |
+| `PUT` | `/deals/:id` | 🟢 | Admin/Sales Rep/Sales Manager only. Full update. Same validation as Create. **Fixed 2026-09-08** — now writes a `stage_changed` audit log entry when the submitted `stage` differs from the deal's current one, same as the dedicated `PATCH /deals/:id/stage` quick-move endpoint already did; previously a Stage change made from the Overview edit form (rather than the Kanban board) skipped the audit trail entirely, silently missing from both the Admin audit viewer and the frontend Activities pages' Deal "Pipeline History" section. |
+| `PATCH` | `/deals/:id/stage` | 🟢 | Admin/Sales Rep/Sales Manager only. Body: `{ stage: DealStage }`. Dedicated endpoint for the Kanban drag-and-drop (`CrmPipelineBoard`'s `@move`) so the backend can also update `status` (open/won/lost) and fire `FR-CRM-064`'s auto Customer-Product creation (§8.2) in one transaction when stage becomes `Won`. |
+| `DELETE` | `/deals/:id` | 🟢 | Admin/Sales Rep/Sales Manager only. Soft-delete (§1.6) — recoverable via Trash/Restore below. |
+| `GET` | `/deals/trash` | 🟢 | Sales Manager/Admin only. List soft-deleted deals, paginated like `GET /deals`. `?search=` (added 2026-09-10) matches against `title`. |
 | `POST` | `/deals/:id/restore` | 🟢 | Sales Manager/Admin only. |
 | `PATCH` | `/deals/:id/reassign` | 🟢 | Sales Manager/Admin only. Body: `{ assigned_to: number }`. |
 | `PATCH` | `/deals/bulk-reassign` | 🟢 | Sales Manager/Admin only. Body: `{ ids: number[], assigned_to: number \| null }`. |
@@ -686,8 +688,10 @@ interface CustomerProduct {
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` / `POST` | `/products` | Product Catalog CRUD (Admin only). |
-| `PATCH` | `/products/:id/deactivate` | Sets `is_active: false` rather than deleting. |
+| `GET` | `/products` | List/search the catalog — open to every authenticated role (Deal/Quote line-item forms need it regardless of role), same list-open/write-admin split as the §8.8 option-list resources. |
+| `POST` | `/products` | Product Catalog CRUD (Admin only — route gate fixed 2026-09-10, previously open to any authenticated role). |
+| `PATCH` | `/products/:id` | Update `name`/`category`/`description` (Admin only, same 2026-09-10 fix as `POST` above — this row was previously undocumented here as well as unguarded). |
+| `PATCH` | `/products/:id/deactivate` | Sets `is_active: false` rather than deleting (Admin only, same 2026-09-10 fix). |
 | `GET` | `/companies/:companyId/products` | List a Company's Customer-Product records — powers the Company profile's "Products in use" section (`FR-CRM-066`). |
 | `POST` | `/companies/:companyId/products` | Manually add/change status independent of a Deal (`FR-CRM-065`). |
 | `PATCH` | `/customer-products/:id` | Update a Customer-Product's own `status`/`end_date` after creation (e.g. Interested → Trial → Active → Churned) — `company_id`/`product_id` are immutable. Writes a `customer_product`/`status_changed` audit entry (§8.5) when `status` actually changes. |

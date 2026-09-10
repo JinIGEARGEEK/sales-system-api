@@ -20,7 +20,15 @@ func NewProjectHandler(db *gorm.DB) *ProjectHandler {
 	return &ProjectHandler{DB: db}
 }
 
-// ListForCompany — GET /companies/:companyId/projects (any authenticated).
+// ListForCompany godoc
+// @Summary List a Company's Projects
+// @Description Lists a Company's Projects, newest first — powers the Company profile's "Projects" section. FR-CRM-070.
+// @Tags projects
+// @Security BearerAuth
+// @Produce json
+// @Param companyId path int true "Company ID"
+// @Success 200 {array} models.Project
+// @Router /companies/{companyId}/projects [get]
 func (h *ProjectHandler) ListForCompany(c *fiber.Ctx) error {
 	var projects []models.Project
 	if err := h.DB.Where("company_id = ?", c.Params("companyId")).Order("created_at DESC").Find(&projects).Error; err != nil {
@@ -34,9 +42,19 @@ type projectWithCompany struct {
 	CompanyName string `json:"company_name"`
 }
 
-// List — GET /projects (any authenticated). The cross-company view
-// ListForCompany can't provide — merges the Company name in the same way
-// ProductHandler.ListForCompany merges Product into CustomerProduct.
+// List godoc
+// @Summary List projects
+// @Description Paginated cross-company Project view (the single-Company view ListForCompany can't provide) — merges the Company name into each Project. Open to any authenticated role; no field-level RBAC applies to List (the Production-role field restriction only affects Update). FR-CRM-067.
+// @Tags projects
+// @Security BearerAuth
+// @Produce json
+// @Param status query string false "Filter by status"
+// @Param company_id query int false "Filter by Company ID"
+// @Param sort query string false "Sort field, optionally prefixed with - for descending (created_at, name, target_end_date)"
+// @Param page query int false "Page number"
+// @Param per_page query int false "Items per page"
+// @Success 200 {object} map[string]interface{} "Paginated project list (data, page, per_page, total)"
+// @Router /projects [get]
 func (h *ProjectHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := applyProjectFilters(h.DB.Model(&models.Project{}), c)
@@ -82,7 +100,19 @@ type projectForm struct {
 	Notes                string               `json:"notes"`
 }
 
-// Create — POST /companies/:companyId/projects (Sales/Admin, route-gated).
+// Create godoc
+// @Summary Create a project (Admin/SalesRep/SalesManager only)
+// @Description Admin/SalesRep/SalesManager only. Creates a Project for a Company, manually or when a Deal is marked Won. FR-CRM-068. start_date defaults to now and status defaults to "Not Started" when omitted.
+// @Tags projects
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param companyId path int true "Company ID"
+// @Param body body projectForm true "Project fields"
+// @Success 201 {object} models.Project
+// @Failure 400 {object} map[string]interface{} "Invalid body or missing name"
+// @Failure 404 {object} map[string]interface{} "Company not found"
+// @Router /companies/{companyId}/projects [post]
 func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 	var company models.Company
 	if err := h.DB.First(&company, c.Params("companyId")).Error; err != nil {
@@ -128,9 +158,20 @@ type productionFieldForm struct {
 // productionAllowedKeys are the only JSON body keys Production may send.
 var productionAllowedKeys = map[string]bool{"status": true, "production_reference": true}
 
-// Update — PATCH /projects/:id. Sales/Admin can update any field. Production
-// is scoped to status and production_reference only — enforced field-level by
-// inspecting the raw JSON body's keys, not just endpoint-level.
+// Update godoc
+// @Summary Update a project
+// @Description Any authenticated role may call this endpoint, but field access is enforced inside the handler by the caller's role (§8.3/§1.7): Sales/Admin/other roles may update any field in projectForm; a caller with the Production role is restricted to only status and production_reference — sending any other JSON body key as Production returns 403. Writes an audit-log entry when status changes (FR-CRM-082).
+// @Tags projects
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Project ID"
+// @Param body body projectForm true "Project fields (Production role: status/production_reference only)"
+// @Success 200 {object} models.Project
+// @Failure 400 {object} map[string]interface{} "Invalid body"
+// @Failure 403 {object} map[string]interface{} "Production role attempted to update a field other than status/production_reference"
+// @Failure 404 {object} map[string]interface{} "Project not found"
+// @Router /projects/{id} [patch]
 func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	var project models.Project
 	if err := h.DB.First(&project, c.Params("id")).Error; err != nil {

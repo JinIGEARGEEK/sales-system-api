@@ -94,7 +94,7 @@ func (h *ProspectStageHandler) Create(c *fiber.Ctx) error {
 	actorID := middleware.CurrentUserID(c)
 	stage := models.ProspectStage{
 		Name: form.Name, SortOrder: form.SortOrder,
-		IsActive: form.IsActive == nil || *form.IsActive,
+		IsActive:            form.IsActive == nil || *form.IsActive,
 		IsDisqualifiedStage: form.IsDisqualifiedStage,
 	}
 	stage.CreatedBy = &actorID
