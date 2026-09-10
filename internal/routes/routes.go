@@ -70,6 +70,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	activityH := handlers.NewActivityHandler(db)
 	tagH := handlers.NewTagHandler(db)
 	quoteH := handlers.NewQuoteHandler(db, storage)
+	quoteTemplateH := handlers.NewQuoteTemplateHandler(db)
 	paymentH := handlers.NewPaymentHandler(db)
 	taskH := handlers.NewTaskHandler(db)
 	campaignH := handlers.NewCampaignHandler(db)
@@ -310,6 +311,13 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	tags.Put("/:id", bulkRoles, tagH.Update)
 	tags.Delete("/:id", bulkRoles, tagH.Delete)
 
+	// Quote Templates — same salesPipelineRoles access as the deals group
+	// above (self-serve for any Sales role, not an Admin-curated library).
+	quoteTemplates := authed.Group("/quote-templates", salesPipelineRoles)
+	quoteTemplates.Get("/", quoteTemplateH.List)
+	quoteTemplates.Post("/", quoteTemplateH.Create)
+	quoteTemplates.Delete("/:id", quoteTemplateH.Delete)
+
 	// Quotes / Payments / Contracts (top-level, non-nested routes)
 	authed.Put("/quotes/:id", quoteH.Update)
 	authed.Delete("/quotes/:id", quoteH.Delete)
@@ -526,11 +534,14 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// scoping happens inside the handler, not via adminOnly/RequireRoles.
 	authed.Get("/notification-log", notificationLogH.List)
 
-	// App settings (e.g. quarterly sales quota) — Admin-only config,
-	// FR-CRM-058.
-	settings := authed.Group("/admin/settings", adminOnly)
-	settings.Get("/", settingsH.Get)
-	settings.Patch("/", settingsH.Update)
+	// App settings (e.g. quarterly sales quota) — Admin-only to configure,
+	// FR-CRM-058. Get is opened to salesPipelineRoles (not adminOnly) so a
+	// Sales Rep's Deal page can read require_signed_contract_before_won and
+	// warn before they hit the 422 blocking Won — same "reads open, writes
+	// gated" split Tags/PipelineStage already use.
+	settings := authed.Group("/admin/settings")
+	settings.Get("/", salesPipelineRoles, settingsH.Get)
+	settings.Patch("/", adminOnly, settingsH.Update)
 
 	// Per-quarter/per-year sales targets — Admin-only config, FR-CRM-092.
 	// Overrides AppSettings.QuarterlySalesTarget/4 for a specific period.
