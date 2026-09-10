@@ -546,4 +546,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// route, same as the Deal-centric summary above; the frontend decides
 	// which role sees which tab.
 	authed.Get("/dashboard/prospect-summary", dashboardH.ProspectSummary)
+	// Lead stats for the Sales tab — same "not role-gated, frontend decides"
+	// convention as the two dashboard routes above.
+	authed.Get("/dashboard/lead-summary", dashboardH.LeadSummary)
 }
