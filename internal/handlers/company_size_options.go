@@ -21,7 +21,14 @@ func NewCompanySizeOptionHandler(db *gorm.DB) *CompanySizeOptionHandler {
 	return &CompanySizeOptionHandler{DB: db}
 }
 
-// List — GET /admin/company-sizes. Always returns every row (active + inactive).
+// List godoc
+// @Summary List company sizes
+// @Description Returns every configured Company size bucket (active + inactive), ordered by name.
+// @Tags admin/company-sizes
+// @Security BearerAuth
+// @Produce json
+// @Success 200 {array} models.CompanySizeOption
+// @Router /admin/company-sizes [get]
 func (h *CompanySizeOptionHandler) List(c *fiber.Ctx) error {
 	var sizes []models.CompanySizeOption
 	if err := h.DB.Order("name ASC").Find(&sizes).Error; err != nil {
@@ -35,7 +42,17 @@ type companySizeOptionForm struct {
 	IsActive *bool  `json:"is_active"`
 }
 
-// Create — POST /admin/company-sizes.
+// Create godoc
+// @Summary Create a company size
+// @Description Admin-only.
+// @Tags admin/company-sizes
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body companySizeOptionForm true "Company size fields"
+// @Success 201 {object} models.CompanySizeOption
+// @Failure 400 {object} map[string]interface{}
+// @Router /admin/company-sizes [post]
 func (h *CompanySizeOptionHandler) Create(c *fiber.Ctx) error {
 	var form companySizeOptionForm
 	if err := c.BodyParser(&form); err != nil {
@@ -55,7 +72,18 @@ func (h *CompanySizeOptionHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, size)
 }
 
-// Update — PATCH /admin/company-sizes/:id.
+// Update godoc
+// @Summary Update a company size
+// @Description Admin-only.
+// @Tags admin/company-sizes
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Company size ID"
+// @Param body body companySizeOptionForm true "Company size fields"
+// @Success 200 {object} models.CompanySizeOption
+// @Failure 404 {object} map[string]interface{}
+// @Router /admin/company-sizes/{id} [patch]
 func (h *CompanySizeOptionHandler) Update(c *fiber.Ctx) error {
 	var size models.CompanySizeOption
 	if err := h.DB.First(&size, c.Params("id")).Error; err != nil {
@@ -83,7 +111,15 @@ func (h *CompanySizeOptionHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, size)
 }
 
-// Delete — DELETE /admin/company-sizes/:id. Soft-delete (is_active: false).
+// Delete godoc
+// @Summary Deactivate a company size
+// @Description Admin-only. Soft-delete (is_active: false).
+// @Tags admin/company-sizes
+// @Security BearerAuth
+// @Param id path int true "Company size ID"
+// @Success 204 "No Content"
+// @Failure 404 {object} map[string]interface{}
+// @Router /admin/company-sizes/{id} [delete]
 func (h *CompanySizeOptionHandler) Delete(c *fiber.Ctx) error {
 	var size models.CompanySizeOption
 	if err := h.DB.First(&size, c.Params("id")).Error; err != nil {

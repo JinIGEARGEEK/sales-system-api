@@ -22,7 +22,15 @@ func NewContractHandler(db *gorm.DB, storage utils.Storage) *ContractHandler {
 	return &ContractHandler{DB: db, Storage: storage}
 }
 
-// List — GET /deals/:dealId/contracts.
+// List godoc
+// @Summary List contracts for a deal (Admin/Sales Rep/Sales Manager)
+// @Description Returns contracts for a Deal, ordered newest first. api-system-spec.md §8.1.
+// @Tags contracts
+// @Security BearerAuth
+// @Produce json
+// @Param dealId path int true "Deal ID"
+// @Success 200 {array} models.Contract
+// @Router /deals/{dealId}/contracts [get]
 func (h *ContractHandler) List(c *fiber.Ctx) error {
 	var contracts []models.Contract
 	if err := h.DB.Where("deal_id = ?", c.Params("dealId")).Order("created_at DESC").Find(&contracts).Error; err != nil {
@@ -36,7 +44,20 @@ type contractForm struct {
 	QuoteID *uint                 `json:"quote_id"`
 }
 
-// Create — POST /deals/:dealId/contracts.
+// Create godoc
+// @Summary Create a contract (Admin/Sales Rep/Sales Manager)
+// @Description Creates a Contract on a Deal, optionally linked to a Quote (quote_id) for PDF line items. status defaults to draft. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §8.1.
+// @Tags contracts
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param dealId path int true "Deal ID"
+// @Param body body contractForm true "Contract fields"
+// @Success 201 {object} models.Contract
+// @Failure 400 {object} map[string]interface{} "Invalid request body"
+// @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
+// @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Router /deals/{dealId}/contracts [post]
 func (h *ContractHandler) Create(c *fiber.Ctx) error {
 	deal, err := dealForSubResource(c, h.DB, c.Params("dealId"))
 	if err != nil {
@@ -58,7 +79,20 @@ func (h *ContractHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, contract)
 }
 
-// Update — PUT /contracts/:id. Update status.
+// Update godoc
+// @Summary Update a contract
+// @Description Updates status and/or quote_id. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §8.1.
+// @Tags contracts
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Contract ID"
+// @Param body body contractForm true "Contract fields"
+// @Success 200 {object} models.Contract
+// @Failure 400 {object} map[string]interface{} "Invalid request body"
+// @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
+// @Failure 404 {object} map[string]interface{} "Contract not found, or deal not found"
+// @Router /contracts/{id} [put]
 func (h *ContractHandler) Update(c *fiber.Ctx) error {
 	var contract models.Contract
 	if err := h.DB.First(&contract, c.Params("id")).Error; err != nil {
@@ -85,8 +119,21 @@ func (h *ContractHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, contract)
 }
 
-// Upload — POST /contracts/:id/upload. Uploads the signed document, sets
-// signed_file_url/signed_date.
+// Upload godoc
+// @Summary Upload a signed contract document
+// @Description Uploads the signed document, sets signed_file_url/signed_date, and sets status to Signed. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may upload. api-system-spec.md §8.1.
+// @Tags contracts
+// @Security BearerAuth
+// @Accept multipart/form-data
+// @Produce json
+// @Param id path int true "Contract ID"
+// @Param file formData file true "Signed contract file"
+// @Success 200 {object} models.Contract
+// @Failure 400 {object} map[string]interface{} "Missing file, or unsupported file type"
+// @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
+// @Failure 404 {object} map[string]interface{} "Contract not found, or deal not found"
+// @Failure 413 {object} map[string]interface{} "File exceeds 10MB limit"
+// @Router /contracts/{id}/upload [post]
 func (h *ContractHandler) Upload(c *fiber.Ctx) error {
 	var contract models.Contract
 	if err := h.DB.First(&contract, c.Params("id")).Error; err != nil {
@@ -116,12 +163,16 @@ func (h *ContractHandler) Upload(c *fiber.Ctx) error {
 	return utils.OK(c, contract)
 }
 
-// ExportPDF — GET /contracts/:id/export-pdf. Renders a plain (unbranded, same
-// style as QuoteHandler.ExportPDF) PDF: party details (Company legal
-// name/address/tax ID, Contact name/role), Deal info, the linked Quote's
-// scope_of_work and line items/total (if quote_id is set), status, and a
-// signature-line placeholder. Read-only, same access level as List (no
-// CanWrite check).
+// ExportPDF godoc
+// @Summary Export a contract as PDF
+// @Description Renders a plain (unbranded, same style as the Quote export) PDF: party details (Company legal name/address/tax ID, Contact name/role), Deal info, the linked Quote's scope_of_work and line items/total (if quote_id is set), status, and a signature-line placeholder. Read-only, same access level as List (no CanWrite ownership check). api-system-spec.md §8.1.
+// @Tags contracts
+// @Security BearerAuth
+// @Produce application/pdf
+// @Param id path int true "Contract ID"
+// @Success 200 {file} file
+// @Failure 404 {object} map[string]interface{} "Contract not found, or deal not found"
+// @Router /contracts/{id}/export-pdf [get]
 func (h *ContractHandler) ExportPDF(c *fiber.Ctx) error {
 	var contract models.Contract
 	if err := h.DB.First(&contract, c.Params("id")).Error; err != nil {

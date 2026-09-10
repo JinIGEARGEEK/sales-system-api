@@ -37,7 +37,15 @@ func NewQuoteHandler(db *gorm.DB, storage utils.Storage) *QuoteHandler {
 	return &QuoteHandler{DB: db, Storage: storage}
 }
 
-// List — GET /deals/:dealId/quotes.
+// List godoc
+// @Summary List quotes for a deal (Admin/Sales Rep/Sales Manager)
+// @Description Returns quotes for a Deal, ordered newest first. Each row's status reflects EffectiveStatus (may report "expired") rather than necessarily the raw stored value. api-system-spec.md §7.4.
+// @Tags quotes
+// @Security BearerAuth
+// @Produce json
+// @Param dealId path int true "Deal ID"
+// @Success 200 {array} models.Quote
+// @Router /deals/{dealId}/quotes [get]
 func (h *QuoteHandler) List(c *fiber.Ctx) error {
 	var quotes []models.Quote
 	if err := h.DB.Where("deal_id = ?", c.Params("dealId")).Order("created_at DESC").Find(&quotes).Error; err != nil {
@@ -141,7 +149,20 @@ func snapshotQuoteItems(db *gorm.DB, items []models.QuoteItem) []models.QuoteIte
 	return items
 }
 
-// Create — POST /deals/:dealId/quotes. A line-item quote.
+// Create godoc
+// @Summary Create a quote (Admin/Sales Rep/Sales Manager)
+// @Description Creates a line-item Quote on a Deal. number is always server-generated, not client-settable. Line items carrying a product_id have their description/price snapshotted from the current Product. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §7.4.
+// @Tags quotes
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param dealId path int true "Deal ID"
+// @Param body body quoteForm true "Quote fields"
+// @Success 201 {object} models.Quote
+// @Failure 400 {object} map[string]interface{} "Invalid request body, or validation error (status, price_type, credit_days, wht_rate, discount_total)"
+// @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
+// @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Router /deals/{dealId}/quotes [post]
 func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 	deal, err := dealForSubResource(c, h.DB, c.Params("dealId"))
 	if err != nil {
@@ -212,6 +233,21 @@ func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 // additive and never fatal: a PDF that isn't a FlowAccount export, or one
 // extraction can't make sense of, still uploads exactly as before with
 // Items left empty, ExtractionStatus "failed", and no error surfaced.
+// Upload godoc
+// @Summary Upload a PDF quote (Admin/Sales Rep/Sales Manager)
+// @Description Uploads a PDF quote in place of line items — sets file_name/file_url/file_size/uploaded_at. If the PDF looks like a FlowAccount quotation export, best-effort extraction also pre-fills items/scope_of_work/reference_number/issue_date/vat/wht/notes (see extraction_status/extraction_warnings on the response); extraction is never fatal — a PDF that isn't a FlowAccount export still uploads with extraction_status "failed". Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may upload. api-system-spec.md §7.4.
+// @Tags quotes
+// @Security BearerAuth
+// @Accept multipart/form-data
+// @Produce json
+// @Param dealId path int true "Deal ID"
+// @Param file formData file true "Quote PDF file"
+// @Success 201 {object} models.Quote
+// @Failure 400 {object} map[string]interface{} "Missing file, or unsupported file type"
+// @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
+// @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Failure 413 {object} map[string]interface{} "File exceeds 10MB limit"
+// @Router /deals/{dealId}/quotes/upload [post]
 func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 	deal, err := dealForSubResource(c, h.DB, c.Params("dealId"))
 	if err != nil {
@@ -292,7 +328,20 @@ func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 	return utils.Created(c, withEffectiveStatus(quote))
 }
 
-// Update — PUT /quotes/:id. Update status/items/validity_date.
+// Update godoc
+// @Summary Update a quote
+// @Description Updates status/items and every other Quote field (number excepted — immutable after Create). Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §7.4.
+// @Tags quotes
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Quote ID"
+// @Param body body quoteForm true "Quote fields"
+// @Success 200 {object} models.Quote
+// @Failure 400 {object} map[string]interface{} "Invalid request body, or validation error (status, price_type, credit_days, wht_rate, discount_total)"
+// @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
+// @Failure 404 {object} map[string]interface{} "Quote not found, or deal not found"
+// @Router /quotes/{id} [put]
 func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	var quote models.Quote
 	if err := h.DB.First(&quote, c.Params("id")).Error; err != nil {
@@ -357,7 +406,16 @@ func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, withEffectiveStatus(quote))
 }
 
-// Delete — DELETE /quotes/:id (hard delete).
+// Delete godoc
+// @Summary Delete a quote
+// @Description Hard delete of a Quote. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.
+// @Tags quotes
+// @Security BearerAuth
+// @Param id path int true "Quote ID"
+// @Success 204 "No Content"
+// @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
+// @Failure 404 {object} map[string]interface{} "Quote not found, or deal not found"
+// @Router /quotes/{id} [delete]
 func (h *QuoteHandler) Delete(c *fiber.Ctx) error {
 	var quote models.Quote
 	if err := h.DB.First(&quote, c.Params("id")).Error; err != nil {
@@ -372,8 +430,16 @@ func (h *QuoteHandler) Delete(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
-// ExportPDF — GET /quotes/:id/export-pdf. Renders the quote's line items as a
-// simple PDF — read-only, same access level as List (no CanWrite check).
+// ExportPDF godoc
+// @Summary Export a quote as PDF
+// @Description Renders the quote's line items as a PDF — document number, scope of work, line items table (with per-item discount and tax/WHT totals), Deal/Company/Contact header, validity date, status, and notes (never internal_notes). Read-only, same access level as List (no CanWrite ownership check). FR-CRM-042, api-system-spec.md §7.4.
+// @Tags quotes
+// @Security BearerAuth
+// @Produce application/pdf
+// @Param id path int true "Quote ID"
+// @Success 200 {file} file
+// @Failure 404 {object} map[string]interface{} "Quote not found, or deal not found"
+// @Router /quotes/{id}/export-pdf [get]
 func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 	var quote models.Quote
 	if err := h.DB.First(&quote, c.Params("id")).Error; err != nil {

@@ -17,23 +17,23 @@ func NewAuditLogHandler(db *gorm.DB) *AuditLogHandler {
 	return &AuditLogHandler{DB: db}
 }
 
-// List — GET /audit-log, route-gated to Admin/Sales Rep/Sales Manager (see
-// routes.go). Append-only resource, no write handlers exist for it at all —
-// NFR-007.
-//
-// Non-Admin callers are hard-restricted here (not just route-gated) to a
-// fixed slice of Deal history — entity_type=deal — ignoring any
-// entity_type/actor_id they pass, so a Sales Rep/Manager can pull a Deal's
-// history into the Activities/Deal-detail pages as read-only context without
-// gaining the Admin audit viewer's full reach into other entity types
-// (settings, project, customer_product) or browsing by actor_id. Which
-// actions within that slice differ by role: Sales Rep gets stage_changed
-// only; Sales Manager also gets reassigned/bulk_reassigned (the Deal detail
-// page's "Owner History" card, FR-CRM-025/M-8 — a Sales Manager reassigning
-// work needs to see who held it before, same as they're the one doing the
-// reassigning in the first place). entity_id/date_from/date_to still apply
-// for non-Admins so a specific Deal's history (or a date-bounded slice of
-// all Deals') can be requested.
+// List godoc
+// @Summary List audit log entries (Admin/Sales Rep/Sales Manager)
+// @Description Append-only audit log, read-only (NFR-007) — no write handlers exist for this resource at all. Non-Admin callers are hard-restricted server-side (not just route-gated) to a fixed slice of Deal history: entity_type=deal, ignoring any entity_type/actor_id they pass. Within that slice, allowed actions differ by role — Sales Rep sees stage_changed only; Sales Manager additionally sees reassigned/bulk_reassigned (the Deal detail page's "Owner History" card, FR-CRM-025/M-8). Admin has full reach across all entity types (settings, project, customer_product, deal, etc.) and may filter by entity_type/actor_id. entity_id/date_from/date_to apply to every role, so a non-Admin can still request a specific Deal's history or a date-bounded slice.
+// @Tags audit-log
+// @Security BearerAuth
+// @Produce json
+// @Param entity_type query string false "Filter by entity type (Admin only — ignored for Sales Rep/Sales Manager, who are hard-restricted to entity_type=deal)"
+// @Param actor_id query string false "Filter by acting user ID (Admin only — ignored for Sales Rep/Sales Manager)"
+// @Param entity_id query string false "Filter by entity ID (e.g. a specific Deal ID) — applies to all roles"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on created_at"
+// @Param sort query string false "Sort field, prefix with - for descending (default -created_at)"
+// @Param page query int false "Page number (default 1)"
+// @Param per_page query int false "Items per page"
+// @Success 200 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{} "Failed to list audit log"
+// @Router /audit-log [get]
 func (h *AuditLogHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := h.DB.Model(&models.AuditLogEntry{})

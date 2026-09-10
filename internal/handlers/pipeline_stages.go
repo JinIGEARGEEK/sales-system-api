@@ -101,7 +101,7 @@ func (h *PipelineStageHandler) Create(c *fiber.Ctx) error {
 	actorID := middleware.CurrentUserID(c)
 	stage := models.PipelineStage{
 		Name: form.Name, SortOrder: form.SortOrder,
-		IsActive: form.IsActive == nil || *form.IsActive,
+		IsActive:   form.IsActive == nil || *form.IsActive,
 		IsWonStage: form.IsWonStage, IsLostStage: form.IsLostStage,
 	}
 	stage.CreatedBy = &actorID

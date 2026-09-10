@@ -17,7 +17,18 @@ func NewUserHandler(db *gorm.DB) *UserHandler {
 	return &UserHandler{DB: db}
 }
 
-// List — GET /users (Admin). Filters: role, status (active/inactive), search (name/email).
+// List godoc
+// @Summary List users (Admin only)
+// @Description Returns a paginated list of users. Admin only. Filters: role, status (active/inactive), search (matches first_name/last_name/email). Sortable by created_at, first_name, email.
+// @Tags users
+// @Security BearerAuth
+// @Produce json
+// @Param role query string false "Filter by role"
+// @Param status query string false "Filter by status (active/inactive)"
+// @Param search query string false "Search first_name/last_name/email"
+// @Param sort query string false "Sort field, prefix with - for descending (default -created_at)"
+// @Success 200 {object} map[string]interface{} "Paginated user list (data, page, per_page, total)"
+// @Router /users [get]
 func (h *UserHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := h.DB.Model(&models.User{})
@@ -72,8 +83,17 @@ type userForm struct {
 	Notes     string      `json:"notes"`
 }
 
-// Create — POST /users (Admin). Body per AdminUserForm: first_name, last_name,
-// email, tel, role, status, notes.
+// Create godoc
+// @Summary Create a user (Admin only)
+// @Description Admin only. Creates a user account; email must be on the allowed company domain. If password is omitted, a temporary password is generated and must_change_password is forced true. The response never includes password_hash (excluded via json:"-").
+// @Tags users
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body userForm true "User fields (first_name, last_name, email, tel, password, role, status, notes)"
+// @Success 201 {object} models.User
+// @Failure 400 {object} map[string]interface{} "Invalid body or missing required fields"
+// @Router /users [post]
 func (h *UserHandler) Create(c *fiber.Ctx) error {
 	var form userForm
 	if err := c.BodyParser(&form); err != nil {
@@ -121,7 +141,16 @@ func (h *UserHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, user)
 }
 
-// Get — GET /users/:id (Admin).
+// Get godoc
+// @Summary Get a user (Admin only)
+// @Description Admin only. Returns a single user by ID. The response never includes password_hash (excluded via json:"-").
+// @Tags users
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "User ID"
+// @Success 200 {object} models.User
+// @Failure 404 {object} map[string]interface{} "User not found"
+// @Router /users/{id} [get]
 func (h *UserHandler) Get(c *fiber.Ctx) error {
 	var user models.User
 	if err := h.DB.First(&user, c.Params("id")).Error; err != nil {
@@ -130,7 +159,19 @@ func (h *UserHandler) Get(c *fiber.Ctx) error {
 	return utils.OK(c, user)
 }
 
-// Update — PUT /users/:id (Admin). Full update.
+// Update godoc
+// @Summary Update a user (Admin only)
+// @Description Admin only. Full update; email must be on the allowed company domain. Password is only changed if provided (forces must_change_password true). The response never includes password_hash (excluded via json:"-").
+// @Tags users
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "User ID"
+// @Param body body userForm true "User fields"
+// @Success 200 {object} models.User
+// @Failure 400 {object} map[string]interface{} "Invalid body or missing required fields"
+// @Failure 404 {object} map[string]interface{} "User not found"
+// @Router /users/{id} [put]
 func (h *UserHandler) Update(c *fiber.Ctx) error {
 	var user models.User
 	if err := h.DB.First(&user, c.Params("id")).Error; err != nil {
@@ -181,7 +222,15 @@ func (h *UserHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, user)
 }
 
-// Delete — DELETE /users/:id (Admin). Soft-delete (deactivate), not a hard delete §1.6.
+// Delete godoc
+// @Summary Delete a user (Admin only)
+// @Description Admin only. Soft-delete (deactivates and gorm soft-deletes the row), not a hard delete §1.6. Also invalidates the user's cached auth state.
+// @Tags users
+// @Security BearerAuth
+// @Param id path int true "User ID"
+// @Success 204 "No Content"
+// @Failure 404 {object} map[string]interface{} "User not found"
+// @Router /users/{id} [delete]
 func (h *UserHandler) Delete(c *fiber.Ctx) error {
 	var user models.User
 	if err := h.DB.First(&user, c.Params("id")).Error; err != nil {
@@ -204,13 +253,28 @@ func (h *UserHandler) Delete(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
-// Trash — GET /users/trash (Admin).
+// Trash godoc
+// @Summary List deleted users (Admin only)
+// @Description Admin only. Returns soft-deleted users.
+// @Tags users
+// @Security BearerAuth
+// @Produce json
+// @Success 200 {object} map[string]interface{} "Paginated user list (data, page, per_page, total)"
+// @Router /users/trash [get]
 func (h *UserHandler) Trash(c *fiber.Ctx) error {
 	return utils.GenericTrash[models.User](c, h.DB, "Failed to list deleted users")
 }
 
-// Restore — POST /users/:id/restore (Admin). Leaves is_active false — an
-// Admin re-activates separately via Update.
+// Restore godoc
+// @Summary Restore a deleted user (Admin only)
+// @Description Admin only. Restores a soft-deleted user. Leaves is_active false — an Admin re-activates separately via Update.
+// @Tags users
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "User ID"
+// @Success 200 {object} models.User
+// @Failure 404 {object} map[string]interface{} "Deleted user not found"
+// @Router /users/{id}/restore [post]
 func (h *UserHandler) Restore(c *fiber.Ctx) error {
 	return utils.GenericRestore[models.User](c, h.DB, "Deleted user not found", "Failed to restore user")
 }
@@ -221,8 +285,14 @@ type teamMember struct {
 	Email string `json:"email"`
 }
 
-// TeamMembers — GET /team-members (any authenticated). Lightweight list for
-// assignee dropdowns — no Admin role required, §2.2.
+// TeamMembers godoc
+// @Summary List team members (any authenticated role)
+// @Description Any authenticated role — not Admin-restricted, §2.2. Lightweight active-user list (id, name, email) for assignee dropdowns.
+// @Tags users
+// @Security BearerAuth
+// @Produce json
+// @Success 200 {array} teamMember
+// @Router /team-members [get]
 func (h *UserHandler) TeamMembers(c *fiber.Ctx) error {
 	var users []models.User
 	if err := h.DB.Where("is_active = ?", true).Find(&users).Error; err != nil {

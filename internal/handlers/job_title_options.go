@@ -21,7 +21,14 @@ func NewJobTitleOptionHandler(db *gorm.DB) *JobTitleOptionHandler {
 	return &JobTitleOptionHandler{DB: db}
 }
 
-// List — GET /admin/job-titles. Always returns every row (active + inactive).
+// List godoc
+// @Summary List job titles
+// @Description Returns every configured Contact job title (active + inactive), ordered by name.
+// @Tags admin/job-titles
+// @Security BearerAuth
+// @Produce json
+// @Success 200 {array} models.JobTitleOption
+// @Router /admin/job-titles [get]
 func (h *JobTitleOptionHandler) List(c *fiber.Ctx) error {
 	var titles []models.JobTitleOption
 	if err := h.DB.Order("name ASC").Find(&titles).Error; err != nil {
@@ -35,7 +42,17 @@ type jobTitleOptionForm struct {
 	IsActive *bool  `json:"is_active"`
 }
 
-// Create — POST /admin/job-titles.
+// Create godoc
+// @Summary Create a job title
+// @Description Admin-only.
+// @Tags admin/job-titles
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body jobTitleOptionForm true "Job title fields"
+// @Success 201 {object} models.JobTitleOption
+// @Failure 400 {object} map[string]interface{}
+// @Router /admin/job-titles [post]
 func (h *JobTitleOptionHandler) Create(c *fiber.Ctx) error {
 	var form jobTitleOptionForm
 	if err := c.BodyParser(&form); err != nil {
@@ -55,7 +72,18 @@ func (h *JobTitleOptionHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, title)
 }
 
-// Update — PATCH /admin/job-titles/:id.
+// Update godoc
+// @Summary Update a job title
+// @Description Admin-only.
+// @Tags admin/job-titles
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Job title ID"
+// @Param body body jobTitleOptionForm true "Job title fields"
+// @Success 200 {object} models.JobTitleOption
+// @Failure 404 {object} map[string]interface{}
+// @Router /admin/job-titles/{id} [patch]
 func (h *JobTitleOptionHandler) Update(c *fiber.Ctx) error {
 	var title models.JobTitleOption
 	if err := h.DB.First(&title, c.Params("id")).Error; err != nil {
@@ -83,7 +111,15 @@ func (h *JobTitleOptionHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, title)
 }
 
-// Delete — DELETE /admin/job-titles/:id. Soft-delete (is_active: false).
+// Delete godoc
+// @Summary Deactivate a job title
+// @Description Admin-only. Soft-delete (is_active: false).
+// @Tags admin/job-titles
+// @Security BearerAuth
+// @Param id path int true "Job title ID"
+// @Success 204 "No Content"
+// @Failure 404 {object} map[string]interface{}
+// @Router /admin/job-titles/{id} [delete]
 func (h *JobTitleOptionHandler) Delete(c *fiber.Ctx) error {
 	var title models.JobTitleOption
 	if err := h.DB.First(&title, c.Params("id")).Error; err != nil {

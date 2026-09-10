@@ -77,15 +77,15 @@ var (
 	// "(หนึ่งแสนเก้าหมื่นห้าพันเจ็ดร้อยสามบาทถ้วน)") — stripped so it doesn't
 	// glue onto the last item's description.
 	reFlowAccountAmountInWords = regexp.MustCompile(`\(.*?บาทถ้วน\)`)
-	reFlowAccountReferenceNo = regexp.MustCompile(`เลขที่\s+(\S+)`)
-	reFlowAccountIssueDate   = regexp.MustCompile(`วันที่\s+(\d{2})/(\d{2})/(\d{4})`)
-	reFlowAccountScopeOfWork = regexp.MustCompile(`ชื่องาน\s+(.+?)\s+ผู้ติดต่อ`)
-	reFlowAccountSubtotal    = regexp.MustCompile(`รวมเป็นเงิน\s+([\d,]+\.\d{2})\s*บาท`)
-	reFlowAccountVat         = regexp.MustCompile(`ภาษีมูลค่าเพิ่ม\s+(\d+(?:\.\d+)?)%\s+([\d,]+\.\d{2})\s*บาท`)
-	reFlowAccountWht         = regexp.MustCompile(`หัก\s*ณ\s*ที่จ่าย\s*(\d+(?:\.\d+)?)%\s+([\d,]+\.\d{2})\s*บาท`)
-	reFlowAccountGrandTotal  = regexp.MustCompile(`จำนวนเงินรวมทั้งสิ้น\s+([\d,]+\.\d{2})\s*บาท`)
-	reFlowAccountNotesBlock  = regexp.MustCompile(`(?s)หมายเหตุ\s+(.+?)\n\s*ในนาม`)
-	reFlowAccountLeadingIdx  = regexp.MustCompile(`^\s*\d+\s*`)
+	reFlowAccountReferenceNo   = regexp.MustCompile(`เลขที่\s+(\S+)`)
+	reFlowAccountIssueDate     = regexp.MustCompile(`วันที่\s+(\d{2})/(\d{2})/(\d{4})`)
+	reFlowAccountScopeOfWork   = regexp.MustCompile(`ชื่องาน\s+(.+?)\s+ผู้ติดต่อ`)
+	reFlowAccountSubtotal      = regexp.MustCompile(`รวมเป็นเงิน\s+([\d,]+\.\d{2})\s*บาท`)
+	reFlowAccountVat           = regexp.MustCompile(`ภาษีมูลค่าเพิ่ม\s+(\d+(?:\.\d+)?)%\s+([\d,]+\.\d{2})\s*บาท`)
+	reFlowAccountWht           = regexp.MustCompile(`หัก\s*ณ\s*ที่จ่าย\s*(\d+(?:\.\d+)?)%\s+([\d,]+\.\d{2})\s*บาท`)
+	reFlowAccountGrandTotal    = regexp.MustCompile(`จำนวนเงินรวมทั้งสิ้น\s+([\d,]+\.\d{2})\s*บาท`)
+	reFlowAccountNotesBlock    = regexp.MustCompile(`(?s)หมายเหตุ\s+(.+?)\n\s*ในนาม`)
+	reFlowAccountLeadingIdx    = regexp.MustCompile(`^\s*\d+\s*`)
 	// One item row: qty, unit price, an optional discount cell (blank for
 	// most quotes — FlowAccount's UI enters it as a percentage, so a
 	// non-blank value is assumed to be one and flagged for a rep to

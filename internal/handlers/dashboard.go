@@ -31,28 +31,28 @@ func (h *DashboardHandler) baseFilter(c *fiber.Ctx) *gorm.DB {
 	dateTo := c.Query("date_to")
 	if dateFrom == "" && dateTo == "" {
 		if from, ok := periodStart(c.Query("period")); ok {
-			query = query.Where("created_at >= ?", from)
+			query = query.Where("deals.created_at >= ?", from)
 		}
 	} else {
 		if dateFrom != "" {
-			query = query.Where("created_at >= ?", dateFrom)
+			query = query.Where("deals.created_at >= ?", dateFrom)
 		}
 		if dateTo != "" {
-			query = query.Where("created_at <= ?", dateTo)
+			query = query.Where("deals.created_at <= ?", dateTo)
 		}
 	}
 
 	if v := c.Query("business_unit"); v != "" {
-		query = query.Where("business_unit = ?", v)
+		query = query.Where("deals.business_unit = ?", v)
 	}
 	if v := c.Query("business_unit_item"); v != "" {
-		query = query.Where("business_unit_item = ?", v)
+		query = query.Where("deals.business_unit_item = ?", v)
 	}
 	if v := c.Query("channel"); v != "" {
-		query = query.Where("channel = ?", v)
+		query = query.Where("deals.channel = ?", v)
 	}
 	if v := c.Query("assigned_to"); v != "" {
-		query = query.Where("assigned_to = ?", v)
+		query = query.Where("deals.assigned_to = ?", v)
 	}
 	if v := c.Query("company_tag"); v != "" {
 		query = query.Joins("JOIN companies ON companies.id = deals.company_id").
@@ -331,31 +331,31 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	}
 
 	run(func() {
-		base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusOpen).
-			Select("COALESCE(SUM(value), 0)").Scan(&openPipelineValue)
+		base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusOpen).
+			Select("COALESCE(SUM(deals.value), 0)").Scan(&openPipelineValue)
 	})
 	run(func() {
-		base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusWon).
-			Select("COALESCE(SUM(value), 0)").Scan(&wonValue)
+		base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusWon).
+			Select("COALESCE(SUM(deals.value), 0)").Scan(&wonValue)
 	})
 	run(func() {
-		base.Session(&gorm.Session{}).Select("COALESCE(AVG(value), 0)").Scan(&avgDealSize)
+		base.Session(&gorm.Session{}).Select("COALESCE(AVG(deals.value), 0)").Scan(&avgDealSize)
 	})
 	run(func() {
-		base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusOpen).Count(&openDealsCount)
+		base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusOpen).Count(&openDealsCount)
 	})
 	// forecastedRevenue — sum of (open Deal value × probability/100). Probability
 	// defaults per-stage at write time (see StageDefaultProbability) so every open
 	// Deal has one, but COALESCE guards any pre-existing row a migration missed.
 	run(func() {
-		base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusOpen).
-			Select("COALESCE(SUM(value * COALESCE(probability, 0) / 100.0), 0)").Scan(&forecastedRevenue)
+		base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusOpen).
+			Select("COALESCE(SUM(deals.value * COALESCE(deals.probability, 0) / 100.0), 0)").Scan(&forecastedRevenue)
 	})
 	run(func() {
-		base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusWon).Count(&wonCount)
+		base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusWon).Count(&wonCount)
 	})
 	run(func() {
-		base.Session(&gorm.Session{}).Where("status = ?", models.DealStatusLost).Count(&lostCount)
+		base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusLost).Count(&lostCount)
 	})
 	run(func() { revenueTrend = h.revenueTrend() })
 	run(func() { forecastTrend = h.forecastTrend() })
@@ -531,8 +531,8 @@ func (h *DashboardHandler) forecastTrend() []revenueTrendPoint {
 func (h *DashboardHandler) stageBreakdown(base *gorm.DB) []stageBreakdownItem {
 	var rows []stageBreakdownItem
 	base.Session(&gorm.Session{}).
-		Select("stage, COALESCE(SUM(value), 0) as value, count(*) as count").
-		Group("stage").Scan(&rows)
+		Select("deals.stage, COALESCE(SUM(deals.value), 0) as value, count(*) as count").
+		Group("deals.stage").Scan(&rows)
 	return rows
 }
 
@@ -568,9 +568,9 @@ func (h *DashboardHandler) teamPerformance(base *gorm.DB) []teamPerformanceItem 
 		LostCount int64
 	}
 	base.Session(&gorm.Session{}).
-		Where("assigned_to IS NOT NULL").
-		Select("assigned_to as user_id, count(*) FILTER (WHERE status = 'won') as won_count, COALESCE(SUM(value) FILTER (WHERE status = 'won'), 0) as won_value, count(*) FILTER (WHERE status = 'lost') as lost_count").
-		Group("assigned_to").Scan(&rows)
+		Where("deals.assigned_to IS NOT NULL").
+		Select("deals.assigned_to as user_id, count(*) FILTER (WHERE deals.status = 'won') as won_count, COALESCE(SUM(deals.value) FILTER (WHERE deals.status = 'won'), 0) as won_value, count(*) FILTER (WHERE deals.status = 'lost') as lost_count").
+		Group("deals.assigned_to").Scan(&rows)
 
 	userIDs := make([]uint, 0, len(rows))
 	for _, r := range rows {

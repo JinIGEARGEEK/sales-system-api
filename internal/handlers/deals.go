@@ -19,8 +19,22 @@ func NewDealHandler(db *gorm.DB) *DealHandler {
 	return &DealHandler{DB: db}
 }
 
-// List — GET /deals. Filters: stage, status, company_id, assigned_to,
-// business_unit, channel, search (title).
+// List godoc
+// @Summary List deals (Admin/Sales Rep/Sales Manager)
+// @Description Returns deals, filterable by stage, status, company_id, assigned_to, business_unit, channel, and search (title). Backs the Kanban board and dashboard. api-system-spec.md §7.1.
+// @Tags deals
+// @Security BearerAuth
+// @Produce json
+// @Param stage query string false "Filter by DealStage"
+// @Param status query string false "Filter by DealStatus (open/won/lost)"
+// @Param company_id query int false "Filter by Company ID"
+// @Param assigned_to query int false "Filter by assigned Sales Rep user ID"
+// @Param business_unit query string false "Filter by BusinessUnit"
+// @Param channel query string false "Filter by lead source channel"
+// @Param search query string false "Search by title"
+// @Param sort query string false "Sort field (created_at, title, value, company_name), prefix - for descending"
+// @Success 200 {object} map[string]interface{} "Paginated deal list (data, page, per_page, total)"
+// @Router /deals [get]
 func (h *DealHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := applyDealFilters(h.DB.Model(&models.Deal{}), c)
@@ -228,7 +242,18 @@ func (h *DealHandler) syncStatusWithStageFlags(deal *models.Deal) {
 	}
 }
 
-// Create — POST /deals.
+// Create godoc
+// @Summary Create a deal (Admin/Sales Rep/Sales Manager)
+// @Description Creates a Deal. value must be >= 0; expected_close_date, if supplied, must parse as YYYY-MM-DD or RFC3339; stage/channel must be an active PipelineStage/LeadSourceOption; probability (if supplied) must be 0-100; lost_reason is required once stage/status moves to Lost; a Sales Rep cannot assign to another rep. api-system-spec.md §7.1.
+// @Tags deals
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body dealForm true "Deal fields"
+// @Success 201 {object} models.Deal
+// @Failure 400 {object} map[string]interface{} "Invalid request body, or validation error (required fields, value, expected_close_date, probability, lost_reason, stage/channel/business_unit)"
+// @Failure 403 {object} map[string]interface{} "Cannot assign a deal to another sales rep"
+// @Router /deals [post]
 func (h *DealHandler) Create(c *fiber.Ctx) error {
 	var form dealForm
 	if err := c.BodyParser(&form); err != nil {
@@ -285,7 +310,16 @@ func (h *DealHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, deal)
 }
 
-// Get — GET /deals/:id.
+// Get godoc
+// @Summary Get a deal (Admin/Sales Rep/Sales Manager)
+// @Description Returns a single Deal by ID.
+// @Tags deals
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "Deal ID"
+// @Success 200 {object} models.Deal
+// @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Router /deals/{id} [get]
 func (h *DealHandler) Get(c *fiber.Ctx) error {
 	var deal models.Deal
 	if err := h.DB.First(&deal, c.Params("id")).Error; err != nil {
@@ -294,7 +328,20 @@ func (h *DealHandler) Get(c *fiber.Ctx) error {
 	return utils.OK(c, deal)
 }
 
-// Update — PUT /deals/:id.
+// Update godoc
+// @Summary Update a deal (Admin/Sales Rep/Sales Manager)
+// @Description Full update of a Deal — same validation as Create. Writes a stage_changed audit log entry when the submitted stage differs from the deal's current one. Only the assigned Sales Rep (or Admin/Sales Manager) may update; a Sales Rep cannot reassign to another rep. api-system-spec.md §7.1.
+// @Tags deals
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Deal ID"
+// @Param body body dealForm true "Deal fields"
+// @Success 200 {object} models.Deal
+// @Failure 400 {object} map[string]interface{} "Invalid request body, or validation error (required fields, value, expected_close_date, probability, lost_reason, stage/channel/business_unit)"
+// @Failure 403 {object} map[string]interface{} "Not authorized to update this deal, or cannot assign a deal to another sales rep"
+// @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Router /deals/{id} [put]
 func (h *DealHandler) Update(c *fiber.Ctx) error {
 	var deal models.Deal
 	if err := h.DB.First(&deal, c.Params("id")).Error; err != nil {
@@ -376,8 +423,16 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, deal)
 }
 
-// Delete — DELETE /deals/:id. Soft-delete (AuditedModel) — recoverable via
-// Restore/Trash below.
+// Delete godoc
+// @Summary Delete a deal (Admin/Sales Rep/Sales Manager)
+// @Description Soft-delete (AuditedModel) — recoverable via Restore/Trash below. Only the assigned Sales Rep (or Admin/Sales Manager) may delete.
+// @Tags deals
+// @Security BearerAuth
+// @Param id path int true "Deal ID"
+// @Success 204 "No Content"
+// @Failure 403 {object} map[string]interface{} "Not authorized to delete this deal"
+// @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Router /deals/{id} [delete]
 func (h *DealHandler) Delete(c *fiber.Ctx) error {
 	var deal models.Deal
 	if err := h.DB.First(&deal, c.Params("id")).Error; err != nil {
@@ -393,12 +448,28 @@ func (h *DealHandler) Delete(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
-// Trash — GET /deals/trash. Sales-Manager/Admin only (route-gated).
+// Trash godoc
+// @Summary List deleted deals (Admin/Sales Manager)
+// @Description Returns soft-deleted Deals, paginated like GET /deals.
+// @Tags deals
+// @Security BearerAuth
+// @Produce json
+// @Success 200 {object} map[string]interface{} "Paginated deal list (data, page, per_page, total)"
+// @Router /deals/trash [get]
 func (h *DealHandler) Trash(c *fiber.Ctx) error {
 	return utils.GenericTrash[models.Deal](c, h.DB, "Failed to list deleted deals")
 }
 
-// Restore — POST /deals/:id/restore. Sales-Manager/Admin only (route-gated).
+// Restore godoc
+// @Summary Restore a deleted deal (Admin/Sales Manager)
+// @Description Restores a soft-deleted Deal.
+// @Tags deals
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "Deal ID"
+// @Success 200 {object} models.Deal
+// @Failure 404 {object} map[string]interface{} "Deleted deal not found"
+// @Router /deals/{id}/restore [post]
 func (h *DealHandler) Restore(c *fiber.Ctx) error {
 	return utils.GenericRestore[models.Deal](c, h.DB, "Deleted deal not found", "Failed to restore deal")
 }
@@ -418,7 +489,17 @@ type bulkTagForm struct {
 	Mode string   `json:"mode"` // "add" (default) or "set"
 }
 
-// BulkReassign — PATCH /deals/bulk-reassign. Sales-Manager/Admin only (route-gated).
+// BulkReassign godoc
+// @Summary Bulk reassign deals (Admin/Sales Manager)
+// @Description Reassigns every listed Deal to assigned_to (or unassigns if null) in one transaction, writing a bulk_reassigned audit entry per row.
+// @Tags deals
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body bulkReassignForm true "Deal IDs and new assignee"
+// @Success 204 "No Content"
+// @Failure 400 {object} map[string]interface{} "Invalid request body, or ids is required"
+// @Router /deals/bulk-reassign [patch]
 func (h *DealHandler) BulkReassign(c *fiber.Ctx) error {
 	var form bulkReassignForm
 	if err := c.BodyParser(&form); err != nil {
@@ -442,7 +523,17 @@ func (h *DealHandler) BulkReassign(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
-// BulkTag — PATCH /deals/bulk-tag. Sales-Manager/Admin only (route-gated).
+// BulkTag godoc
+// @Summary Bulk tag deals (Admin/Sales Manager)
+// @Description Applies tags to every listed Deal in one transaction (mode "add" merges, "set" replaces), writing a bulk_tagged audit entry per row.
+// @Tags deals
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body bulkTagForm true "Deal IDs, tags, and mode (add/set)"
+// @Success 204 "No Content"
+// @Failure 400 {object} map[string]interface{} "Invalid request body, or ids is required"
+// @Router /deals/bulk-tag [patch]
 func (h *DealHandler) BulkTag(c *fiber.Ctx) error {
 	var form bulkTagForm
 	if err := c.BodyParser(&form); err != nil {
@@ -470,8 +561,17 @@ func (h *DealHandler) BulkTag(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
-// BulkArchive — PATCH /deals/bulk-archive. Sales-Manager/Admin only (route-gated).
-// Soft-deletes each deal (same as Delete), in one transaction.
+// BulkArchive godoc
+// @Summary Bulk archive deals (Admin/Sales Manager)
+// @Description Soft-deletes every listed Deal (same as Delete), in one transaction, writing a bulk_archived audit entry per row.
+// @Tags deals
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body bulkIDsForm true "Deal IDs"
+// @Success 204 "No Content"
+// @Failure 400 {object} map[string]interface{} "Invalid request body, or ids is required"
+// @Router /deals/bulk-archive [patch]
 func (h *DealHandler) BulkArchive(c *fiber.Ctx) error {
 	var form bulkIDsForm
 	if err := c.BodyParser(&form); err != nil {
@@ -516,9 +616,20 @@ type dealStageForm struct {
 	Stage models.DealStage `json:"stage"`
 }
 
-// UpdateStage — PATCH /deals/:id/stage. Body: {stage}. Sets status to
-// won/lost alongside stage in the same transaction; writes an audit log entry
-// per §8.5's explicit minimum scope (stage changes).
+// UpdateStage godoc
+// @Summary Move a deal to a new pipeline stage (Admin/Sales Rep/Sales Manager)
+// @Description Dedicated endpoint for the Kanban drag-and-drop quick-move. Sets status to won/lost alongside stage (and re-derives probability) in the same transaction; writes a stage_changed audit log entry per §8.5's explicit minimum scope. Moving into a stage resolved as Won is blocked (422-style validation error) if AppSettings.RequireSignedContractBeforeWon is enabled and the deal has no Contract with status Signed. Only the assigned Sales Rep (or Admin/Sales Manager) may move it.
+// @Tags deals
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Deal ID"
+// @Param body body dealStageForm true "New stage"
+// @Success 200 {object} models.Deal
+// @Failure 400 {object} map[string]interface{} "Invalid request body, stage is required, stage is not a valid active pipeline stage, or a signed contract is required before marking this deal Won"
+// @Failure 403 {object} map[string]interface{} "Not authorized to update this deal"
+// @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Router /deals/{id}/stage [patch]
 func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	var deal models.Deal
 	if err := h.DB.First(&deal, c.Params("id")).Error; err != nil {
@@ -596,7 +707,19 @@ type dealReassignForm struct {
 	AssignedTo *uint `json:"assigned_to"`
 }
 
-// Reassign — PATCH /deals/:id/reassign. Sales-Manager/Admin only (route-gated).
+// Reassign godoc
+// @Summary Reassign a deal (Admin/Sales Manager)
+// @Description Sets the Deal's assigned_to, writing a reassigned audit log entry. Stricter than the deals group's default access — Sales Rep cannot call this.
+// @Tags deals
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Deal ID"
+// @Param body body dealReassignForm true "New assignee"
+// @Success 200 {object} models.Deal
+// @Failure 400 {object} map[string]interface{} "Invalid request body"
+// @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Router /deals/{id}/reassign [patch]
 func (h *DealHandler) Reassign(c *fiber.Ctx) error {
 	var deal models.Deal
 	if err := h.DB.First(&deal, c.Params("id")).Error; err != nil {

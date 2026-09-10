@@ -23,9 +23,15 @@ func NewSalesTargetHandler(db *gorm.DB) *SalesTargetHandler {
 	return &SalesTargetHandler{DB: db}
 }
 
-// List — GET /admin/sales-targets?year=2026. Returns every row (optionally
-// filtered to one year) ordered oldest-to-newest so the admin config UI can
-// render past/current/future periods in a natural timeline.
+// List godoc
+// @Summary List sales targets
+// @Description Admin-only. Returns every configured per-quarter/per-year sales target, optionally filtered to one year, ordered oldest-to-newest.
+// @Tags admin/sales-targets
+// @Security BearerAuth
+// @Produce json
+// @Param year query int false "Filter to a single year"
+// @Success 200 {array} models.SalesTarget
+// @Router /admin/sales-targets [get]
 func (h *SalesTargetHandler) List(c *fiber.Ctx) error {
 	query := h.DB.Model(&models.SalesTarget{})
 	if year := c.Query("year"); year != "" {
@@ -70,9 +76,17 @@ func (f salesTargetForm) validate(c *fiber.Ctx) bool {
 	return true
 }
 
-// Create — POST /admin/sales-targets. One row per (year, quarter); creating
-// a second row for the same period is rejected — PATCH the existing one
-// instead, same as how PipelineStage names must be unique.
+// Create godoc
+// @Summary Create a sales target
+// @Description Admin-only. One row per (year, quarter); creating a second row for the same period is rejected — PATCH the existing one instead. quarter must be 1-4, year must be a valid year, and target_value must be non-negative.
+// @Tags admin/sales-targets
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body salesTargetForm true "Sales target fields"
+// @Success 201 {object} models.SalesTarget
+// @Failure 400 {object} map[string]interface{}
+// @Router /admin/sales-targets [post]
 func (h *SalesTargetHandler) Create(c *fiber.Ctx) error {
 	var form salesTargetForm
 	if err := c.BodyParser(&form); err != nil {
@@ -116,9 +130,18 @@ func (h *SalesTargetHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, target)
 }
 
-// Update — PATCH /admin/sales-targets/:id. Only target_value is editable in
-// practice (year/quarter identify the row); changing year/quarter to collide
-// with another existing row is rejected the same way Create is.
+// Update godoc
+// @Summary Update a sales target
+// @Description Admin-only. Only target_value is editable in practice (year/quarter identify the row); changing year/quarter to collide with another existing row is rejected the same way Create is.
+// @Tags admin/sales-targets
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Sales target ID"
+// @Param body body salesTargetForm true "Sales target fields"
+// @Success 200 {object} models.SalesTarget
+// @Failure 404 {object} map[string]interface{}
+// @Router /admin/sales-targets/{id} [patch]
 func (h *SalesTargetHandler) Update(c *fiber.Ctx) error {
 	var target models.SalesTarget
 	if err := h.DB.First(&target, c.Params("id")).Error; err != nil {
@@ -162,11 +185,15 @@ func (h *SalesTargetHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, target)
 }
 
-// Delete — DELETE /admin/sales-targets/:id. A hard delete (unlike
-// PipelineStage's soft-delete) — nothing else references a SalesTarget row
-// by ID, and removing one just reverts that period to the flat
-// AppSettings.QuarterlySalesTarget/4 fallback, which is a safe, reversible
-// state (re-add the row to restore the override).
+// Delete godoc
+// @Summary Delete a sales target
+// @Description Admin-only. A hard delete (unlike PipelineStage's soft-delete) — nothing else references a SalesTarget row by ID, and removing one just reverts that period to the flat AppSettings.QuarterlySalesTarget/4 fallback.
+// @Tags admin/sales-targets
+// @Security BearerAuth
+// @Param id path int true "Sales target ID"
+// @Success 204 "No Content"
+// @Failure 404 {object} map[string]interface{}
+// @Router /admin/sales-targets/{id} [delete]
 func (h *SalesTargetHandler) Delete(c *fiber.Ctx) error {
 	var target models.SalesTarget
 	if err := h.DB.First(&target, c.Params("id")).Error; err != nil {

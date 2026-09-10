@@ -21,7 +21,14 @@ func NewLeadSourceHandler(db *gorm.DB) *LeadSourceHandler {
 	return &LeadSourceHandler{DB: db}
 }
 
-// List — GET /admin/lead-sources. Always returns every row (active + inactive).
+// List godoc
+// @Summary List lead sources
+// @Description Returns every configured lead/deal source (active + inactive), ordered by name.
+// @Tags admin/lead-sources
+// @Security BearerAuth
+// @Produce json
+// @Success 200 {array} models.LeadSourceOption
+// @Router /admin/lead-sources [get]
 func (h *LeadSourceHandler) List(c *fiber.Ctx) error {
 	var sources []models.LeadSourceOption
 	if err := h.DB.Order("name ASC").Find(&sources).Error; err != nil {
@@ -35,7 +42,17 @@ type leadSourceForm struct {
 	IsActive *bool  `json:"is_active"`
 }
 
-// Create — POST /admin/lead-sources.
+// Create godoc
+// @Summary Create a lead source
+// @Description Admin-only.
+// @Tags admin/lead-sources
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body leadSourceForm true "Lead source fields"
+// @Success 201 {object} models.LeadSourceOption
+// @Failure 400 {object} map[string]interface{}
+// @Router /admin/lead-sources [post]
 func (h *LeadSourceHandler) Create(c *fiber.Ctx) error {
 	var form leadSourceForm
 	if err := c.BodyParser(&form); err != nil {
@@ -55,7 +72,18 @@ func (h *LeadSourceHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, source)
 }
 
-// Update — PATCH /admin/lead-sources/:id.
+// Update godoc
+// @Summary Update a lead source
+// @Description Admin-only.
+// @Tags admin/lead-sources
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Lead source ID"
+// @Param body body leadSourceForm true "Lead source fields"
+// @Success 200 {object} models.LeadSourceOption
+// @Failure 404 {object} map[string]interface{}
+// @Router /admin/lead-sources/{id} [patch]
 func (h *LeadSourceHandler) Update(c *fiber.Ctx) error {
 	var source models.LeadSourceOption
 	if err := h.DB.First(&source, c.Params("id")).Error; err != nil {
@@ -83,7 +111,15 @@ func (h *LeadSourceHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, source)
 }
 
-// Delete — DELETE /admin/lead-sources/:id. Soft-delete (is_active: false).
+// Delete godoc
+// @Summary Deactivate a lead source
+// @Description Admin-only. Soft-delete (is_active: false).
+// @Tags admin/lead-sources
+// @Security BearerAuth
+// @Param id path int true "Lead source ID"
+// @Success 204 "No Content"
+// @Failure 404 {object} map[string]interface{}
+// @Router /admin/lead-sources/{id} [delete]
 func (h *LeadSourceHandler) Delete(c *fiber.Ctx) error {
 	var source models.LeadSourceOption
 	if err := h.DB.First(&source, c.Params("id")).Error; err != nil {

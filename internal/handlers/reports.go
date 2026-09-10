@@ -113,8 +113,18 @@ func (h *ReportHandler) fetchLeadSourceConversion(c *fiber.Ctx) ([]leadSourceCon
 	return result, nil
 }
 
-// LeadSourceConversion — GET /reports/lead-source-conversion?assigned_to=&date_from=&date_to=
-// (Sales Manager/Admin, route-gated). FR-CRM-054.
+// LeadSourceConversion godoc
+// @Summary Lead source conversion report (Admin/Sales Manager only)
+// @Description Total vs. Qualified Lead counts and conversion rate, grouped by lead source. FR-CRM-054, FR-CRM-055 (rep filter). Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce json
+// @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on created_at"
+// @Success 200 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{} "Failed to compute lead source conversion"
+// @Router /reports/lead-source-conversion [get]
 func (h *ReportHandler) LeadSourceConversion(c *fiber.Ctx) error {
 	result, err := h.fetchLeadSourceConversion(c)
 	if err != nil {
@@ -152,10 +162,18 @@ func (h *ReportHandler) fetchProspectSourceConversion(c *fiber.Ctx) ([]prospectS
 	return result, nil
 }
 
-// ProspectSourceConversion — GET /reports/prospect-source-conversion?assigned_to=&date_from=&date_to=
-// (Admin/Marketing/Sales Manager, route-gated — Marketing's own funnel, not
-// under the Sales Manager/Admin-only `reports` group the Deal/Lead reports
-// live under).
+// ProspectSourceConversion godoc
+// @Summary Prospect source conversion report (Admin/Marketing/Sales Manager/Sales Rep)
+// @Description Total vs. Converted Prospect counts and conversion rate, grouped by prospect source — Marketing's own funnel report, one stage earlier than the Lead source conversion report. Open to Admin, Marketing, Sales Manager, and Sales Rep (a wider role set than the rest of the reports group, which is Admin/Sales Manager only).
+// @Tags reports
+// @Security BearerAuth
+// @Produce json
+// @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on created_at"
+// @Success 200 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{} "Failed to compute prospect source conversion"
+// @Router /reports/prospect-source-conversion [get]
 func (h *ReportHandler) ProspectSourceConversion(c *fiber.Ctx) error {
 	result, err := h.fetchProspectSourceConversion(c)
 	if err != nil {
@@ -200,8 +218,18 @@ func (h *ReportHandler) fetchCustomersByProductStatus(c *fiber.Ctx) ([]customerB
 	return rows, err
 }
 
-// CustomersByProductStatus — GET /reports/customers-by-product-status?product_id=&status=&company_tag=
-// (Sales Manager/Admin, route-gated). FR-CRM-056.
+// CustomersByProductStatus godoc
+// @Summary Customers by product status report (Admin/Sales Manager only)
+// @Description Every CustomerProduct row (company/product/status/start_date), sorted by start_date descending. FR-CRM-056, FR-CRM-055 (company-tag filter). Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce json
+// @Param product_id query int false "Filter by Product ID"
+// @Param status query string false "Filter by CustomerProduct status"
+// @Param company_tag query string false "Filter by Company tag"
+// @Success 200 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{} "Failed to compute customers by product status"
+// @Router /reports/customers-by-product-status [get]
 func (h *ReportHandler) CustomersByProductStatus(c *fiber.Ctx) error {
 	rows, err := h.fetchCustomersByProductStatus(c)
 	if err != nil {
@@ -256,8 +284,19 @@ func (h *ReportHandler) fetchWinLossReasons(c *fiber.Ctx) ([]winLossReasonRow, e
 	return rows, err
 }
 
-// WinLossReasons — GET /reports/win-loss-reasons?date_from=&date_to=&assigned_to=&company_tag=
-// (Sales Manager/Admin, route-gated). FR-CRM-093.
+// WinLossReasons godoc
+// @Summary Win/loss reasons report (Admin/Sales Manager only)
+// @Description Closed Deals (won or lost) grouped by "won" or lost_reason, with count and total value. FR-CRM-093. Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce json
+// @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on deals.created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on deals.created_at"
+// @Param company_tag query string false "Filter by Company tag"
+// @Success 200 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{} "Failed to compute win/loss reasons"
+// @Router /reports/win-loss-reasons [get]
 func (h *ReportHandler) WinLossReasons(c *fiber.Ctx) error {
 	rows, err := h.fetchWinLossReasons(c)
 	if err != nil {
@@ -332,8 +371,18 @@ func (h *ReportHandler) fetchStalledDeals(c *fiber.Ctx) ([]stalledDealRow, error
 	return result, nil
 }
 
-// StalledDeals — GET /reports/stalled-deals?min_days=&assigned_to=&company_tag=
-// (Sales Manager/Admin, route-gated). FR-CRM-094.
+// StalledDeals godoc
+// @Summary Stalled deals report (Admin/Sales Manager only)
+// @Description Open Deals with no logged Activity for at least min_days, sorted by days stalled descending. FR-CRM-094. Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce json
+// @Param min_days query int false "Minimum days since last activity to be considered stalled (default 14)"
+// @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
+// @Param company_tag query string false "Filter by Company tag"
+// @Success 200 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{} "Failed to compute stalled deals"
+// @Router /reports/stalled-deals [get]
 func (h *ReportHandler) StalledDeals(c *fiber.Ctx) error {
 	result, err := h.fetchStalledDeals(c)
 	if err != nil {
@@ -384,8 +433,17 @@ func (h *ReportHandler) fetchOutstandingBalance(c *fiber.Ctx) ([]outstandingBala
 	return rows, err
 }
 
-// OutstandingBalance — GET /reports/outstanding-balance?company_tag=&assigned_to=
-// (Sales Manager/Admin, route-gated). FR-CRM-095.
+// OutstandingBalance godoc
+// @Summary Outstanding balance report (Admin/Sales Manager only)
+// @Description Won Deals whose recorded Payments sum to less than the Deal value, sorted by outstanding amount descending. FR-CRM-095. Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce json
+// @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
+// @Param company_tag query string false "Filter by Company tag"
+// @Success 200 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{} "Failed to compute outstanding balance"
+// @Router /reports/outstanding-balance [get]
 func (h *ReportHandler) OutstandingBalance(c *fiber.Ctx) error {
 	rows, err := h.fetchOutstandingBalance(c)
 	if err != nil {
@@ -497,8 +555,18 @@ func (h *ReportHandler) fetchQuotesExpiringSoon(c *fiber.Ctx) ([]quoteExpiringSo
 	return result, nil
 }
 
-// QuotesExpiringSoon — GET /reports/quotes-expiring-soon?within_days=&assigned_to=&company_tag=
-// (Sales Manager/Admin, route-gated). FR-CRM-096.
+// QuotesExpiringSoon godoc
+// @Summary Quotes expiring soon report (Admin/Sales Manager only)
+// @Description Sent quotes whose validity_date falls within the next within_days, sorted by validity_date ascending. FR-CRM-096. Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce json
+// @Param within_days query int false "Look-ahead window in days (default 7)"
+// @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
+// @Param company_tag query string false "Filter by Company tag"
+// @Success 200 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{} "Failed to compute quotes expiring soon"
+// @Router /reports/quotes-expiring-soon [get]
 func (h *ReportHandler) QuotesExpiringSoon(c *fiber.Ctx) error {
 	result, err := h.fetchQuotesExpiringSoon(c)
 	if err != nil {
@@ -572,8 +640,18 @@ func (h *ReportHandler) fetchContractsStuck(c *fiber.Ctx) ([]contractStuckRow, e
 	return result, nil
 }
 
-// ContractsStuck — GET /reports/contracts-stuck?min_days=&assigned_to=&company_tag=
-// (Sales Manager/Admin, route-gated). FR-CRM-097.
+// ContractsStuck godoc
+// @Summary Contracts stuck report (Admin/Sales Manager only)
+// @Description Contracts sitting in Draft or Sent for at least min_days without being signed, sorted by days in status descending. FR-CRM-097. Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce json
+// @Param min_days query int false "Minimum days in Draft/Sent status to be considered stuck (default 14)"
+// @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
+// @Param company_tag query string false "Filter by Company tag"
+// @Success 200 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{} "Failed to compute contracts stuck"
+// @Router /reports/contracts-stuck [get]
 func (h *ReportHandler) ContractsStuck(c *fiber.Ctx) error {
 	result, err := h.fetchContractsStuck(c)
 	if err != nil {
@@ -633,8 +711,16 @@ func (h *ReportHandler) fetchProjectsAtRisk(c *fiber.Ctx) ([]projectAtRiskRow, e
 	return result, nil
 }
 
-// ProjectsAtRisk — GET /reports/projects-at-risk?company_tag= (Sales
-// Manager/Admin, route-gated). FR-CRM-098.
+// ProjectsAtRisk godoc
+// @Summary Projects at risk report (Admin/Sales Manager only)
+// @Description Projects whose target_end_date has passed but aren't Completed or Cancelled, sorted by days overdue descending. FR-CRM-098, §3.7/FR-CRM-071. Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce json
+// @Param company_tag query string false "Filter by Company tag"
+// @Success 200 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{} "Failed to compute projects at risk"
+// @Router /reports/projects-at-risk [get]
 func (h *ReportHandler) ProjectsAtRisk(c *fiber.Ctx) error {
 	result, err := h.fetchProjectsAtRisk(c)
 	if err != nil {
@@ -804,8 +890,18 @@ func (h *ReportHandler) fetchSalesCycle(assignedTo, dateFrom, dateTo string) (fi
 	}, nil
 }
 
-// SalesCycle — GET /reports/sales-cycle?assigned_to=&date_from=&date_to=
-// (Sales Manager/Admin, route-gated). FR-CRM-099.
+// SalesCycle godoc
+// @Summary Sales cycle report (Admin/Sales Manager only)
+// @Description Average time-in-stage/cycle length broken down by pipeline stage, Sales Rep, and lead source, derived from "deal" stage_changed audit log entries. FR-CRM-099, extending FR-CRM-057's single running average. Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce json
+// @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on deals.created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on deals.created_at"
+// @Success 200 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{} "Failed to compute sales cycle report"
+// @Router /reports/sales-cycle [get]
 func (h *ReportHandler) SalesCycle(c *fiber.Ctx) error {
 	result, err := h.fetchSalesCycle(c.Query("assigned_to"), c.Query("date_from"), c.Query("date_to"))
 	if err != nil {

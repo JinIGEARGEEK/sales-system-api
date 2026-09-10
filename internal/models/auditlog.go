@@ -36,12 +36,12 @@ func (m *JSONMap) Scan(value interface{}) error {
 // AuditLogEntry — api-system-spec.md §8.5. Append-only: no
 // update/delete route should exist for this resource at all (NFR-007).
 type AuditLogEntry struct {
-	ID         uint    `gorm:"primaryKey" json:"id"`
-	EntityType string  `gorm:"type:varchar(32);index" json:"entity_type"`
-	EntityID   uint    `gorm:"index" json:"entity_id"`
-	Action     string  `gorm:"type:varchar(64)" json:"action"`
-	Before     JSONMap `gorm:"type:jsonb" json:"before"`
-	After      JSONMap `gorm:"type:jsonb" json:"after"`
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	EntityType string    `gorm:"type:varchar(32);index" json:"entity_type"`
+	EntityID   uint      `gorm:"index" json:"entity_id"`
+	Action     string    `gorm:"type:varchar(64)" json:"action"`
+	Before     JSONMap   `gorm:"type:jsonb" json:"before"`
+	After      JSONMap   `gorm:"type:jsonb" json:"after"`
 	ActorID    uint      `json:"actor_id"`
 	CreatedAt  time.Time `gorm:"autoCreateTime" json:"created_at"`
 }

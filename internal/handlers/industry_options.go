@@ -21,7 +21,14 @@ func NewIndustryOptionHandler(db *gorm.DB) *IndustryOptionHandler {
 	return &IndustryOptionHandler{DB: db}
 }
 
-// List — GET /admin/industries. Always returns every row (active + inactive).
+// List godoc
+// @Summary List industries
+// @Description Returns every configured Company industry (active + inactive), ordered by name.
+// @Tags admin/industries
+// @Security BearerAuth
+// @Produce json
+// @Success 200 {array} models.IndustryOption
+// @Router /admin/industries [get]
 func (h *IndustryOptionHandler) List(c *fiber.Ctx) error {
 	var industries []models.IndustryOption
 	if err := h.DB.Order("name ASC").Find(&industries).Error; err != nil {
@@ -35,7 +42,17 @@ type industryOptionForm struct {
 	IsActive *bool  `json:"is_active"`
 }
 
-// Create — POST /admin/industries.
+// Create godoc
+// @Summary Create an industry
+// @Description Admin-only.
+// @Tags admin/industries
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body industryOptionForm true "Industry fields"
+// @Success 201 {object} models.IndustryOption
+// @Failure 400 {object} map[string]interface{}
+// @Router /admin/industries [post]
 func (h *IndustryOptionHandler) Create(c *fiber.Ctx) error {
 	var form industryOptionForm
 	if err := c.BodyParser(&form); err != nil {
@@ -55,7 +72,18 @@ func (h *IndustryOptionHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, industry)
 }
 
-// Update — PATCH /admin/industries/:id.
+// Update godoc
+// @Summary Update an industry
+// @Description Admin-only.
+// @Tags admin/industries
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Industry ID"
+// @Param body body industryOptionForm true "Industry fields"
+// @Success 200 {object} models.IndustryOption
+// @Failure 404 {object} map[string]interface{}
+// @Router /admin/industries/{id} [patch]
 func (h *IndustryOptionHandler) Update(c *fiber.Ctx) error {
 	var industry models.IndustryOption
 	if err := h.DB.First(&industry, c.Params("id")).Error; err != nil {
@@ -83,7 +111,15 @@ func (h *IndustryOptionHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, industry)
 }
 
-// Delete — DELETE /admin/industries/:id. Soft-delete (is_active: false).
+// Delete godoc
+// @Summary Deactivate an industry
+// @Description Admin-only. Soft-delete (is_active: false).
+// @Tags admin/industries
+// @Security BearerAuth
+// @Param id path int true "Industry ID"
+// @Success 204 "No Content"
+// @Failure 404 {object} map[string]interface{}
+// @Router /admin/industries/{id} [delete]
 func (h *IndustryOptionHandler) Delete(c *fiber.Ctx) error {
 	var industry models.IndustryOption
 	if err := h.DB.First(&industry, c.Params("id")).Error; err != nil {

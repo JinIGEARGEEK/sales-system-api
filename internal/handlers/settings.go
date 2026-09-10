@@ -22,7 +22,14 @@ func NewSettingsHandler(db *gorm.DB, cfg *config.Config) *SettingsHandler {
 	return &SettingsHandler{DB: db, cfg: cfg}
 }
 
-// Get — GET /admin/settings.
+// Get godoc
+// @Summary Get app settings
+// @Description Admin-only. Returns the AppSettings singleton row (quarterly sales quota, annual revenue goal, and related app-wide config).
+// @Tags admin/settings
+// @Security BearerAuth
+// @Produce json
+// @Success 200 {object} models.AppSettings
+// @Router /admin/settings [get]
 func (h *SettingsHandler) Get(c *fiber.Ctx) error {
 	settings := utils.GetAppSettings(h.DB)
 	settings.SMTPConfigured = h.cfg.SMTPHost != ""
@@ -58,9 +65,17 @@ func requireNonNegative(c *fiber.Ctx, field string, value *int64) bool {
 	return true
 }
 
-// Update — PATCH /admin/settings. Both fields are required on every PATCH
-// (this is a single singleton row, not a per-field partial-update resource —
-// same convention as the original quarterly_sales_target-only form).
+// Update godoc
+// @Summary Update app settings
+// @Description Admin-only. quarterly_sales_target and annual_revenue_goal are required on every PATCH (this is a singleton row, not a per-field partial-update resource); both must be non-negative. lead_scoring_mql_threshold and require_signed_contract_before_won are optional and left unchanged if omitted.
+// @Tags admin/settings
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body settingsForm true "Settings fields"
+// @Success 200 {object} models.AppSettings
+// @Failure 400 {object} map[string]interface{}
+// @Router /admin/settings [patch]
 func (h *SettingsHandler) Update(c *fiber.Ctx) error {
 	settings := utils.GetAppSettings(h.DB)
 
