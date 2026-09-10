@@ -107,6 +107,8 @@ func main() {
 	// Safe to run even without SMTP configured — see internal/utils/mailer.go.
 	notifier.StartTaskDueReminders(db, cfg)
 	notifier.StartWorkflowRuleReminders(db, cfg)
+	// Daily forecast-accuracy snapshot — see internal/notifier/forecast_snapshots.go.
+	notifier.StartForecastSnapshots(db, cfg)
 
 	log.Fatal(app.Listen(":" + cfg.Port))
 }

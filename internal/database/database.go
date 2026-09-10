@@ -95,6 +95,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.AppSettings{},
 		&models.SalesTarget{},
 		&models.DocumentSequence{},
+		&models.ForecastSnapshot{},
 	); err != nil {
 		return err
 	}
