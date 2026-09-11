@@ -98,12 +98,16 @@ func (h *ContactHandler) Create(c *fiber.Ctx) error {
 	if !utils.IsActiveJobTitle(h.DB, form.RoleTitle) {
 		return utils.ValidationError(c, "role_title is not a valid active job title", map[string][]string{"role_title": {"invalid"}})
 	}
+	status, ok := normalizeActiveArchivedStatus(form.Status)
+	if !ok {
+		return utils.ValidationError(c, "status must be active or archived", map[string][]string{"status": {"invalid"}})
+	}
 
 	actorID := middleware.CurrentUserID(c)
 	contact := models.Contact{
 		CompanyID: form.CompanyID, Name: form.Name, Email: form.Email, Phone: form.Phone,
 		RoleTitle: form.RoleTitle, Tags: pq.StringArray(form.Tags),
-		Status: models.ActiveArchivedStatus(form.Status), IsPrimary: form.IsPrimary,
+		Status: status, IsPrimary: form.IsPrimary,
 	}
 	if contact.Status == "" {
 		contact.Status = models.StatusActive
@@ -169,14 +173,18 @@ func (h *ContactHandler) Update(c *fiber.Ctx) error {
 	if !utils.IsActiveJobTitle(h.DB, form.RoleTitle) {
 		return utils.ValidationError(c, "role_title is not a valid active job title", map[string][]string{"role_title": {"invalid"}})
 	}
+	status, ok := normalizeActiveArchivedStatus(form.Status)
+	if !ok {
+		return utils.ValidationError(c, "status must be active or archived", map[string][]string{"status": {"invalid"}})
+	}
 
 	if form.CompanyID != 0 {
 		contact.CompanyID = form.CompanyID
 	}
 	contact.Name, contact.Email, contact.Phone, contact.RoleTitle = form.Name, form.Email, form.Phone, form.RoleTitle
 	contact.Tags = pq.StringArray(form.Tags)
-	if form.Status != "" {
-		contact.Status = models.ActiveArchivedStatus(form.Status)
+	if status != "" {
+		contact.Status = status
 	}
 	contact.IsPrimary = form.IsPrimary
 	actorID := middleware.CurrentUserID(c)
