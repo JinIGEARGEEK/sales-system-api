@@ -205,28 +205,39 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 // silently stop matching for anyone's existing config) even though it now
 // checks CompanyID rather than the free-text CompanyName it's named after.
 func (h *LeadHandler) computeLeadScore(lead models.Lead) (int, error) {
+	score, _, err := h.computeLeadScoreDetailed(lead)
+	return score, err
+}
+
+// computeLeadScoreDetailed is computeLeadScore's full-detail sibling —
+// FR-CRM-007's score-breakdown UI (GET /leads/:id/score-breakdown below)
+// needs to know *which* criteria matched, not just the sum. Kept as one
+// shared implementation (computeLeadScore just discards the second return
+// value) rather than two independently-maintained copies of the same
+// matching logic.
+func (h *LeadHandler) computeLeadScoreDetailed(lead models.Lead) (int, []models.LeadScoringCriterion, error) {
 	var criteria []models.LeadScoringCriterion
 	if err := h.DB.Where("is_active = ?", true).Find(&criteria).Error; err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	score := 0
+	matched := make([]models.LeadScoringCriterion, 0, len(criteria))
 	for _, cr := range criteria {
+		isMatch := false
 		switch cr.Field {
 		case "source":
-			if string(lead.Source) == cr.MatchValue {
-				score += cr.Weight
-			}
+			isMatch = string(lead.Source) == cr.MatchValue
 		case "has_company_name":
-			if lead.CompanyID != nil {
-				score += cr.Weight
-			}
+			isMatch = lead.CompanyID != nil
 		case "has_phone":
-			if lead.Phone != "" {
-				score += cr.Weight
-			}
+			isMatch = lead.Phone != ""
+		}
+		if isMatch {
+			score += cr.Weight
+			matched = append(matched, cr)
 		}
 	}
-	return score, nil
+	return score, matched, nil
 }
 
 // computeAndClassify recomputes lead.Score and sets lead.Classification —
@@ -339,6 +350,53 @@ func (h *LeadHandler) Get(c *fiber.Ctx) error {
 		return utils.NotFound(c, "Lead not found")
 	}
 	return utils.OK(c, lead)
+}
+
+type scoreBreakdownCriterion struct {
+	ID     uint   `json:"id"`
+	Name   string `json:"name"`
+	Field  string `json:"field"`
+	Weight int    `json:"weight"`
+}
+
+// ScoreBreakdown godoc
+// @Summary Explain a Lead's score (Sales pipeline roles)
+// @Description FR-CRM-007 — returns the same total as Lead.Score plus which active LeadScoringCriterion rows matched and contributed, so a rep can see why a Lead scored what it did without needing Admin access to /admin/lead-scoring-criteria (Admin-only). Recomputed live from the Lead's current fields, same as computeAndClassify — always consistent with Lead.Score even if criteria changed since the Lead was last saved.
+// @Tags leads
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "Lead ID"
+// @Success 200 {object} map[string]interface{} "{score, threshold, classification, matched: scoreBreakdownCriterion[]}"
+// @Failure 404 {object} map[string]interface{} "Lead not found"
+// @Router /leads/{id}/score-breakdown [get]
+func (h *LeadHandler) ScoreBreakdown(c *fiber.Ctx) error {
+	var lead models.Lead
+	if err := h.DB.First(&lead, c.Params("id")).Error; err != nil {
+		return utils.NotFound(c, "Lead not found")
+	}
+
+	score, matchedCriteria, err := h.computeLeadScoreDetailed(lead)
+	if err != nil {
+		return utils.Internal(c, "Failed to compute score breakdown")
+	}
+
+	threshold := models.DefaultAppSettings.LeadScoringMqlThreshold
+	var settings models.AppSettings
+	if err := h.DB.First(&settings, 1).Error; err == nil {
+		threshold = settings.LeadScoringMqlThreshold
+	}
+
+	matched := make([]scoreBreakdownCriterion, 0, len(matchedCriteria))
+	for _, cr := range matchedCriteria {
+		matched = append(matched, scoreBreakdownCriterion{ID: cr.ID, Name: cr.Name, Field: cr.Field, Weight: cr.Weight})
+	}
+
+	return utils.OK(c, fiber.Map{
+		"score":          score,
+		"threshold":      threshold,
+		"classification": lead.Classification,
+		"matched":        matched,
+	})
 }
 
 // Update godoc

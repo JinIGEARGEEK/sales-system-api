@@ -202,6 +202,9 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	leads.Patch("/bulk-tag", bulkRoles, leadH.BulkTag)
 	leads.Patch("/bulk-archive", bulkRoles, leadH.BulkArchive)
 	leads.Get("/:id", leadH.Get)
+	// Same gating as Get above (no extra role restriction beyond `authed`) —
+	// this is read-only detail about a Lead a caller can already view.
+	leads.Get("/:id/score-breakdown", leadH.ScoreBreakdown)
 	leads.Put("/:id", salesPipelineRoles, leadH.Update)
 	leads.Delete("/:id", salesPipelineRoles, leadH.Delete)
 	leads.Post("/:id/convert", salesPipelineRoles, leadH.Convert)
