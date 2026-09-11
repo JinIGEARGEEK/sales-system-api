@@ -8,6 +8,112 @@
     },
     "basePath": "/api/v1",
     "paths": {
+        "/admin/api-keys": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns every API key's metadata — never the raw secret, which is only ever shown once at Create.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "List API keys (Admin only)",
+                "responses": {
+                    "200": {
+                        "description": "Paginated API key list (data, page, per_page, total)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Creates a new open-API key acting as owner_user_id (must be an active existing User — the key inherits that user's role and attributes created_by/updated_by to them on every /open/* write). Returns the raw key in the \"key\" field — shown exactly once; only its hash is ever persisted.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Create an API key (Admin only)",
+                "parameters": [
+                    {
+                        "description": "API key fields",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.apiKeyForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created key metadata plus the one-time raw key",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid body, missing fields, or unknown/inactive owner_user_id",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/api-keys/{id}/revoke": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Deactivates a key immediately (RequireAPIKey rejects it within apiKeyCacheTTL at the latest) without deleting its row, so its audit trail (who created it, who revoked it, when) is preserved.",
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Revoke an API key (Admin only)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "API key ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "API key not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/admin/company-sizes": {
             "get": {
                 "security": [
@@ -2854,6 +2960,42 @@
                 }
             }
         },
+        "/dashboard/forecast-accuracy": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Per-quarter forecast-vs-actual history built from the daily ForecastSnapshot job (internal/notifier/forecast_snapshots.go) — the last snapshot of each quarter plus the running snapshot for the current quarter, each with an accuracy_ratio (actual ÷ forecast).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "dashboard"
+                ],
+                "summary": "Forecast accuracy history (Admin/Sales Manager/Sales Rep)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "How many most-recent quarters to return (default 8)",
+                        "name": "quarters",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/internal_handlers.forecastAccuracyQuarter"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/dashboard/summary": {
             "get": {
                 "security": [
@@ -4513,6 +4655,48 @@
                 }
             }
         },
+        "/leads/{id}/score-breakdown": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "FR-CRM-007 — returns the same total as Lead.Score plus which active LeadScoringCriterion rows matched and contributed, so a rep can see why a Lead scored what it did without needing Admin access to /admin/lead-scoring-criteria (Admin-only). Recomputed live from the Lead's current fields, same as computeAndClassify — always consistent with Lead.Score even if criteria changed since the Lead was last saved.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "leads"
+                ],
+                "summary": "Explain a Lead's score (Sales pipeline roles)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Lead ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{score, threshold, classification, matched: scoreBreakdownCriterion[]}",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Lead not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/payments/{id}": {
             "delete": {
                 "security": [
@@ -5477,6 +5661,111 @@
                     },
                     "404": {
                         "description": "Deleted prospect not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/quote-templates": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns every saved Quote Template, newest first. Not paginated — expected to stay small (a handful of reusable starting points, not a growing archive).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "quote-templates"
+                ],
+                "summary": "List quote templates (Admin/Sales Rep/Sales Manager)",
+                "responses": {
+                    "200": {
+                        "description": "{data: models.QuoteTemplate[]}",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Saves a named, deal-independent snapshot of line items/scope/pricing for reuse when creating future Quotes. name is required.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "quote-templates"
+                ],
+                "summary": "Save a quote template (Admin/Sales Rep/Sales Manager)",
+                "parameters": [
+                    {
+                        "description": "Quote template fields",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.quoteTemplateForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuoteTemplate"
+                        }
+                    },
+                    "400": {
+                        "description": "name is required",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/quote-templates/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Hard-deletes a Quote Template — no trash/restore (see models.QuoteTemplate's doc).",
+                "tags": [
+                    "quote-templates"
+                ],
+                "summary": "Delete a quote template (Admin/Sales Rep/Sales Manager)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Quote Template ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Quote template not found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -7290,6 +7579,10 @@
                 "id": {
                     "type": "integer"
                 },
+                "is_primary": {
+                    "description": "IsPrimary marks the one Contact a Sales rep should reach first for this\nCompany (FR-CRM-012). Enforced as at-most-one-per-company at the handler\nlayer (ContactHandler.Create/Update), not a DB constraint, since GORM has\nno native \"unique where true\" partial index helper.",
+                    "type": "boolean"
+                },
                 "name": {
                     "type": "string"
                 },
@@ -7455,6 +7748,14 @@
                 "expected_close_date": {
                     "type": "string"
                 },
+                "forecast_category": {
+                    "description": "ForecastCategory is the Commit/Best Case/Pipeline forecast bucket,\ndefaulted per-stage (StageDefaultForecastCategory) but always manually\noverridable, mirroring Probability's own default/override pattern.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.ForecastCategory"
+                        }
+                    ]
+                },
                 "id": {
                     "type": "integer"
                 },
@@ -7530,6 +7831,19 @@
                 "DealStatusOpen",
                 "DealStatusWon",
                 "DealStatusLost"
+            ]
+        },
+        "github_com_igeargeek_sales-system-api_internal_models.ForecastCategory": {
+            "type": "string",
+            "enum": [
+                "Commit",
+                "Best Case",
+                "Pipeline"
+            ],
+            "x-enum-varnames": [
+                "ForecastCategoryCommit",
+                "ForecastCategoryBestCase",
+                "ForecastCategoryPipeline"
             ]
         },
         "github_com_igeargeek_sales-system-api_internal_models.IndustryOption": {
@@ -8276,6 +8590,50 @@
                 "QuoteStatusExpired"
             ]
         },
+        "github_com_igeargeek_sales-system-api_internal_models.QuoteTemplate": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "integer"
+                },
+                "discount_total": {
+                    "type": "number"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuoteItem"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "notes": {
+                    "type": "string"
+                },
+                "price_type": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuotePriceType"
+                },
+                "scope_of_work": {
+                    "type": "string"
+                },
+                "vat_enabled": {
+                    "type": "boolean"
+                },
+                "wht_enabled": {
+                    "type": "boolean"
+                },
+                "wht_rate": {
+                    "type": "number"
+                }
+            }
+        },
         "github_com_igeargeek_sales-system-api_internal_models.RevenueSizeOption": {
             "type": "object",
             "properties": {
@@ -8485,6 +8843,17 @@
                 }
             }
         },
+        "internal_handlers.apiKeyForm": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "owner_user_id": {
+                    "type": "integer"
+                }
+            }
+        },
         "internal_handlers.bulkIDsForm": {
             "type": "object",
             "properties": {
@@ -8591,6 +8960,9 @@
                 },
                 "email": {
                     "type": "string"
+                },
+                "is_primary": {
+                    "type": "boolean"
                 },
                 "name": {
                     "type": "string"
@@ -8765,6 +9137,9 @@
                 "expected_close_date": {
                     "type": "string"
                 },
+                "forecast_category": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.ForecastCategory"
+                },
                 "lost_reason": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason"
                 },
@@ -8798,6 +9173,42 @@
             "properties": {
                 "stage": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage"
+                }
+            }
+        },
+        "internal_handlers.forecastAccuracyQuarter": {
+            "type": "object",
+            "properties": {
+                "accuracy_ratio": {
+                    "description": "AccuracyRatio is ActualWonToDate / WeightedForecast, 0 when\nWeightedForecast is 0 (nothing to divide by — e.g. a very early\nquarter with no snapshots yet).",
+                    "type": "number"
+                },
+                "actual_won_to_date": {
+                    "type": "number"
+                },
+                "best_case_value": {
+                    "type": "number"
+                },
+                "commit_value": {
+                    "type": "number"
+                },
+                "pipeline_value": {
+                    "type": "number"
+                },
+                "quarter": {
+                    "type": "integer"
+                },
+                "sales_target": {
+                    "type": "number"
+                },
+                "snapshot_date": {
+                    "type": "string"
+                },
+                "weighted_forecast": {
+                    "type": "number"
+                },
+                "year": {
+                    "type": "integer"
                 }
             }
         },
@@ -9124,6 +9535,41 @@
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuoteStatus"
                 },
                 "validity_date": {
+                    "type": "string"
+                },
+                "vat_enabled": {
+                    "type": "boolean"
+                },
+                "wht_enabled": {
+                    "type": "boolean"
+                },
+                "wht_rate": {
+                    "type": "number"
+                }
+            }
+        },
+        "internal_handlers.quoteTemplateForm": {
+            "type": "object",
+            "properties": {
+                "discount_total": {
+                    "type": "number"
+                },
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuoteItem"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "notes": {
+                    "type": "string"
+                },
+                "price_type": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuotePriceType"
+                },
+                "scope_of_work": {
                     "type": "string"
                 },
                 "vat_enabled": {

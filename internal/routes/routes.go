@@ -96,6 +96,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	notificationLogH := handlers.NewNotificationLogHandler(db)
 	settingsH := handlers.NewSettingsHandler(db, cfg)
 	salesTargetH := handlers.NewSalesTargetHandler(db)
+	apiKeyH := handlers.NewAPIKeyHandler(db)
 
 	// /swagger/index.html — browsable OpenAPI docs generated from handler
 	// annotations (see docs.JSON's own doc for the regen command). Currently
@@ -158,6 +159,55 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 		c.Set(fiber.HeaderContentDisposition, "attachment")
 		return c.SendStream(f)
 	})
+
+	// Open API — external/integration access to Company and Contact, the two
+	// resources partner systems most commonly need to sync (CRM/marketing
+	// tool sources of truth). Authenticated by X-API-Key (RequireAPIKey)
+	// instead of the staff Bearer-JWT flow `authed` below, since a
+	// server-to-server caller has no user session to log in as; the key acts
+	// as its configured owner_user_id, so these reuse the exact same
+	// CompanyHandler/ContactHandler methods `authed`'s own /companies and
+	// /contacts groups use (same validation, same created_by/updated_by
+	// attribution) rather than duplicating that logic. Deliberately excludes
+	// Delete/Trash/Restore/bulk endpoints and every other resource — spec'd
+	// scope is Company/Contact create/update/read only.
+	//
+	// Registered BEFORE `authed` below rather than alongside it: `authed :=
+	// api.Group("", middleware.RequireAuth(...), ...)` registers those
+	// middlewares as a fiber.Use("/api/v1", ...) catch-all — since fiber
+	// matches middleware in registration order against every overlapping
+	// path, any route added under `api` AFTER that point (even one not built
+	// off the `authed` variable, like this group) would still be forced
+	// through RequireAuth's Bearer-JWT check first. Registering this group
+	// earlier in the stack keeps it on its own X-API-Key gate only.
+	//
+	// Rate-limited per key (not per IP, unlike loginLimiter — many
+	// integration calls legitimately come from one shared egress IP) so one
+	// runaway/misconfigured integration can't exhaust capacity shared with
+	// every other key or the staff-facing API.
+	openLimiter := limiter.New(limiter.Config{
+		Max:        300,
+		Expiration: 1 * time.Minute,
+		KeyGenerator: func(c *fiber.Ctx) string {
+			return c.Get("X-API-Key")
+		},
+		LimitReached: func(c *fiber.Ctx) error {
+			return utils.ErrorResponse(c, fiber.StatusTooManyRequests, "TOO_MANY_REQUESTS", "Too many requests — try again shortly")
+		},
+	})
+	open := api.Group("/open", openLimiter, middleware.RequireAPIKey(db))
+
+	openCompanies := open.Group("/companies")
+	openCompanies.Get("/", companyH.List)
+	openCompanies.Post("/", companyH.Create)
+	openCompanies.Get("/:id", companyH.Get)
+	openCompanies.Put("/:id", companyH.Update)
+
+	openContacts := open.Group("/contacts")
+	openContacts.Get("/", contactH.List)
+	openContacts.Post("/", contactH.Create)
+	openContacts.Get("/:id", contactH.Get)
+	openContacts.Put("/:id", contactH.Update)
 
 	authed := api.Group("", middleware.RequireAuth(cfg, db), middleware.RequirePasswordChanged(db))
 
@@ -553,6 +603,15 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	salesTargets.Post("/", salesTargetH.Create)
 	salesTargets.Patch("/:id", salesTargetH.Update)
 	salesTargets.Delete("/:id", salesTargetH.Delete)
+
+	// API keys — Admin-only, credentials for the /open/* integration group
+	// below (middleware.RequireAPIKey). Revoke rather than Delete: keeping the
+	// row (IsActive=false) preserves who created/revoked it, matching the
+	// soft-delete convention elsewhere instead of losing that audit trail.
+	apiKeys := authed.Group("/admin/api-keys", adminOnly)
+	apiKeys.Get("/", apiKeyH.List)
+	apiKeys.Post("/", apiKeyH.Create)
+	apiKeys.Post("/:id/revoke", apiKeyH.Revoke)
 
 	// Dashboard
 	authed.Get("/dashboard/summary", dashboardH.Summary)
