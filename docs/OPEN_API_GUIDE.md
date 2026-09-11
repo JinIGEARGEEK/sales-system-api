@@ -123,7 +123,7 @@ X-API-Key: sk_live_...
       "name": "Acme Corp",
       "industry": "Retail",
       "size": "51-200",
-      "revenue_size": "10M-50M",
+      "revenue_size": "1M - 5M THB",
       "website": "https://acme.example.com",
       "tags": ["vip"],
       "notes": "",
@@ -153,7 +153,7 @@ Content-Type: application/json
   "name": "Acme Corp",
   "industry": "Retail",
   "size": "51-200",
-  "revenue_size": "10M-50M",
+  "revenue_size": "1M - 5M THB",
   "website": "https://acme.example.com",
   "tags": ["vip"],
   "notes": "Introduced via trade show",
@@ -161,17 +161,21 @@ Content-Type: application/json
 }
 ```
 
-| Field | Required | Notes |
-|---|---|---|
-| `name` | ✅ | |
-| `industry` | | Free text — a new value is auto-registered rather than rejected. |
-| `size` | | Must match one of this account's active company-size options (ask your Admin for the current list — `/admin/company-sizes` needs a staff login to read). Omit if unsure. |
-| `revenue_size` | | Same as `size`, against `/admin/revenue-sizes`. |
-| `website`, `tags`, `notes` | | |
-| `status` | | `active` or `archived`; defaults to `active`. |
-| `legal_name`, `address`, `tax_id` | | Used on Contract PDF exports if present. |
+Every field below is a **JSON string** unless noted otherwise — `tags` is an array of strings, and `legal_name`/`address`/`tax_id` additionally accept explicit `null`. Sending the wrong JSON type (a number for `revenue_size`, an object for `tags`, etc.) fails to parse at all and returns `400 Bad Request` — see [§7](#7-error-reference) — not the `422` used for a missing/invalid value.
 
-`201 Created` returns the new Company (same shape as List's rows, minus `last_activity_at`). A missing `name`, or a `size`/`revenue_size` that doesn't match an active option, returns `422 Unprocessable Entity` with a `fields` map naming the offending key.
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `name` | string | ✅ | |
+| `industry` | string | | Free text — a new value is auto-registered rather than rejected. Seeded defaults: `Technology`, `Retail`, `Manufacturing`, `Healthcare`, `Finance`, `Education`. |
+| `size` | string | | Must exactly match (case-sensitive) one of this account's active company-size options — a label, never a number. Seeded defaults: `"1-10"`, `"11-50"`, `"51-200"`, `"201-500"`, `"501-1000"`, `"1000+"`. Confirm the live list with your Admin (`GET /admin/company-sizes`, staff login required) since these are admin-configurable and may have been changed. Omit if unsure. |
+| `revenue_size` | string | | Same rules as `size`, against `/admin/revenue-sizes`. Seeded defaults: `"< 1M THB"`, `"1M - 5M THB"`, `"5M - 20M THB"`, `"20M - 100M THB"`, `"100M+ THB"`. **Common mistake:** sending a number (e.g. `3`) or a bare numeric string instead of one of these labels — that's a type/value mismatch, not a valid shorthand. |
+| `website` | string | | |
+| `tags` | string[] | | e.g. `["vip", "renewed"]`. |
+| `notes` | string | | |
+| `status` | string | | `"active"` or `"archived"` (case/whitespace-insensitive on read; normalized to lowercase on write); defaults to `active`. |
+| `legal_name`, `address`, `tax_id` | string \| null | | Used on Contract PDF exports if present. |
+
+`201 Created` returns the new Company (same shape as List's rows, minus `last_activity_at`). A missing `name`, or a `size`/`revenue_size` that doesn't match an active option, returns `422 Unprocessable Entity` with a `fields` map naming the offending key. A field sent as the wrong JSON type returns `400 Bad Request` instead — see [§7](#7-error-reference).
 
 ### `GET /api/v1/open/companies/:id` — Get
 
@@ -195,7 +199,7 @@ Content-Type: application/json
   "name": "Acme Corp",
   "industry": "Retail",
   "size": "51-200",
-  "revenue_size": "10M-50M",
+  "revenue_size": "1M - 5M THB",
   "website": "https://acme.example.com",
   "tags": ["vip", "renewed"],
   "notes": "Renewed for 2027",
@@ -254,16 +258,19 @@ Content-Type: application/json
 }
 ```
 
-| Field | Required | Notes |
-|---|---|---|
-| `company_id` | ✅ | Must reference an existing Company. |
-| `name` | ✅ | |
-| `email`, `phone`, `tags` | | |
-| `role_title` | | Must match an active job-title option (ask your Admin — `/admin/job-titles`). Omit if unsure. |
-| `status` | | `active` or `archived`; defaults to `active`. |
-| `is_primary` | | At most one Contact per Company can be primary — setting this on one automatically un-sets it on any other Contact of the same Company. |
+Every field is a **JSON string** except `company_id` (integer), `tags` (array of strings), and `is_primary` (boolean) — see [§5's note on wrong-type requests](#5-companies).
 
-`201 Created` on success; `422` if `company_id`/`name` is missing or `role_title` doesn't match an active option.
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `company_id` | integer | ✅ | Must reference an existing Company's numeric `id` — not a string, not the company name. |
+| `name` | string | ✅ | |
+| `email`, `phone` | string | | |
+| `tags` | string[] | | |
+| `role_title` | string | | Must exactly match (case-sensitive) an active job-title option. Seeded defaults: `Owner`, `CEO`, `Director`, `Manager`, `Staff`, `Other`. Ask your Admin for the live list (`GET /admin/job-titles`, staff login required) — these are admin-configurable. Omit if unsure. |
+| `status` | string | | `"active"` or `"archived"` (case/whitespace-insensitive on read; normalized to lowercase on write); defaults to `active`. |
+| `is_primary` | boolean | | `true`/`false` JSON boolean. At most one Contact per Company can be primary — setting this on one automatically un-sets it on any other Contact of the same Company. |
+
+`201 Created` on success; `422` if `company_id`/`name` is missing or `role_title` doesn't match an active option. A field sent as the wrong JSON type (a string for `company_id`, a number for `is_primary`, etc.) returns `400 Bad Request` instead.
 
 ### `GET /api/v1/open/contacts/:id` — Get
 
@@ -304,13 +311,18 @@ Every error follows the same envelope:
 { "error": { "code": "VALIDATION_ERROR", "message": "name is required", "fields": { "name": ["required"] } } }
 ```
 
-`fields` is only present on `422` responses.
+`fields` is only present on `422` responses. A `400` (wrong JSON type / unparseable body) looks like this instead — no `fields` map, and the message doesn't name the offending field, so double-check every field's type against §5/§6 when you see it:
+
+```json
+{ "error": { "code": "BAD_REQUEST", "message": "Invalid request body" } }
+```
 
 | Status | `code` | When |
 |---|---|---|
+| 400 | `BAD_REQUEST` | Request body isn't valid JSON, or a field's JSON type doesn't match what's expected (e.g. `revenue_size` sent as a number instead of a string, `company_id` sent as a string instead of a number, `tags` sent as a single string instead of an array). This happens *before* any field-level validation runs, so the response has no `fields` map — check every field's type against the tables in [§5](#5-companies)/[§6](#6-contacts). |
 | 401 | `UNAUTHORIZED` | Missing/invalid/revoked API key |
 | 404 | `NOT_FOUND` | Company/Contact id doesn't exist |
-| 422 | `VALIDATION_ERROR` | Missing required field, or `size`/`revenue_size`/`role_title` isn't an active option |
+| 422 | `VALIDATION_ERROR` | Missing required field, invalid `status`, or `size`/`revenue_size`/`role_title` isn't an active option |
 | 429 | `TOO_MANY_REQUESTS` | Over 300 requests/minute on this key |
 | 500 | `INTERNAL_ERROR` | Unexpected server error — safe to retry |
 
