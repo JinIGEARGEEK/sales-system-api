@@ -22,7 +22,11 @@ import (
 // CompanyHandler.List and ExportHandler.Companies.
 func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 	if v := c.Query("status"); v != "" {
-		query = query.Where("status = ?", v)
+		// Case-insensitive: Status is meant to be the canonical lowercase
+		// active/archived (now enforced on write, see normalizeCompanyStatus),
+		// but older/imported rows may not be, so match defensively rather
+		// than silently excluding them.
+		query = query.Where("LOWER(status) = LOWER(?)", v)
 	}
 	if v := c.Query("industry"); v != "" {
 		query = query.Where("industry = ?", v)
@@ -71,7 +75,11 @@ func applyContactFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 		query = query.Where("company_id = ?", v)
 	}
 	if v := c.Query("status"); v != "" {
-		query = query.Where("status = ?", v)
+		// Case-insensitive: Status is meant to be the canonical lowercase
+		// active/archived (now enforced on write, see
+		// normalizeActiveArchivedStatus), but older/imported rows may not
+		// be, so match defensively rather than silently excluding them.
+		query = query.Where("LOWER(status) = LOWER(?)", v)
 	}
 	if v := c.Query("tag"); v != "" {
 		query = query.Where("? = ANY(tags)", v)

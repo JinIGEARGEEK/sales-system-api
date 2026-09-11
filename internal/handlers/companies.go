@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -19,6 +20,23 @@ import (
 type companyWithActivity struct {
 	models.Company
 	LastActivityAt *time.Time `json:"last_activity_at"`
+}
+
+// normalizeActiveArchivedStatus trims/lowercases the given status so callers
+// aren't silently tripped up by casing or whitespace (e.g. "Active",
+// " active "). Empty input is valid (caller decides the default); anything
+// else must match one of the canonical ActiveArchivedStatus values. Shared by
+// CompanyHandler and ContactHandler, which both use this same status enum.
+func normalizeActiveArchivedStatus(v string) (models.ActiveArchivedStatus, bool) {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return "", true
+	}
+	status := models.ActiveArchivedStatus(v)
+	if status != models.StatusActive && status != models.StatusArchived {
+		return "", false
+	}
+	return status, true
 }
 
 type CompanyHandler struct {
@@ -105,13 +123,17 @@ func (h *CompanyHandler) Create(c *fiber.Ctx) error {
 	if !utils.IsActiveRevenueSize(h.DB, form.RevenueSize) {
 		return utils.ValidationError(c, "revenue_size is not a valid active revenue size", map[string][]string{"revenue_size": {"invalid"}})
 	}
+	status, ok := normalizeActiveArchivedStatus(form.Status)
+	if !ok {
+		return utils.ValidationError(c, "status must be active or archived", map[string][]string{"status": {"invalid"}})
+	}
 
 	actorID := middleware.CurrentUserID(c)
 	company := models.Company{
 		Name: form.Name, Industry: form.Industry, Size: form.Size, RevenueSize: form.RevenueSize, Website: form.Website,
 		Domain: utils.ExtractDomain(form.Website),
 		Tags:   pq.StringArray(form.Tags), Notes: form.Notes,
-		Status:    models.ActiveArchivedStatus(form.Status),
+		Status:    status,
 		LegalName: form.LegalName, Address: form.Address, TaxID: form.TaxID,
 	}
 	if company.Status == "" {
@@ -177,14 +199,18 @@ func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 	if !utils.IsActiveRevenueSize(h.DB, form.RevenueSize) {
 		return utils.ValidationError(c, "revenue_size is not a valid active revenue size", map[string][]string{"revenue_size": {"invalid"}})
 	}
+	status, ok := normalizeActiveArchivedStatus(form.Status)
+	if !ok {
+		return utils.ValidationError(c, "status must be active or archived", map[string][]string{"status": {"invalid"}})
+	}
 
 	company.Name, company.Industry, company.Size, company.RevenueSize, company.Website = form.Name, form.Industry, form.Size, form.RevenueSize, form.Website
 	company.Domain = utils.ExtractDomain(form.Website)
 	company.Tags = pq.StringArray(form.Tags)
 	company.Notes = form.Notes
 	company.LegalName, company.Address, company.TaxID = form.LegalName, form.Address, form.TaxID
-	if form.Status != "" {
-		company.Status = models.ActiveArchivedStatus(form.Status)
+	if status != "" {
+		company.Status = status
 	}
 	actorID := middleware.CurrentUserID(c)
 	company.UpdatedBy = &actorID
