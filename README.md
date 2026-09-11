@@ -90,7 +90,7 @@ In development (`APP_ENV=development`), a browsable Swagger UI is also served at
 
 ### Open API (external integrations)
 
-A separate `X-API-Key`-authenticated surface — `/open/companies` and `/open/contacts` (list/create/get/update only) — lets an external system create/read/update those two resources without a staff login, acting as an Admin-designated staff user. Keys are issued/revoked by an Admin via `/admin/api-keys`. See [`docs/OPEN_API_GUIDE.md`](docs/OPEN_API_GUIDE.md) for the integrator-facing walkthrough (getting a key, request/response shapes, error codes, curl examples) and `biz_spec/api-system-spec.md` §8.9 for the full contract.
+A separate `X-API-Key`-authenticated surface — `/open/companies` and `/open/contacts` (list/create/get/update only) — lets an external system create/read/update those two resources without a staff login, acting as an Admin-designated staff user. Keys are issued/revoked by an Admin either via the `sales-system` frontend's **Settings → API Keys** page (`/admin/api-keys`) or directly through `/admin/api-keys` on this API. See [`docs/OPEN_API_GUIDE.md`](docs/OPEN_API_GUIDE.md) for the integrator-facing walkthrough (creating a key both ways, request/response shapes, error codes, curl examples) and `biz_spec/api-system-spec.md` §8.9 for the full contract.
 
 ### Roles (§1.7 of the spec)
 

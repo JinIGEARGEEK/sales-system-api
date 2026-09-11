@@ -13,9 +13,21 @@ A guide for external/partner integrations that need to create, read, or update *
 
 ## 2. Getting a key (Admin only)
 
-This part requires a normal staff login (`POST /auth/login`, Admin role) — it's how an Admin issues a key for you, not something you do yourself.
+Only an Admin can issue a key — if you're an external integrator, ask whoever administers this CRM for your organization to create one for you and hand you the raw key out of band (Slack DM, a password manager share, etc.). There's no self-serve signup.
 
-**Create a key:**
+### 2a. Via the CRM UI (recommended)
+
+The `sales-system` frontend has a dedicated screen for this:
+
+1. Log in as an Admin.
+2. Open the sidebar's **Settings** group → **API Keys** (`/admin/api-keys`).
+3. Click **Add key**, fill in a **Name** (anything descriptive, e.g. "Acme Marketing Sync") and pick an **Acts as** owner from the dropdown — only active staff accounts are selectable, and this is the identity every one of this key's calls will be attributed to (`created_by`/`updated_by`).
+4. Submit. A **"reveal" dialog pops up showing the raw key exactly once**, with a copy-to-clipboard button — copy it into your secrets manager *before* clicking Done. The dialog can't be dismissed by clicking outside it, only by the Done button, so you don't accidentally close it before copying.
+5. The key now shows up in the table (Name / Key prefix / Acts As / Status / Last Used / Created), with a **Revoke** action per row.
+
+### 2b. Via the API directly
+
+Equivalent to the UI flow above, for scripting or if you don't have frontend access:
 
 ```
 POST /api/v1/admin/api-keys
@@ -65,7 +77,7 @@ POST /api/v1/admin/api-keys/3/revoke
 Authorization: Bearer <admin's JWT>
 ```
 
-Revoking sets `is_active: false` and records `revoked_at`/`revoked_by` — the row (and its history) is kept, not deleted.
+Revoking sets `is_active: false` and records `revoked_at`/`revoked_by` — the row (and its history) is kept, not deleted. Same effect as clicking **Revoke** on that key's row in the UI table.
 
 ## 3. Authenticating your requests
 
