@@ -3,8 +3,8 @@
 **Companion document to:** `feature-spec.md` (business requirements), `user-story.md` (role acceptance criteria), `design-system.md` (frontend conventions)
 **Purpose:** The contract for this backend API. This document was originally written when the frontend (`sales-system`) was still 100% client-side mock data with no real backend at all — that's no longer the state of either repo (20+ merged PRs, a working Go/Fiber API, and a frontend wired up against it resource by resource). It's kept up to date as a living reference for the current contract rather than as a forward-looking build spec.
 **Audience:** Backend/frontend engineers (and AI coding agents) working against this API.
-**Version:** 1.7 (Company industry is free text, company-scoped Activity logged on Deal/Lead/Prospect status change, Activity `created_at` backdating, Trash `search` filter — see `CHANGELOG.md`)
-**Date:** 2026-09-10
+**Version:** 1.8 (Open API — `X-API-Key`-authenticated `/open/companies`/`/open/contacts` for external integrations, `/admin/api-keys` management — see `CHANGELOG.md`)
+**Date:** 2026-09-11
 
 > **Status legend** (mirrors `feature-spec.md`'s legend, applied per endpoint):
 > 🟢 **Required now** — replaces an existing mock Pinia store; needed to take this frontend off mock data as-is.
@@ -939,6 +939,40 @@ interface NotificationLogEntry {
 | `GET` / `POST` | `/admin/notification-rules` | Admin | List / create a `NotificationRule`. |
 | `PATCH` / `DELETE` | `/admin/notification-rules/:id` | Admin | Update / delete. |
 | `GET` | `/notification-log` | any authenticated | Recent rule firings for the caller's own entities (per-row ownership scoping happens inside the handler, not a role gate) — powers an in-app notification feed. |
+
+### 8.9 Open API (external integrations) — added 2026-09-11
+
+🟢 **Required now.** A separate, machine-to-machine credential (`X-API-Key`, not the staff Bearer-JWT flow §2) for external systems (marketing tools, another CRM, a data-sync job) that need to create/read/update `Company`/`Contact` without a staff login. Scope is deliberately narrow: Create/Read/Update only, and only these two resources — no Delete/Trash/Restore/bulk endpoints, and no other resource is exposed this way. **See [`docs/OPEN_API_GUIDE.md`](../docs/OPEN_API_GUIDE.md) for the integrator-facing user manual** (getting a key, request/response examples, error codes, curl walkthrough, the Update full-replace field gotchas) — this section stays the terse contract reference.
+
+```ts
+interface APIKey {
+  id: number
+  name: string             // free text, e.g. "Zapier — Marketing sync"
+  key_prefix: string       // first 14 chars of the raw key, for telling keys apart in the list UI
+  owner_user_id: number    // an existing, active User this key acts AS
+  is_active: boolean
+  last_used_at: string | null
+  revoked_at: string | null
+  revoked_by: number | null
+  created_at: string
+}
+```
+
+Every key **acts as** its `owner_user_id`: `RequireAPIKey` populates the exact same request context (`user_id`/`role`) a normal Bearer-JWT request from that staff member would, so `/open/*` calls attribute `created_by`/`updated_by` to a real User and would honor any future role gate the same way. There's no separate "service account" role — pick (or create) the staff User whose identity the integration should act under.
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` / `POST` | `/admin/api-keys` | Admin | List every key's metadata (never the raw secret or its hash) / create one. `POST` body: `{ name, owner_user_id }`. The response's `data.key` is the **only time** the raw key is ever returned — only its sha256 hash is persisted, same principle as a password hash. |
+| `POST` | `/admin/api-keys/:id/revoke` | Admin | Deactivates a key immediately (`is_active: false`, `revoked_at`/`revoked_by` set) rather than deleting the row, preserving who created/revoked it. A revoked key is rejected by every `/open/*` call within 30s at the latest (`RequireAPIKey`'s cross-instance cache TTL). |
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` / `POST` | `/open/companies` | `X-API-Key` | List / create a `Company` (§4) — identical validation and shape to the staff-facing `/companies` endpoint. |
+| `GET` / `PUT` | `/open/companies/:id` | `X-API-Key` | Read / update a `Company`. |
+| `GET` / `POST` | `/open/contacts` | `X-API-Key` | List / create a `Contact` (§5) — identical validation and shape to the staff-facing `/contacts` endpoint. |
+| `GET` / `PUT` | `/open/contacts/:id` | `X-API-Key` | Read / update a `Contact`. |
+
+Rate-limited per key (not per source IP, unlike the login endpoint's limiter — many integration calls legitimately share one egress IP): 300 requests/minute, `429 TOO_MANY_REQUESTS` past that.
 
 ---
 

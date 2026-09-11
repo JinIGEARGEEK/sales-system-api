@@ -64,4 +64,5 @@ func ResetForTests() {
 		return true
 	})
 	resetAuthCacheForTests()
+	resetAPIKeyCacheForTests()
 }

@@ -130,6 +130,13 @@ definitions:
         type: string
       id:
         type: integer
+      is_primary:
+        description: |-
+          IsPrimary marks the one Contact a Sales rep should reach first for this
+          Company (FR-CRM-012). Enforced as at-most-one-per-company at the handler
+          layer (ContactHandler.Create/Update), not a DB constraint, since GORM has
+          no native "unique where true" partial index helper.
+        type: boolean
       name:
         type: string
       phone:
@@ -243,6 +250,13 @@ definitions:
         type: integer
       expected_close_date:
         type: string
+      forecast_category:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ForecastCategory'
+        description: |-
+          ForecastCategory is the Commit/Best Case/Pipeline forecast bucket,
+          defaulted per-stage (StageDefaultForecastCategory) but always manually
+          overridable, mirroring Probability's own default/override pattern.
       id:
         type: integer
       lead_id:
@@ -303,6 +317,16 @@ definitions:
     - DealStatusOpen
     - DealStatusWon
     - DealStatusLost
+  github_com_igeargeek_sales-system-api_internal_models.ForecastCategory:
+    enum:
+    - Commit
+    - Best Case
+    - Pipeline
+    type: string
+    x-enum-varnames:
+    - ForecastCategoryCommit
+    - ForecastCategoryBestCase
+    - ForecastCategoryPipeline
   github_com_igeargeek_sales-system-api_internal_models.IndustryOption:
     properties:
       created_at:
@@ -902,6 +926,35 @@ definitions:
     - QuoteStatusAccepted
     - QuoteStatusRejected
     - QuoteStatusExpired
+  github_com_igeargeek_sales-system-api_internal_models.QuoteTemplate:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      discount_total:
+        type: number
+      id:
+        type: integer
+      items:
+        items:
+          $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuoteItem'
+        type: array
+      name:
+        type: string
+      notes:
+        type: string
+      price_type:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuotePriceType'
+      scope_of_work:
+        type: string
+      vat_enabled:
+        type: boolean
+      wht_enabled:
+        type: boolean
+      wht_rate:
+        type: number
+    type: object
   github_com_igeargeek_sales-system-api_internal_models.RevenueSizeOption:
     properties:
       created_at:
@@ -1048,6 +1101,13 @@ definitions:
         description: Valid is true if Time is not NULL
         type: boolean
     type: object
+  internal_handlers.apiKeyForm:
+    properties:
+      name:
+        type: string
+      owner_user_id:
+        type: integer
+    type: object
   internal_handlers.bulkIDsForm:
     properties:
       ids:
@@ -1118,6 +1178,8 @@ definitions:
         type: integer
       email:
         type: string
+      is_primary:
+        type: boolean
       name:
         type: string
       phone:
@@ -1231,6 +1293,8 @@ definitions:
         type: integer
       expected_close_date:
         type: string
+      forecast_category:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ForecastCategory'
       lost_reason:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason'
       probability:
@@ -1253,6 +1317,33 @@ definitions:
     properties:
       stage:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage'
+    type: object
+  internal_handlers.forecastAccuracyQuarter:
+    properties:
+      accuracy_ratio:
+        description: |-
+          AccuracyRatio is ActualWonToDate / WeightedForecast, 0 when
+          WeightedForecast is 0 (nothing to divide by — e.g. a very early
+          quarter with no snapshots yet).
+        type: number
+      actual_won_to_date:
+        type: number
+      best_case_value:
+        type: number
+      commit_value:
+        type: number
+      pipeline_value:
+        type: number
+      quarter:
+        type: integer
+      sales_target:
+        type: number
+      snapshot_date:
+        type: string
+      weighted_forecast:
+        type: number
+      year:
+        type: integer
     type: object
   internal_handlers.importError:
     properties:
@@ -1486,6 +1577,29 @@ definitions:
       wht_rate:
         type: number
     type: object
+  internal_handlers.quoteTemplateForm:
+    properties:
+      discount_total:
+        type: number
+      items:
+        items:
+          $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuoteItem'
+        type: array
+      name:
+        type: string
+      notes:
+        type: string
+      price_type:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuotePriceType'
+      scope_of_work:
+        type: string
+      vat_enabled:
+        type: boolean
+      wht_enabled:
+        type: boolean
+      wht_rate:
+        type: number
+    type: object
   internal_handlers.revenueSizeOptionForm:
     properties:
       is_active:
@@ -1567,6 +1681,79 @@ info:
   title: Sales System API
   version: "1.0"
 paths:
+  /admin/api-keys:
+    get:
+      description: Returns every API key's metadata — never the raw secret, which
+        is only ever shown once at Create.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated API key list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List API keys (Admin only)
+      tags:
+      - admin
+    post:
+      consumes:
+      - application/json
+      description: Creates a new open-API key acting as owner_user_id (must be an
+        active existing User — the key inherits that user's role and attributes created_by/updated_by
+        to them on every /open/* write). Returns the raw key in the "key" field —
+        shown exactly once; only its hash is ever persisted.
+      parameters:
+      - description: API key fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.apiKeyForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created key metadata plus the one-time raw key
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid body, missing fields, or unknown/inactive owner_user_id
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create an API key (Admin only)
+      tags:
+      - admin
+  /admin/api-keys/{id}/revoke:
+    post:
+      description: Deactivates a key immediately (RequireAPIKey rejects it within
+        apiKeyCacheTTL at the latest) without deleting its row, so its audit trail
+        (who created it, who revoked it, when) is preserved.
+      parameters:
+      - description: API key ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: API key not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Revoke an API key (Admin only)
+      tags:
+      - admin
   /admin/company-sizes:
     get:
       description: Returns every configured Company size bucket (active + inactive),
@@ -3466,6 +3653,31 @@ paths:
       summary: Update a Customer-Product's status
       tags:
       - products
+  /dashboard/forecast-accuracy:
+    get:
+      description: Per-quarter forecast-vs-actual history built from the daily ForecastSnapshot
+        job (internal/notifier/forecast_snapshots.go) — the last snapshot of each
+        quarter plus the running snapshot for the current quarter, each with an accuracy_ratio
+        (actual ÷ forecast).
+      parameters:
+      - description: How many most-recent quarters to return (default 8)
+        in: query
+        name: quarters
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/internal_handlers.forecastAccuracyQuarter'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: Forecast accuracy history (Admin/Sales Manager/Sales Rep)
+      tags:
+      - dashboard
   /dashboard/summary:
     get:
       description: Aggregate sales metrics (pipeline value, win rate, trends, breakdowns,
@@ -4493,6 +4705,38 @@ paths:
       summary: Restore a deleted lead (Admin/Sales Manager only)
       tags:
       - leads
+  /leads/{id}/score-breakdown:
+    get:
+      description: FR-CRM-007 — returns the same total as Lead.Score plus which active
+        LeadScoringCriterion rows matched and contributed, so a rep can see why a
+        Lead scored what it did without needing Admin access to /admin/lead-scoring-criteria
+        (Admin-only). Recomputed live from the Lead's current fields, same as computeAndClassify
+        — always consistent with Lead.Score even if criteria changed since the Lead
+        was last saved.
+      parameters:
+      - description: Lead ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{score, threshold, classification, matched: scoreBreakdownCriterion[]}'
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Lead not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Explain a Lead's score (Sales pipeline roles)
+      tags:
+      - leads
   /leads/bulk-archive:
     patch:
       consumes:
@@ -5259,6 +5503,76 @@ paths:
       summary: List deleted prospects (Admin/Sales Manager)
       tags:
       - prospects
+  /quote-templates:
+    get:
+      description: Returns every saved Quote Template, newest first. Not paginated
+        — expected to stay small (a handful of reusable starting points, not a growing
+        archive).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: '{data: models.QuoteTemplate[]}'
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List quote templates (Admin/Sales Rep/Sales Manager)
+      tags:
+      - quote-templates
+    post:
+      consumes:
+      - application/json
+      description: Saves a named, deal-independent snapshot of line items/scope/pricing
+        for reuse when creating future Quotes. name is required.
+      parameters:
+      - description: Quote template fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.quoteTemplateForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuoteTemplate'
+        "400":
+          description: name is required
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Save a quote template (Admin/Sales Rep/Sales Manager)
+      tags:
+      - quote-templates
+  /quote-templates/{id}:
+    delete:
+      description: Hard-deletes a Quote Template — no trash/restore (see models.QuoteTemplate's
+        doc).
+      parameters:
+      - description: Quote Template ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Quote template not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a quote template (Admin/Sales Rep/Sales Manager)
+      tags:
+      - quote-templates
   /quotes/{id}:
     delete:
       description: Hard delete of a Quote. Only the parent Deal's assigned Sales Rep
