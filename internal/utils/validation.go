@@ -10,11 +10,23 @@ import (
 // AllowedEmailDomain restricts staff login emails to the company domain.
 const AllowedEmailDomain = "igeargeek.com"
 
+// isValidEmailAddress reports whether email parses as a single syntactically
+// valid RFC 5322 address with nothing else attached — mail.ParseAddress alone
+// would also accept "Display Name <addr>" or trailing garbage it silently
+// discards, so this additionally requires the parsed address to equal the
+// input verbatim. Shared by IsValidCompanyEmail (which layers the
+// AllowedEmailDomain restriction on top) and IsValidEmail (validate.go, no
+// domain restriction) so both use the same real parser instead of two
+// independent regexes that would each get some edge case wrong.
+func isValidEmailAddress(email string) bool {
+	addr, err := mail.ParseAddress(email)
+	return err == nil && addr.Address == email
+}
+
 // IsValidCompanyEmail reports whether email is a syntactically valid address
 // on AllowedEmailDomain.
 func IsValidCompanyEmail(email string) bool {
-	addr, err := mail.ParseAddress(email)
-	if err != nil || addr.Address != email {
+	if !isValidEmailAddress(email) {
 		return false
 	}
 	at := strings.LastIndex(email, "@")

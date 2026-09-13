@@ -73,6 +73,48 @@ func clearOtherPrimaryContacts(tx *gorm.DB, companyID uint, exceptID uint) error
 		Update("is_primary", false).Error
 }
 
+// validateContactForm runs every check ContactHandler.Create and Update
+// share — required name (and, on Create, company_id — Update allows
+// company_id=0 to mean "keep the current Company", so requireCompanyID is
+// false there), email/phone format, active role_title, and status
+// normalization.
+//
+// Returns utils.ErrHandled (see its doc) if invalid — the caller should
+// `return nil`, not `return err`, exactly like every other validateX helper
+// in this codebase (see validateDealRequiredFields, deals.go).
+func validateContactForm(c *fiber.Ctx, db *gorm.DB, form contactForm, requireCompanyID bool) (models.ActiveArchivedStatus, error) {
+	if requireCompanyID {
+		if form.Name == "" || form.CompanyID == 0 {
+			_ = utils.ValidationError(c, "company_id and name are required", map[string][]string{
+				"company_id": {"required"},
+				"name":       {"required"},
+			})
+			return "", utils.ErrHandled
+		}
+	} else if form.Name == "" {
+		_ = utils.ValidationError(c, "name is required", map[string][]string{"name": {"required"}})
+		return "", utils.ErrHandled
+	}
+	if !utils.IsValidEmail(form.Email) {
+		_ = utils.ValidationError(c, "email is not a valid email address", map[string][]string{"email": {"invalid"}})
+		return "", utils.ErrHandled
+	}
+	if !utils.IsValidPhone(form.Phone) {
+		_ = utils.ValidationError(c, "phone is not a valid phone number", map[string][]string{"phone": {"invalid"}})
+		return "", utils.ErrHandled
+	}
+	if !utils.IsActiveJobTitle(db, form.RoleTitle) {
+		_ = utils.ValidationError(c, "role_title is not a valid active job title", map[string][]string{"role_title": {"invalid"}})
+		return "", utils.ErrHandled
+	}
+	status, ok := normalizeActiveArchivedStatus(form.Status)
+	if !ok {
+		_ = utils.ValidationError(c, "status must be active or archived", map[string][]string{"status": {"invalid"}})
+		return "", utils.ErrHandled
+	}
+	return status, nil
+}
+
 // Create godoc
 // @Summary Create a contact
 // @Description Creates a Contact. company_id and name are required; role_title must match an active configured job title (see /admin/job-titles).
@@ -89,24 +131,15 @@ func (h *ContactHandler) Create(c *fiber.Ctx) error {
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
-	if form.Name == "" || form.CompanyID == 0 {
-		return utils.ValidationError(c, "company_id and name are required", map[string][]string{
-			"company_id": {"required"},
-			"name":       {"required"},
-		})
-	}
-	if !utils.IsActiveJobTitle(h.DB, form.RoleTitle) {
-		return utils.ValidationError(c, "role_title is not a valid active job title", map[string][]string{"role_title": {"invalid"}})
-	}
-	status, ok := normalizeActiveArchivedStatus(form.Status)
-	if !ok {
-		return utils.ValidationError(c, "status must be active or archived", map[string][]string{"status": {"invalid"}})
+	status, err := validateContactForm(c, h.DB, form, true)
+	if err != nil {
+		return nil
 	}
 
 	actorID := middleware.CurrentUserID(c)
 	contact := models.Contact{
 		CompanyID: form.CompanyID, Name: form.Name, Email: form.Email, Phone: form.Phone,
-		RoleTitle: form.RoleTitle, Tags: pq.StringArray(form.Tags),
+		RoleTitle: form.RoleTitle, Tags: pq.StringArray(normalizeTags(form.Tags)),
 		Status: status, IsPrimary: form.IsPrimary,
 	}
 	if contact.Status == "" {
@@ -114,7 +147,7 @@ func (h *ContactHandler) Create(c *fiber.Ctx) error {
 	}
 	contact.CreatedBy = &actorID
 	contact.UpdatedBy = &actorID
-	err := h.DB.Transaction(func(tx *gorm.DB) error {
+	err = h.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&contact).Error; err != nil {
 			return err
 		}
@@ -170,19 +203,16 @@ func (h *ContactHandler) Update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
-	if !utils.IsActiveJobTitle(h.DB, form.RoleTitle) {
-		return utils.ValidationError(c, "role_title is not a valid active job title", map[string][]string{"role_title": {"invalid"}})
-	}
-	status, ok := normalizeActiveArchivedStatus(form.Status)
-	if !ok {
-		return utils.ValidationError(c, "status must be active or archived", map[string][]string{"status": {"invalid"}})
+	status, err := validateContactForm(c, h.DB, form, false)
+	if err != nil {
+		return nil
 	}
 
 	if form.CompanyID != 0 {
 		contact.CompanyID = form.CompanyID
 	}
 	contact.Name, contact.Email, contact.Phone, contact.RoleTitle = form.Name, form.Email, form.Phone, form.RoleTitle
-	contact.Tags = pq.StringArray(form.Tags)
+	contact.Tags = pq.StringArray(normalizeTags(form.Tags))
 	if status != "" {
 		contact.Status = status
 	}
@@ -190,7 +220,7 @@ func (h *ContactHandler) Update(c *fiber.Ctx) error {
 	actorID := middleware.CurrentUserID(c)
 	contact.UpdatedBy = &actorID
 
-	err := h.DB.Transaction(func(tx *gorm.DB) error {
+	err = h.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(&contact).Error; err != nil {
 			return err
 		}

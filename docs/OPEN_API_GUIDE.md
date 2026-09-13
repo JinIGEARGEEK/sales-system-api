@@ -2,6 +2,8 @@
 
 A guide for external/partner integrations that need to create, read, or update **Company** and **Contact** records without a staff login. If you're working inside this repo on the main resource API instead, see [`biz_spec/api-system-spec.md`](../biz_spec/api-system-spec.md) — this document only covers the `/open/*` routes and the `/admin/api-keys` credentials that unlock them (§8.9 there).
 
+This CRM is meant to be the **source of truth** for Company/Contact data across our internal systems — several of them create, update, and read the same customer/contact records here. Two things follow from that, both covered in detail below: every Create is deduped by website domain so the same real-world company never ends up as two rows (§7's `409 Conflict`), and every Create supports an `Idempotency-Key` header so a retried call can't accidentally create a duplicate either (§8).
+
 ---
 
 ## 1. How it works
@@ -9,6 +11,7 @@ A guide for external/partner integrations that need to create, read, or update *
 - Every call is authenticated with an **API key** sent in the `X-API-Key` header — not the `Authorization: Bearer <JWT>` staff login flow used elsewhere in this API.
 - A key **acts as** one specific staff user (its "owner"). Anything you create or update through the Open API is attributed to that person (`created_by`/`updated_by`), exactly as if they'd made the change themselves.
 - Only two resources are exposed this way — **Company** and **Contact** — and only four operations: **list, create, get, update**. There is no delete, trash, or bulk endpoint on the Open API, regardless of what the owner's own staff account could otherwise do.
+- **A key can read/write every Company and Contact in the system, not just ones its owner created.** There's no per-key or per-owner data partition — if you issue keys to more than one external partner, each one can see and modify every other partner's records too. Plan key issuance accordingly (§2) if that matters for your integration.
 - Only an **Admin** can issue or revoke keys (§2 below). If you're an external integrator, get your key from whoever administers this CRM for your organization — you cannot self-serve one.
 
 ## 2. Getting a key (Admin only)
@@ -79,6 +82,15 @@ Authorization: Bearer <admin's JWT>
 
 Revoking sets `is_active: false` and records `revoked_at`/`revoked_by` — the row (and its history) is kept, not deleted. Same effect as clicking **Revoke** on that key's row in the UI table.
 
+**See a key's write history** (Admin only — who/what changed via this specific key, distinct from `/audit-log`'s per-*owner* view since one owner can hold several keys):
+
+```
+GET /api/v1/admin/api-keys/3/logs
+Authorization: Bearer <admin's JWT>
+```
+
+Returns a paginated list of this key's `POST`/`PUT` calls against `/open/companies` and `/open/contacts` — method, path, resource type/id, status code, timestamp. Read-only (`GET`) calls aren't logged.
+
 ## 3. Authenticating your requests
 
 Send your key on every Open API call:
@@ -102,13 +114,35 @@ X-API-Key: sk_live_<REDACTED-64-HEX-CHARS-SHOWN-ONLY-ONCE-HERE>
 {"error":{"code":"TOO_MANY_REQUESTS","message":"Too many requests — try again shortly"}}
 ```
 
-The limit is per-key, not per source IP — safe to call from a shared egress IP (a server, a serverless function pool, etc.) without one integration's traffic capping another's.
+The limit is per-key (keyed on the authenticated key's own id, not the raw header text), not per source IP — safe to call from a shared egress IP (a server, a serverless function pool, etc.) without one integration's traffic capping another's. Authentication is checked *before* the rate limit, so an invalid/unknown key is always rejected with `401` rather than ever counting against (or being limited by) anyone's `300`/minute budget.
 
-## 5. Companies
+## 5. Discovering valid option values
+
+`size`, `revenue_size`, and `role_title` (§6/§7 below) must each match one of this account's admin-configured active options — and since those are tuned per-deployment, don't hardcode the seeded defaults shown later in this doc as if they were fixed. Rather than asking an Admin out of band every time the list changes, read them straight from the API:
+
+```
+GET /api/v1/open/options
+X-API-Key: sk_live_...
+```
+
+```json
+{
+  "data": {
+    "industries": ["Education", "Finance", "Healthcare", "Manufacturing", "Retail", "Technology"],
+    "sizes": ["1-10", "11-50", "51-200", "201-500", "501-1000", "1000+"],
+    "revenue_sizes": ["< 1M THB", "1M - 5M THB", "5M - 20M THB", "20M - 100M THB", "100M+ THB"],
+    "job_titles": ["CEO", "Director", "Manager", "Owner", "Staff", "Other"]
+  }
+}
+```
+
+`industries` is shown for reference only — `industry` is free text (§6) and any value is still accepted, auto-registering itself as a new option if it isn't one of these already. `sizes`/`revenue_sizes`/`job_titles` are strictly enforced: a Create/Update with a value not in this list is rejected (§9's `422`).
+
+## 6. Companies
 
 ### `GET /api/v1/open/companies` — List
 
-Supports the same filters as the staff-facing list: `status`, `tag`, `industry`, `search` (matches name), `stale_days`, `has_won_deal`, `sort` (`created_at`/`name`/`industry`, prefix `-` for descending), `page`, `per_page`.
+Supports the same filters as the staff-facing list: `status`, `tag`, `industry`, `search` (matches name), `stale_days`, `has_won_deal`, `sort` (`created_at`/`name`/`industry`, prefix `-` for descending), `page`, `per_page`. `status`, `tag`, and `industry` all match case-insensitively (`?status=ACTIVE` and `?status=active` behave identically).
 
 ```
 GET /api/v1/open/companies?search=acme&status=active
@@ -161,21 +195,21 @@ Content-Type: application/json
 }
 ```
 
-Every field below is a **JSON string** unless noted otherwise — `tags` is an array of strings, and `legal_name`/`address`/`tax_id` additionally accept explicit `null`. Sending the wrong JSON type (a number for `revenue_size`, an object for `tags`, etc.) fails to parse at all and returns `400 Bad Request` — see [§7](#7-error-reference) — not the `422` used for a missing/invalid value.
+Every field below is a **JSON string** unless noted otherwise — `tags` is an array of strings, and `legal_name`/`address`/`tax_id` additionally accept explicit `null`. Sending the wrong JSON type (a number for `revenue_size`, an object for `tags`, etc.) fails to parse at all and returns `400 Bad Request` — see [§9](#9-error-reference) — not the `422` used for a missing/invalid value.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `name` | string | ✅ | |
-| `industry` | string | | Free text — a new value is auto-registered rather than rejected. Seeded defaults: `Technology`, `Retail`, `Manufacturing`, `Healthcare`, `Finance`, `Education`. |
-| `size` | string | | Must exactly match (case-sensitive) one of this account's active company-size options — a label, never a number. Seeded defaults: `"1-10"`, `"11-50"`, `"51-200"`, `"201-500"`, `"501-1000"`, `"1000+"`. Confirm the live list with your Admin (`GET /admin/company-sizes`, staff login required) since these are admin-configurable and may have been changed. Omit if unsure. |
-| `revenue_size` | string | | Same rules as `size`, against `/admin/revenue-sizes`. Seeded defaults: `"< 1M THB"`, `"1M - 5M THB"`, `"5M - 20M THB"`, `"20M - 100M THB"`, `"100M+ THB"`. **Common mistake:** sending a number (e.g. `3`) or a bare numeric string instead of one of these labels — that's a type/value mismatch, not a valid shorthand. |
-| `website` | string | | |
-| `tags` | string[] | | e.g. `["vip", "renewed"]`. |
+| `industry` | string | | Free text, matched case-insensitively on `?industry=` — a new value (in any casing) is auto-registered rather than rejected. See §5 for the current list. |
+| `website` | string | | A lenient domain/URL check — "not a website", empty text, or similar obvious garbage is rejected (`422`); real-world quirky-but-valid domains are not. **Deduped**: Create/Update reject (`409 Conflict`) a website whose domain already belongs to a different Company — see §8. |
+| `tags` | string[] | | e.g. `["vip", "renewed"]`. Normalized on write (trimmed, lowercased, de-duplicated) and matched case-insensitively on `?tag=` — sending `"VIP"` and `"vip"` on different calls results in one stored tag, not two. |
+| `size` | string | | Must exactly match one of this account's active company-size options — see §5 for the current list. |
+| `revenue_size` | string | | Same rule as `size` — see §5. **Common mistake:** sending a number (e.g. `3`) or a bare numeric string instead of one of the label strings §5 returns — that's a type/value mismatch, not a valid shorthand. |
 | `notes` | string | | |
-| `status` | string | | `"active"` or `"archived"` (case/whitespace-insensitive on read; normalized to lowercase on write); defaults to `active`. |
+| `status` | string | | `"active"` or `"archived"`, matched/stored case-insensitively (`"Active"` is accepted and normalized to `"active"`); defaults to `active`. |
 | `legal_name`, `address`, `tax_id` | string \| null | | Used on Contract PDF exports if present. |
 
-`201 Created` returns the new Company (same shape as List's rows, minus `last_activity_at`). A missing `name`, or a `size`/`revenue_size` that doesn't match an active option, returns `422 Unprocessable Entity` with a `fields` map naming the offending key. A field sent as the wrong JSON type returns `400 Bad Request` instead — see [§7](#7-error-reference).
+`201 Created` returns the new Company (same shape as List's rows, minus `last_activity_at`). `422 Unprocessable Entity` for a missing `name`, an invalid `website`, or a `size`/`revenue_size`/`status` that doesn't match an active option/allowed value. `409 Conflict` if the website's domain already belongs to a different Company (§8). `400 Bad Request` for a field sent as the wrong JSON type — see [§9](#9-error-reference).
 
 ### `GET /api/v1/open/companies/:id` — Get
 
@@ -188,7 +222,7 @@ X-API-Key: sk_live_...
 
 ### `PUT /api/v1/open/companies/:id` — Update
 
-Same body shape as Create. **Almost every field is replaced outright — an omitted field is cleared, not left unchanged.** `status` is the one exception: omit it (or send `""`) and the existing status is kept, since an empty string is never a valid status to set. Everything else (`name`, `industry`, `size`, `revenue_size`, `website`, `tags`, `notes`, `legal_name`, `address`, `tax_id`) follows the general rule — resend the current value for anything you don't intend to blank out.
+Same body shape and validation as Create (`name` is required here too — an update can't blank it out). **Almost every field is replaced outright — an omitted field is cleared, not left unchanged.** `status` is the one exception: omit it (or send `""`) and the existing status is kept, since an empty string is never a valid status to set. Everything else (`name`, `industry`, `size`, `revenue_size`, `website`, `tags`, `notes`, `legal_name`, `address`, `tax_id`) follows the general rule — resend the current value for anything you don't intend to blank out. Changing `website` to a domain already used by a *different* Company gets the same `409 Conflict` Create does (§8) — changing it back to the Company's own current domain is fine.
 
 ```
 PUT /api/v1/open/companies/42
@@ -207,11 +241,11 @@ Content-Type: application/json
 }
 ```
 
-## 6. Contacts
+## 7. Contacts
 
 ### `GET /api/v1/open/contacts` — List
 
-Filters: `company_id`, `status`, `tag`, `search` (name/email), `sort` (`created_at`/`name`/`email`/`company_name`), `page`, `per_page`.
+Filters: `company_id`, `status`, `tag`, `search` (name/email), `sort` (`created_at`/`name`/`email`/`company_name`), `page`, `per_page`. `status` and `tag` match case-insensitively, same as Companies.
 
 ```
 GET /api/v1/open/contacts?company_id=42
@@ -258,19 +292,20 @@ Content-Type: application/json
 }
 ```
 
-Every field is a **JSON string** except `company_id` (integer), `tags` (array of strings), and `is_primary` (boolean) — see [§5's note on wrong-type requests](#5-companies).
+Every field is a **JSON string** except `company_id` (integer), `tags` (array of strings), and `is_primary` (boolean) — see [§6's note on wrong-type requests](#6-companies).
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `company_id` | integer | ✅ | Must reference an existing Company's numeric `id` — not a string, not the company name. |
 | `name` | string | ✅ | |
-| `email`, `phone` | string | | |
-| `tags` | string[] | | |
-| `role_title` | string | | Must exactly match (case-sensitive) an active job-title option. Seeded defaults: `Owner`, `CEO`, `Director`, `Manager`, `Staff`, `Other`. Ask your Admin for the live list (`GET /admin/job-titles`, staff login required) — these are admin-configurable. Omit if unsure. |
-| `status` | string | | `"active"` or `"archived"` (case/whitespace-insensitive on read; normalized to lowercase on write); defaults to `active`. |
+| `email` | string | | A lenient email-format check (`someone@somewhere.tld`) — empty is fine, garbage is rejected (`422`). |
+| `phone` | string | | A lenient check — digits, spaces, `+`, `-`, `(`, `)`, 6-20 chars; empty is fine. |
+| `tags` | string[] | | Normalized/matched the same way as Company tags (§6). |
+| `role_title` | string | | Must exactly match one of this account's active job-title options — see §5 for the current list. |
+| `status` | string | | `"active"` or `"archived"`, matched/stored case-insensitively; defaults to `active`. |
 | `is_primary` | boolean | | `true`/`false` JSON boolean. At most one Contact per Company can be primary — setting this on one automatically un-sets it on any other Contact of the same Company. |
 
-`201 Created` on success; `422` if `company_id`/`name` is missing or `role_title` doesn't match an active option. A field sent as the wrong JSON type (a string for `company_id`, a number for `is_primary`, etc.) returns `400 Bad Request` instead.
+`201 Created` on success. `422` if `company_id`/`name` is missing, `email`/`phone` isn't a valid format, or `role_title`/`status` doesn't match an active option/allowed value. `400 Bad Request` for a field sent as the wrong JSON type (a string for `company_id`, a number for `is_primary`, etc.).
 
 ### `GET /api/v1/open/contacts/:id` — Get
 
@@ -281,7 +316,7 @@ X-API-Key: sk_live_...
 
 ### `PUT /api/v1/open/contacts/:id` — Update
 
-Same general rule as Company Update (an omitted field is cleared, not preserved), with **two exceptions** worth calling out explicitly:
+Same body shape and validation as Create (`name` is required here too), with the same general rule as Company Update (an omitted field is cleared, not preserved) and **two exceptions** worth calling out explicitly:
 
 - `company_id` — omit it (or send `0`) and the Contact keeps its current Company; it cannot be blanked out this way.
 - `status` — same as Company: omit it (or send `""`) and the current status is kept.
@@ -303,7 +338,41 @@ Content-Type: application/json
 }
 ```
 
-## 7. Error reference
+## 8. Avoiding duplicates (idempotent retries + domain dedupe)
+
+This CRM is the source of truth other internal systems sync Company/Contact data through, so an accidental duplicate isn't just clutter here — it propagates to everything reading from it. Two independent safeguards:
+
+### 8a. `Idempotency-Key` — safe retries
+
+A network timeout or a dropped response leaves you not knowing whether your `POST` actually went through. Send an `Idempotency-Key` header (any string you generate — a UUID per logical operation is typical) on `POST /open/companies` or `POST /open/contacts`, and retrying with the *same* key + the *same* request body replays the original response instead of creating a second row:
+
+```
+POST /api/v1/open/companies
+X-API-Key: sk_live_...
+Idempotency-Key: 6b1b6e6a-2f7a-4b3e-9c1a-7e8f2a1b9c3d
+Content-Type: application/json
+
+{ "name": "Acme Corp" }
+```
+
+- **Same key, same body, retried** → the original `201` (or `422`/etc.) response is returned again verbatim; no new row is created.
+- **Same key, a DIFFERENT body** → `409 Conflict` — you've reused a key for two different requests, which is rejected outright rather than silently picking one.
+- **A request with that key still in flight** (you fired two copies at once) → `409 Conflict` on whichever one loses the race, rather than both proceeding.
+- **No `Idempotency-Key` header at all** → works exactly as before this existed; it's opt-in.
+
+Idempotency keys are scoped per API key and stay valid for replay for 24 hours after the original attempt — a truly new call should use a fresh key value (don't reuse one across unrelated operations).
+
+### 8b. Domain dedupe on Company Create/Update
+
+Independent of idempotency keys: `POST /open/companies` (and `PUT` when changing `website`) checks whether the website's domain already belongs to a *different*, existing Company — `https://acme.com`, `http://www.acme.com/about`, and `acme.com` all normalize to the same domain. If it does, you get `409 Conflict` naming the existing Company's id instead of a second row being silently created:
+
+```json
+{ "error": { "code": "CONFLICT", "message": "A company with this website already exists (id 42, \"Acme Corp\")" } }
+```
+
+On a `409` here, `GET`/`PUT` the existing id rather than retrying Create — that's almost certainly the same real-world company your system already has under a different name/spelling. A Company with no `website` (or one whose domain doesn't already exist elsewhere) is unaffected.
+
+## 9. Error reference
 
 Every error follows the same envelope:
 
@@ -311,7 +380,7 @@ Every error follows the same envelope:
 { "error": { "code": "VALIDATION_ERROR", "message": "name is required", "fields": { "name": ["required"] } } }
 ```
 
-`fields` is only present on `422` responses. A `400` (wrong JSON type / unparseable body) looks like this instead — no `fields` map, and the message doesn't name the offending field, so double-check every field's type against §5/§6 when you see it:
+`fields` is only present on `422` responses. A `400` (wrong JSON type / unparseable body) looks like this instead — no `fields` map, and the message doesn't name the offending field, so double-check every field's type against §6/§7 when you see it:
 
 ```json
 { "error": { "code": "BAD_REQUEST", "message": "Invalid request body" } }
@@ -319,39 +388,49 @@ Every error follows the same envelope:
 
 | Status | `code` | When |
 |---|---|---|
-| 400 | `BAD_REQUEST` | Request body isn't valid JSON, or a field's JSON type doesn't match what's expected (e.g. `revenue_size` sent as a number instead of a string, `company_id` sent as a string instead of a number, `tags` sent as a single string instead of an array). This happens *before* any field-level validation runs, so the response has no `fields` map — check every field's type against the tables in [§5](#5-companies)/[§6](#6-contacts). |
+| 400 | `BAD_REQUEST` | Request body isn't valid JSON, or a field's JSON type doesn't match what's expected (e.g. `revenue_size` sent as a number instead of a string, `company_id` sent as a string instead of a number, `tags` sent as a single string instead of an array). This happens *before* any field-level validation runs, so the response has no `fields` map — check every field's type against the tables in [§6](#6-companies)/[§7](#7-contacts). |
 | 401 | `UNAUTHORIZED` | Missing/invalid/revoked API key |
 | 404 | `NOT_FOUND` | Company/Contact id doesn't exist |
-| 422 | `VALIDATION_ERROR` | Missing required field, invalid `status`, or `size`/`revenue_size`/`role_title` isn't an active option |
+| 409 | `CONFLICT` | A Company's website domain already belongs to a different Company (§8b); or an `Idempotency-Key` was reused with a different body, or while its original request is still in flight (§8a) |
+| 422 | `VALIDATION_ERROR` | Missing required field, invalid `website`/`email`/`phone` format, invalid `status`, or `size`/`revenue_size`/`role_title` isn't an active option |
 | 429 | `TOO_MANY_REQUESTS` | Over 300 requests/minute on this key |
-| 500 | `INTERNAL_ERROR` | Unexpected server error — safe to retry |
+| 500 | `INTERNAL_ERROR` | Unexpected server error — safe to retry (pair with an `Idempotency-Key`, §8a, on a Create so a retry after a `500` can't double-create) |
 
-## 8. Quick start (curl)
+## 10. Quick start (curl)
 
 ```sh
 API_KEY="sk_live_..."
 BASE="https://<your-domain>/api/v1"
 
-# Create a Company
+# See what size/revenue_size/role_title/industry values are currently valid
+curl -sS "$BASE/open/options" -H "X-API-Key: $API_KEY"
+
+# Create a Company (Idempotency-Key makes this retry-safe)
 curl -sS -X POST "$BASE/open/companies" \
   -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $(uuidgen)" \
   -d '{"name":"Acme Corp","industry":"Retail"}'
 
 # Create a Contact under it
 curl -sS -X POST "$BASE/open/contacts" \
   -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $(uuidgen)" \
   -d '{"company_id":42,"name":"Jane Doe","email":"jane@acme.example.com"}'
 
 # Look one up
 curl -sS "$BASE/open/companies/42" -H "X-API-Key: $API_KEY"
 ```
 
-## 9. FAQ
+## 11. FAQ
 
 **Can I delete a Company/Contact through this API?** No — Open API scope is create/read/update only. Ask an Admin to do it through the staff app.
 
-**Can my key see other resources (Deals, Leads, …)?** No — only `/open/companies` and `/open/contacts` accept `X-API-Key`; every other route still requires the staff Bearer-JWT login.
+**Can my key see other resources (Deals, Leads, …)?** No — only `/open/companies`, `/open/contacts`, and `/open/options` accept `X-API-Key`; every other route still requires the staff Bearer-JWT login.
+
+**Can my key see/modify records another integration created?** Yes — see §1: there's no per-key data partition. Every key can read and write every Company/Contact regardless of who (or which key) created it.
 
 **What happens if the staff user my key acts as gets deactivated?** The key stops working immediately (within the 30s cache window) — reactivate that user or point the key at a different `owner_user_id` (issue a new key; a key's owner can't be changed after creation).
 
 **Is there a sandbox/test key?** Not currently — every key acts against the same live data as the staff app it's paired with.
+
+**How do I tell which requests came from a given key?** `GET /admin/api-keys/:id/logs` (Admin, staff login — §2) lists that key's write history.

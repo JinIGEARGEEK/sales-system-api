@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -97,6 +98,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	settingsH := handlers.NewSettingsHandler(db, cfg)
 	salesTargetH := handlers.NewSalesTargetHandler(db)
 	apiKeyH := handlers.NewAPIKeyHandler(db)
+	openOptionsH := handlers.NewOpenOptionsHandler(db)
 
 	// /swagger/index.html — browsable OpenAPI docs generated from handler
 	// annotations (see docs.JSON's own doc for the regen command). Currently
@@ -185,27 +187,51 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// integration calls legitimately come from one shared egress IP) so one
 	// runaway/misconfigured integration can't exhaust capacity shared with
 	// every other key or the staff-facing API.
+	//
+	// Keyed on the validated API-key ID (CurrentAPIKeyID), not the raw
+	// X-API-Key header value — and RequireAPIKey now runs BEFORE this
+	// limiter, not after: an unauthenticated caller spraying garbage/random
+	// key values would otherwise each mint their own distinct rate-limit
+	// bucket (the raw header string) before ever being rejected, an
+	// unbounded-memory-growth vector the limiter's own storage has no
+	// defense against. Running auth first means every invalid key is
+	// rejected with a 401 before it ever reaches the limiter at all; the one
+	// case CurrentAPIKeyID can still come back unset (which never actually
+	// happens given this ordering) falls back to the raw header so the
+	// limiter still has *something* to key on rather than panicking.
 	openLimiter := limiter.New(limiter.Config{
 		Max:        300,
 		Expiration: 1 * time.Minute,
 		KeyGenerator: func(c *fiber.Ctx) string {
+			if keyID, ok := middleware.CurrentAPIKeyID(c); ok {
+				return strconv.FormatUint(uint64(keyID), 10)
+			}
 			return c.Get("X-API-Key")
 		},
 		LimitReached: func(c *fiber.Ctx) error {
 			return utils.ErrorResponse(c, fiber.StatusTooManyRequests, "TOO_MANY_REQUESTS", "Too many requests — try again shortly")
 		},
 	})
-	open := api.Group("/open", openLimiter, middleware.RequireAPIKey(db))
+	open := api.Group("/open", middleware.RequireAPIKey(db), openLimiter, middleware.LogOpenAPIWrites(db))
+
+	open.Get("/options", openOptionsH.List)
+
+	// Idempotency-Key support (middleware.RequireIdempotency) is only wired
+	// onto Create — the endpoint where a client retrying a timed-out call
+	// risks a duplicate Company/Contact; List/Get/Update have no such risk
+	// (a re-sent Update just re-applies the same full-replace it always
+	// would).
+	idempotency := middleware.RequireIdempotency(db)
 
 	openCompanies := open.Group("/companies")
 	openCompanies.Get("/", companyH.List)
-	openCompanies.Post("/", companyH.Create)
+	openCompanies.Post("/", idempotency, companyH.Create)
 	openCompanies.Get("/:id", companyH.Get)
 	openCompanies.Put("/:id", companyH.Update)
 
 	openContacts := open.Group("/contacts")
 	openContacts.Get("/", contactH.List)
-	openContacts.Post("/", contactH.Create)
+	openContacts.Post("/", idempotency, contactH.Create)
 	openContacts.Get("/:id", contactH.Get)
 	openContacts.Put("/:id", contactH.Update)
 
@@ -612,6 +638,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	apiKeys.Get("/", apiKeyH.List)
 	apiKeys.Post("/", apiKeyH.Create)
 	apiKeys.Post("/:id/revoke", apiKeyH.Revoke)
+	apiKeys.Get("/:id/logs", apiKeyH.Logs)
 
 	// Dashboard
 	authed.Get("/dashboard/summary", dashboardH.Summary)

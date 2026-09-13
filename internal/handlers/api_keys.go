@@ -132,3 +132,32 @@ func (h *APIKeyHandler) Revoke(c *fiber.Ctx) error {
 	middleware.InvalidateAPIKeyCache(key.KeyHash)
 	return utils.NoContent(c)
 }
+
+// Logs godoc
+// @Summary List a key's Open API write history (Admin only)
+// @Description Returns this key's POST/PUT calls against /open/companies and /open/contacts (see models.OpenAPIRequestLog) — distinct from /audit-log, whose actor is the key's owner USER (several keys can share one owner), so this is the only place "which specific integration made this change" is answerable.
+// @Tags admin
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "API key ID"
+// @Success 200 {object} map[string]interface{} "Paginated request-log list (data, page, per_page, total)"
+// @Failure 404 {object} map[string]interface{} "API key not found"
+// @Router /admin/api-keys/{id}/logs [get]
+func (h *APIKeyHandler) Logs(c *fiber.Ctx) error {
+	var key models.APIKey
+	if err := h.DB.First(&key, c.Params("id")).Error; err != nil {
+		return utils.NotFound(c, "API key not found")
+	}
+
+	page, perPage, offset := utils.Pagination(c)
+	query := h.DB.Model(&models.OpenAPIRequestLog{}).Where("api_key_id = ?", key.ID)
+
+	var total int64
+	query.Count(&total)
+
+	var logs []models.OpenAPIRequestLog
+	if err := query.Order("created_at DESC").Limit(perPage).Offset(offset).Find(&logs).Error; err != nil {
+		return utils.Internal(c, "Failed to list API key logs")
+	}
+	return utils.List(c, logs, page, perPage, total)
+}
