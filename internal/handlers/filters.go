@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -18,6 +19,18 @@ import (
 // cover website like List's did) — a filter added to one silently wouldn't
 // apply to the other. Single source of truth per resource fixes that for good.
 
+// tagFilter matches a row whose Tags array contains v, case-insensitively.
+// Lowercasing v (rather than unnest+LOWER()-ing every row's tags) is what
+// keeps this a plain `= ANY(tags)` lookup — usable by the GIN tags index —
+// instead of a per-row scan; it's safe because normalizeTags (companies.go)
+// already lowercases every tag at write time, and database.go's
+// backfillLowercaseTags normalized every pre-existing row the same way.
+// Shared by applyCompanyFilters and applyContactFilters, which both store
+// Tags the same way (pq.StringArray).
+func tagFilter(query *gorm.DB, v string) *gorm.DB {
+	return query.Where("? = ANY(tags)", strings.ToLower(v))
+}
+
 // applyCompanyFilters applies status/industry/tag/search filters shared by
 // CompanyHandler.List and ExportHandler.Companies.
 func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
@@ -29,10 +42,15 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 		query = query.Where("LOWER(status) = LOWER(?)", v)
 	}
 	if v := c.Query("industry"); v != "" {
-		query = query.Where("industry = ?", v)
+		// Case-insensitive: industry is free text that auto-registers
+		// whatever casing it's typed with (utils.EnsureActiveIndustry), so
+		// "Tech" and "tech" can both exist on stored rows even though
+		// they're meant to be the same industry. Backed by an expression
+		// index (database.go) since this can't use industry's plain index.
+		query = query.Where("LOWER(industry) = LOWER(?)", v)
 	}
 	if v := c.Query("tag"); v != "" {
-		query = query.Where("? = ANY(tags)", v)
+		query = tagFilter(query, v)
 	}
 	if v := c.Query("search"); v != "" {
 		like := "%" + v + "%"
@@ -82,7 +100,7 @@ func applyContactFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 		query = query.Where("LOWER(status) = LOWER(?)", v)
 	}
 	if v := c.Query("tag"); v != "" {
-		query = query.Where("? = ANY(tags)", v)
+		query = tagFilter(query, v)
 	}
 	if v := c.Query("search"); v != "" {
 		like := "%" + v + "%"

@@ -3,6 +3,7 @@ package database
 import (
 	"errors"
 	"fmt"
+	"log"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -98,12 +99,25 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.ForecastSnapshot{},
 		&models.QuoteTemplate{},
 		&models.APIKey{},
+		&models.IdempotencyKey{},
+		&models.OpenAPIRequestLog{},
 	); err != nil {
 		return err
 	}
 
 	if err := backfillCompanyDomains(db); err != nil {
 		return err
+	}
+	// Must run after backfillCompanyDomains — it needs Domain already
+	// populated on every pre-existing row to check for real conflicts.
+	if err := ensureCompanyDomainUniqueIndex(db); err != nil {
+		return err
+	}
+	if err := backfillLowercaseTags(db); err != nil {
+		return err
+	}
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_companies_industry_lower ON companies (LOWER(industry))`).Error; err != nil {
+		return fmt.Errorf("create companies industry lower index: %w", err)
 	}
 
 	// Lead.CompanyID (FK) replaces the old free-text CompanyName column —
@@ -139,6 +153,52 @@ func backfillCompanyDomains(db *gorm.DB) error {
 		if err := db.Model(&models.Company{}).Where("id = ?", co.ID).Update("domain", domain).Error; err != nil {
 			return fmt.Errorf("backfill domain for company %d: %w", co.ID, err)
 		}
+	}
+	return nil
+}
+
+// ensureCompanyDomainUniqueIndex backs conflictingCompanyDomain's app-level
+// pre-check (companies.go) with a real DB constraint — that check alone is a
+// check-then-act race: two concurrent Creates for the same domain can both
+// pass it before either commits. This partial unique index (excluding blank
+// domains and soft-deleted rows) is what actually makes the second one fail,
+// which Create/Update then turn back into the same friendly 409.
+//
+// Not fatal if it can't be created: a deployment with real pre-existing
+// duplicate domains (from before this feature existed) would fail the index
+// creation outright, and that's a data problem for a human to resolve (merge
+// or clear one side), not something that should block the whole app from
+// starting. Logged so it isn't silently unenforced.
+func ensureCompanyDomainUniqueIndex(db *gorm.DB) error {
+	err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_domain_unique
+		ON companies (domain) WHERE domain <> '' AND deleted_at IS NULL
+	`).Error
+	if err != nil {
+		log.Printf("database: could not create unique company domain index (likely pre-existing duplicate domains — needs manual cleanup): %v", err)
+	}
+	return nil
+}
+
+// backfillLowercaseTags normalizes every pre-existing Company/Contact Tags
+// array to lowercase/trimmed/deduplicated — the same normalization
+// normalizeTags (handlers/companies.go) now applies on every Create/Update —
+// so the case-insensitive `?tag=` filter (handlers/filters.go's tagFilter)
+// can stay a plain `= ANY(tags)` lookup the GIN tags index can serve,
+// instead of an unnest+LOWER() scan needed to also cover not-yet-normalized
+// legacy rows. Idempotent and cheap to re-run on an already-normalized row.
+func backfillLowercaseTags(db *gorm.DB) error {
+	if err := db.Exec(`
+		UPDATE companies SET tags = ARRAY(SELECT DISTINCT LOWER(TRIM(t)) FROM unnest(tags) t WHERE TRIM(t) <> '')
+		WHERE tags IS NOT NULL AND array_length(tags, 1) > 0
+	`).Error; err != nil {
+		return fmt.Errorf("backfill lowercase company tags: %w", err)
+	}
+	if err := db.Exec(`
+		UPDATE contacts SET tags = ARRAY(SELECT DISTINCT LOWER(TRIM(t)) FROM unnest(tags) t WHERE TRIM(t) <> '')
+		WHERE tags IS NOT NULL AND array_length(tags, 1) > 0
+	`).Error; err != nil {
+		return fmt.Errorf("backfill lowercase contact tags: %w", err)
 	}
 	return nil
 }

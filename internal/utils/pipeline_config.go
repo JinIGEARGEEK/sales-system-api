@@ -93,9 +93,22 @@ func EnsureActiveIndustry(db *gorm.DB, name string) error {
 	return nil
 }
 
+// findIndustryOption matches case/whitespace-insensitively (LOWER(TRIM(...)))
+// so "Tech", "tech", and " Tech " all resolve to the same option rather than
+// each silently registering its own near-duplicate row — the same
+// normalization already used by the Lead.CompanyID backfill in database.go.
+//
+// This is deliberately NOT the same rule IsActiveCompanySize/
+// IsActiveRevenueSize/IsActiveJobTitle below use (plain case-sensitive
+// `name = ?`): industry is free text that self-registers whatever's typed
+// (EnsureActiveIndustry), so case-insensitivity here just stops that from
+// silently forking near-duplicate options. Size/revenue_size/role_title are
+// closed, admin-curated enums instead — a value either matches one of the
+// options exactly or it's rejected, so there's no equivalent "typed it
+// slightly differently" case for those to guard against.
 func findIndustryOption(db *gorm.DB, name string) (*models.IndustryOption, error) {
 	var opt models.IndustryOption
-	err := db.Where("name = ?", name).First(&opt).Error
+	err := db.Where("LOWER(TRIM(name)) = LOWER(TRIM(?))", name).First(&opt).Error
 	if err == gorm.ErrRecordNotFound {
 		return nil, nil
 	}
@@ -107,6 +120,8 @@ func findIndustryOption(db *gorm.DB, name string) (*models.IndustryOption, error
 
 // IsActiveCompanySize reports whether name matches an active
 // CompanySizeOption row. Empty name is allowed through — Size is optional.
+// Case-sensitive exact match, unlike findIndustryOption above — see its doc
+// for why the two option-lookup styles intentionally differ.
 func IsActiveCompanySize(db *gorm.DB, name string) bool {
 	if name == "" {
 		return true

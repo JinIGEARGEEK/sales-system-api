@@ -64,6 +64,21 @@ func resetAPIKeyCacheForTests() {
 
 const apiKeyHeader = "X-API-Key"
 
+// LocalAPIKeyID is the c.Locals key RequireAPIKey stamps with the
+// authenticated APIKey's own ID (distinct from LocalUserID, which is the
+// key's owner — several keys can share one owner). Used by
+// RequireIdempotency to scope idempotency keys per API key, and by
+// openLimiter (routes.go) to rate-limit by the validated key rather than the
+// raw header value.
+const LocalAPIKeyID = "api_key_id"
+
+// CurrentAPIKeyID reads LocalAPIKeyID, returning false if unset (e.g. a
+// request that never went through RequireAPIKey).
+func CurrentAPIKeyID(c *fiber.Ctx) (uint, bool) {
+	id, ok := c.Locals(LocalAPIKeyID).(uint)
+	return id, ok
+}
+
 // RequireAPIKey authenticates the /open/* integration routes (routes.Setup)
 // against models.APIKey instead of the staff Bearer-JWT flow RequireAuth
 // enforces — a server-to-server caller has no user session to log in as.
@@ -125,6 +140,7 @@ func RequireAPIKey(db *gorm.DB) fiber.Handler {
 
 		c.Locals(LocalUserID, state.ownerUserID)
 		c.Locals(LocalRole, state.ownerRole)
+		c.Locals(LocalAPIKeyID, state.keyID)
 		return c.Next()
 	}
 }

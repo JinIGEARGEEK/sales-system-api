@@ -45,6 +45,14 @@ const TestPassword = "password123!"
 // in FK-safe order doesn't matter because of CASCADE, but kept aligned for clarity.
 var tables = []string{
 	"api_keys",
+	// idempotency_keys/open_api_request_logs are both scoped by api_key_id,
+	// which gets its identity reset along with every other truncated table
+	// below — leaving these two out would let a leftover idempotency_keys
+	// row from an earlier test collide with api_key_id=1 (say) reused by a
+	// later, unrelated test, tripping its uniqueIndex on (api_key_id, key)
+	// for a key value ("retry-1", say) that test never actually reused.
+	"idempotency_keys",
+	"open_api_request_logs",
 	"attachments",
 	"audit_log_entries",
 	// notification_logs/notification_rules — added alongside the dormant-
