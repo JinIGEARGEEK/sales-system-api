@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/utils"
 	"gorm.io/gorm"
 
 	"github.com/igeargeek/sales-system-api/internal/models"
@@ -42,11 +43,18 @@ func LogOpenAPIWrites(db *gorm.DB) fiber.Handler {
 
 		keyID, _ := CurrentAPIKeyID(c)
 		ownerID := CurrentUserID(c)
+		// Method/Path are zero-copy strings backed by fasthttp's request
+		// buffer (see fiber.Ctx.Method/Path) — that buffer gets reused for
+		// the next request on this connection as soon as this handler
+		// returns, so it must be copied before it can be read from the
+		// goroutine below, which outlives the request. Everything else on
+		// entry is already a plain value (ints, or strings derived from
+		// switch/strconv/json.Unmarshal, none of which alias the buffer).
 		entry := models.OpenAPIRequestLog{
 			APIKeyID:     keyID,
 			OwnerUserID:  ownerID,
-			Method:       method,
-			Path:         c.Path(),
+			Method:       utils.CopyString(method),
+			Path:         utils.CopyString(c.Path()),
 			ResourceType: openAPIResourceType(c.Path()),
 			ResourceID:   openAPIResourceID(c),
 			StatusCode:   c.Response().StatusCode(),
