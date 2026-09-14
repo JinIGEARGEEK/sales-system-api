@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/igeargeek/sales-system-api/internal/models"
+	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
 // This file centralizes the query-param filter logic shared between each
@@ -182,4 +183,49 @@ func applyProjectFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 		query = query.Where("company_id = ?", v)
 	}
 	return query
+}
+
+// applyLeadLikeFilters applies the status/source/assigned_to/company_id/
+// search/exclude_converted filter block shared by LeadHandler.List and
+// ProspectHandler.List — both resources have an identical filter shape;
+// only the table name (needed for the company_id column-qualification and
+// the Company-name join/sort helpers below) and the "already converted"
+// column name differ between them. Returns the query plus whether a Company
+// join is needed for sort (see utils.ApplyNullableCompanySearch) — the
+// caller still has to apply the final ORDER BY itself since that differs
+// slightly by needsCompanyJoin.
+func applyLeadLikeFilters(query *gorm.DB, c *fiber.Ctx, table, excludeConvertedColumn string) (*gorm.DB, bool, string) {
+	// Every filter column here is qualified with table (not just company_id,
+	// which already was) — status in particular collides with Company's own
+	// `status` column: utils.ApplyNullableCompanySearch below LEFT JOINs
+	// companies whenever search or a company_name sort is in play, and an
+	// unqualified `status = ?` alongside that join is ambiguous to Postgres
+	// ("column reference \"status\" is ambiguous") wherever both happen to
+	// be requested on the same call (e.g. `?status=New&search=acme`) —
+	// crashing that request with a 500 rather than a bug isolated to sort.
+	// source/assigned_to don't actually collide with any companies column
+	// today, but qualifying them the same way is free and avoids the same
+	// class of bug if that ever changes.
+	if v := c.Query("status"); v != "" {
+		query = query.Where(table+".status = ?", v)
+	}
+	if v := c.Query("source"); v != "" {
+		query = query.Where(table+".source = ?", v)
+	}
+	if v := c.Query("assigned_to"); v == "unassigned" {
+		query = query.Where(table + ".assigned_to IS NULL")
+	} else if v != "" {
+		query = query.Where(table+".assigned_to = ?", v)
+	}
+	if v := c.Query("company_id"); v != "" {
+		query = query.Where(table+".company_id = ?", v)
+	}
+
+	sortField := strings.TrimPrefix(c.Query("sort"), "-")
+	search := c.Query("search")
+	query, needsCompanyJoin := utils.ApplyNullableCompanySearch(query, table, sortField, search)
+	if c.Query("exclude_converted") == "true" {
+		query = query.Where(table + "." + excludeConvertedColumn + " IS NULL")
+	}
+	return query, needsCompanyJoin, sortField
 }

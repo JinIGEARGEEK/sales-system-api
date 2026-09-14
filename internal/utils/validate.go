@@ -8,27 +8,18 @@ var (
 )
 
 // IsValidWebsiteDomain checks an already-extracted domain (utils.ExtractDomain)
-// against websiteHostPattern — split out from IsValidWebsite so a caller that
-// needs the domain anyway (CompanyHandler, which stores it in Company.Domain)
-// can extract it once and validate that same value, instead of paying for
-// ExtractDomain's parsing twice per request.
+// against websiteHostPattern. Takes the domain rather than the raw
+// Website/URL string so CompanyHandler — which needs the extracted domain
+// anyway, to store in Company.Domain — can extract it once and validate that
+// same value, instead of paying for ExtractDomain's parsing twice per
+// request. Deliberately not a strict RFC 1034 validator — the goal is
+// catching "not a website" typos (blank text, half-pasted strings), not
+// bouncing valid-but-unusual real-world domains. Doesn't itself treat an
+// empty domain as valid (an empty string never matches websiteHostPattern);
+// CompanyHandler only calls this when form.Website != "" in the first place,
+// so an optional/omitted website never reaches here at all.
 func IsValidWebsiteDomain(domain string) bool {
 	return websiteHostPattern.MatchString(domain)
-}
-
-// IsValidWebsite is a lenient format check for Company.Website — empty is
-// valid (the field is optional). It reuses ExtractDomain's own scheme/path
-// stripping (domain.go) so "acme.com", "www.acme.com", and
-// "https://acme.com/about" are all judged the same way, and only rejects the
-// result if it doesn't look like a real host at all (no dot, spaces, or
-// other garbage). Deliberately not a strict RFC 1034 validator — the goal is
-// catching "not a website" typos (blank text, half-pasted strings), not
-// bouncing valid-but-unusual real-world domains.
-func IsValidWebsite(v string) bool {
-	if v == "" {
-		return true
-	}
-	return IsValidWebsiteDomain(ExtractDomain(v))
 }
 
 // IsValidEmail is a lenient format check for Contact.Email — empty is valid

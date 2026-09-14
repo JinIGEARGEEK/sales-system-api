@@ -14,7 +14,14 @@ import (
 // apiKeyCacheTTL mirrors authCacheTTL's tradeoff (authcache.go) — a revoked
 // key or deactivated owner keeps working for up to this long on instances
 // that already cached it, in exchange for not hitting Postgres on every
-// external call.
+// external call. This cache is per-process (sync.Map below), and revoke
+// (InvalidateAPIKeyCache) only clears the calling process's own copy — in a
+// horizontally-scaled deployment (more than one API instance behind a load
+// balancer), a revoked key can keep authenticating successfully against any
+// *other* instance for up to this long, not just the one that served the
+// revoke request. A single-instance deployment (this app's only deployment
+// target today, per routes.go's clientIP comment) never sees this gap at
+// all — flagged here for whoever scales this out later, not as a live bug.
 const apiKeyCacheTTL = 30 * time.Second
 
 // apiKeyState is the per-key data RequireAPIKey needs, keyed by KeyHash so a
@@ -131,7 +138,9 @@ func RequireAPIKey(db *gorm.DB) fiber.Handler {
 			// apiKeyCacheTTL is enough. Best-effort: an error here shouldn't
 			// fail (or measurably slow down) the caller's actual request.
 			if state.valid {
-				go db.Model(&models.APIKey{}).Where("id = ?", row.ID).Update("last_used_at", time.Now())
+				utils.SafeGo(func() {
+					db.Model(&models.APIKey{}).Where("id = ?", row.ID).Update("last_used_at", time.Now())
+				})
 			}
 		}
 		if !state.valid {

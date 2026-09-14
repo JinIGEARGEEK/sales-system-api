@@ -1,10 +1,40 @@
 package utils
 
 import (
+	"fmt"
+
+	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
 	"github.com/igeargeek/sales-system-api/internal/models"
 )
+
+// MaxBulkIDs caps how many ids a single bulk-operation request (BulkReassign/
+// BulkTag/BulkArchive/BulkMarkDone/...) may include in one call. BulkUpdate
+// runs the whole batch inside one transaction, three statements per id (load,
+// save/delete, audit-log write) — with no cap, a client posting a very large
+// id list would hold that transaction (and its row locks) open for a long
+// time, blocking other writers on the same rows. A caller with more ids to
+// update than this should split the operation across multiple requests.
+const MaxBulkIDs = 500
+
+// ValidateBulkIDCount writes the appropriate 422 and returns false if ids is
+// empty or exceeds MaxBulkIDs — the two checks every bulk-operation handler
+// in this codebase performs before calling BulkUpdate. Callers should
+// `return nil` immediately when this returns false, same convention as every
+// other ValidationError-writing helper (e.g. validateExternalEmail).
+func ValidateBulkIDCount(c *fiber.Ctx, ids []uint) bool {
+	if len(ids) == 0 {
+		_ = ValidationError(c, "ids is required", map[string][]string{"ids": {"required"}})
+		return false
+	}
+	if len(ids) > MaxBulkIDs {
+		msg := fmt.Sprintf("must not exceed %d ids in one request", MaxBulkIDs)
+		_ = ValidationError(c, "too many ids in one request", map[string][]string{"ids": {msg}})
+		return false
+	}
+	return true
+}
 
 // BulkUpdate runs one transaction that loads each id in ids, hands the loaded
 // row (and the same tx, so DB ops stay atomic) to apply, then writes one

@@ -164,13 +164,21 @@ type taskBulkIDsForm struct {
 // uses for a single task — not restricted to Admin/Sales Manager like
 // Deals'/Leads' bulk endpoints, since a Sales Rep bulk-marking their own
 // backlog done is the primary use case for a personal task list.
+//
+// Deliberately NOT built on bulk_ops.go's bulkReassignEntity/bulkTagEntity/
+// bulkArchiveEntity generic helpers (unlike Deal/Lead/Prospect's own bulk
+// endpoints) — this one, and BulkReassign below, need a per-row CanWrite
+// ownership check inside the loop that those three don't (their routes are
+// already Admin/Sales-Manager-gated, so CanWrite there is always true — see
+// bulkRoles in routes.go); forcing this one through the same generic shape
+// would mean threading an extra accessor just for this resource.
 func (h *TaskHandler) BulkMarkDone(c *fiber.Ctx) error {
 	var form taskBulkIDsForm
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
-	if len(form.IDs) == 0 {
-		return utils.ValidationError(c, "ids is required", map[string][]string{"ids": {"required"}})
+	if !utils.ValidateBulkIDCount(c, form.IDs) {
+		return nil
 	}
 
 	actorID := middleware.CurrentUserID(c)
@@ -208,8 +216,8 @@ func (h *TaskHandler) BulkReassign(c *fiber.Ctx) error {
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
-	if len(form.IDs) == 0 {
-		return utils.ValidationError(c, "ids is required", map[string][]string{"ids": {"required"}})
+	if !utils.ValidateBulkIDCount(c, form.IDs) {
+		return nil
 	}
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a task to another sales rep")
@@ -235,7 +243,13 @@ func (h *TaskHandler) BulkReassign(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
-// Delete — DELETE /tasks/:id (hard delete).
+// Delete — DELETE /tasks/:id. A genuine hard delete (models.Task embeds
+// HardDeleteModel, not AuditedModel) — deliberately, unlike every other
+// resource in this codebase (Lead/Prospect/Deal/Company/Contact/User), which
+// all soft-delete with a Trash/Restore pair. Tasks are ephemeral, per-rep
+// to-dos rather than a business record anyone needs an audit trail or
+// recovery path for, so there's no Trash/Restore here to bring it in line
+// with those — this is the intended shape, not an oversight.
 func (h *TaskHandler) Delete(c *fiber.Ctx) error {
 	var task models.Task
 	if err := h.DB.First(&task, c.Params("id")).Error; err != nil {

@@ -162,17 +162,18 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 		return c.SendStream(f)
 	})
 
-	// Open API — external/integration access to Company and Contact, the two
-	// resources partner systems most commonly need to sync (CRM/marketing
-	// tool sources of truth). Authenticated by X-API-Key (RequireAPIKey)
-	// instead of the staff Bearer-JWT flow `authed` below, since a
-	// server-to-server caller has no user session to log in as; the key acts
-	// as its configured owner_user_id, so these reuse the exact same
-	// CompanyHandler/ContactHandler methods `authed`'s own /companies and
-	// /contacts groups use (same validation, same created_by/updated_by
-	// attribution) rather than duplicating that logic. Deliberately excludes
-	// Delete/Trash/Restore/bulk endpoints and every other resource — spec'd
-	// scope is Company/Contact create/update/read only.
+	// Open API — external/integration access to Company, Contact, Project,
+	// Product, Prospect, and Lead — the resources partner systems most
+	// commonly need to sync (CRM/marketing tool sources of truth, plus the
+	// pipeline entities feeding them). Authenticated by X-API-Key
+	// (RequireAPIKey) instead of the staff Bearer-JWT flow `authed` below,
+	// since a server-to-server caller has no user session to log in as; the
+	// key acts as its configured owner_user_id, so these reuse the exact same
+	// handler methods `authed`'s own resource groups use (same validation,
+	// same created_by/updated_by attribution, same CanWrite ownership rules
+	// for Prospect/Lead) rather than duplicating that logic. Deliberately
+	// excludes Delete/Trash/Restore/bulk/Convert endpoints and every other
+	// resource — scope is create/update/read only.
 	//
 	// Registered BEFORE `authed` below rather than alongside it: `authed :=
 	// api.Group("", middleware.RequireAuth(...), ...)` registers those
@@ -234,6 +235,42 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	openContacts.Post("/", idempotency, contactH.Create)
 	openContacts.Get("/:id", contactH.Get)
 	openContacts.Put("/:id", contactH.Update)
+
+	// Projects — List/Update are the same handler methods the staff-facing
+	// /projects routes use; Create is a dedicated CreateOpen (company_id in
+	// the body instead of a path segment, since there's no company-scoped
+	// nesting here). Update is PATCH, matching ProjectHandler.Update's own
+	// partial-update semantics (not a full-replace PUT like Company/Contact).
+	openProjects := open.Group("/projects")
+	openProjects.Get("/", projectH.List)
+	openProjects.Post("/", idempotency, projectH.CreateOpen)
+	openProjects.Get("/:id", projectH.Get)
+	openProjects.Patch("/:id", projectH.Update)
+
+	// Products — List/Create/Update are already top-level (not
+	// company-nested), so these reuse the exact same ProductHandler methods
+	// the staff-facing /products routes use, same as Company/Contact above.
+	openProducts := open.Group("/products")
+	openProducts.Get("/", productH.List)
+	openProducts.Post("/", idempotency, productH.Create)
+	openProducts.Get("/:id", productH.Get)
+	openProducts.Patch("/:id", productH.Update)
+
+	// Prospects — full List/Create/Get/Update already exist top-level;
+	// reused as-is (same CanWrite ownership rule the staff /prospects routes
+	// enforce, evaluated against the API key's owner_user_id/role).
+	openProspects := open.Group("/prospects")
+	openProspects.Get("/", prospectH.List)
+	openProspects.Post("/", idempotency, prospectH.Create)
+	openProspects.Get("/:id", prospectH.Get)
+	openProspects.Put("/:id", prospectH.Update)
+
+	// Leads — same treatment as Prospects above.
+	openLeads := open.Group("/leads")
+	openLeads.Get("/", leadH.List)
+	openLeads.Post("/", idempotency, leadH.Create)
+	openLeads.Get("/:id", leadH.Get)
+	openLeads.Put("/:id", leadH.Update)
 
 	authed := api.Group("", middleware.RequireAuth(cfg, db), middleware.RequirePasswordChanged(db))
 

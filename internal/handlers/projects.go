@@ -37,6 +37,24 @@ func (h *ProjectHandler) ListForCompany(c *fiber.Ctx) error {
 	return utils.OK(c, projects)
 }
 
+// Get godoc
+// @Summary Get a project by ID
+// @Description Returns a single Project by ID. Used by the Open API (GET /open/projects/:id) as well as any future top-level staff route.
+// @Tags projects
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "Project ID"
+// @Success 200 {object} models.Project
+// @Failure 404 {object} map[string]interface{} "Project not found"
+// @Router /projects/{id} [get]
+func (h *ProjectHandler) Get(c *fiber.Ctx) error {
+	var project models.Project
+	if err := h.DB.First(&project, c.Params("id")).Error; err != nil {
+		return utils.NotFound(c, "Project not found")
+	}
+	return utils.OK(c, project)
+}
+
 type projectWithCompany struct {
 	models.Project
 	CompanyName string `json:"company_name"`
@@ -127,9 +145,16 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 		return utils.ValidationError(c, "name is required", map[string][]string{"name": {"required"}})
 	}
 
-	actorID := middleware.CurrentUserID(c)
+	return h.saveNewProject(c, newProjectFromForm(form, company.ID))
+}
+
+// newProjectFromForm builds a models.Project for companyID from a
+// projectForm, applying Create's own defaults (start_date -> now, status ->
+// "Not Started") — shared by Create (companyId from the path) and CreateOpen
+// (company_id from the body) so the two don't drift.
+func newProjectFromForm(form projectForm, companyID uint) models.Project {
 	project := models.Project{
-		CompanyID: company.ID, DealID: form.DealID, Name: form.Name, Status: form.Status,
+		CompanyID: companyID, DealID: form.DealID, Name: form.Name, Status: form.Status,
 		TargetEndDate: form.TargetEndDate, ProductionReference: form.ProductionReference, Notes: form.Notes,
 		ExpectedProposalDate: form.ExpectedProposalDate, ExpectedStartDate: form.ExpectedStartDate,
 	}
@@ -141,12 +166,60 @@ func (h *ProjectHandler) Create(c *fiber.Ctx) error {
 	if project.Status == "" {
 		project.Status = models.ProjectStatusNotStarted
 	}
+	return project
+}
+
+// saveNewProject stamps created_by/updated_by and persists project, writing
+// the standard Created/Internal response — shared by Create and CreateOpen.
+func (h *ProjectHandler) saveNewProject(c *fiber.Ctx, project models.Project) error {
+	actorID := middleware.CurrentUserID(c)
 	project.CreatedBy = &actorID
 	project.UpdatedBy = &actorID
 	if err := h.DB.Create(&project).Error; err != nil {
 		return utils.Internal(c, "Failed to create project")
 	}
 	return utils.Created(c, project)
+}
+
+// openProjectForm is projectForm plus company_id — the Open API has no
+// company-scoped path segment (unlike the staff-facing nested
+// POST /companies/:companyId/projects) so the target Company is named in the
+// body instead.
+type openProjectForm struct {
+	CompanyID uint `json:"company_id"`
+	projectForm
+}
+
+// CreateOpen godoc
+// @Summary Create a project (Open API)
+// @Description Creates a Project for a Company via the Open API. Unlike the staff-facing POST /companies/{companyId}/projects, company_id is supplied in the request body rather than the path. start_date defaults to now and status defaults to "Not Started" when omitted.
+// @Tags projects
+// @Security ApiKeyAuth
+// @Accept json
+// @Produce json
+// @Param body body openProjectForm true "Project fields, including company_id"
+// @Success 201 {object} models.Project
+// @Failure 400 {object} map[string]interface{} "Invalid body"
+// @Failure 404 {object} map[string]interface{} "Company not found"
+// @Failure 422 {object} map[string]interface{} "Missing name or company_id"
+// @Router /open/projects [post]
+func (h *ProjectHandler) CreateOpen(c *fiber.Ctx) error {
+	var form openProjectForm
+	if err := c.BodyParser(&form); err != nil {
+		return utils.BadRequest(c, "Invalid request body")
+	}
+	if form.CompanyID == 0 {
+		return utils.ValidationError(c, "company_id is required", map[string][]string{"company_id": {"required"}})
+	}
+	var company models.Company
+	if err := h.DB.First(&company, form.CompanyID).Error; err != nil {
+		return utils.NotFound(c, "Company not found")
+	}
+	if form.Name == "" {
+		return utils.ValidationError(c, "name is required", map[string][]string{"name": {"required"}})
+	}
+
+	return h.saveNewProject(c, newProjectFromForm(form.projectForm, company.ID))
 }
 
 // productionFieldForm is the field set Production may touch — §8.3/§1.7.

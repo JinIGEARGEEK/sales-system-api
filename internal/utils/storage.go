@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,38 @@ var allowedUploadExts = map[string]bool{
 	".doc": true, ".docx": true, ".xls": true, ".xlsx": true, ".csv": true,
 }
 
+// allowedContentTypesByExt maps each allowed extension to the sniffed
+// content types (via http.DetectContentType against the file's first bytes)
+// it's permitted to actually contain — closing the gap where the extension
+// check above trusts the filename alone. Without this, a caller could
+// rename a disallowed file (HTML, SVG, ...) to a permitted extension to
+// slip past allowedUploadExts; since /uploads (routes.go) serves the file
+// back with Content-Disposition: attachment (forcing a download rather than
+// inline rendering), the practical risk this closes is narrower than a
+// stored-XSS render, but it still stops a caller from stashing arbitrary
+// (and mislabeled) content behind a trusted-looking extension.
+//
+// Deliberately not stricter than this: Go's stdlib sniffer has no OOXML- or
+// legacy-CFB-specific signature, so .docx/.xlsx (zip-based) and .doc/.xls
+// (binary OLE) all fall back to a generic "could be any binary blob" result
+// (application/zip or application/octet-stream) that's allowed through here
+// rather than rejected — validating further into those container formats
+// would need a dedicated library this codebase doesn't otherwise depend on.
+// What this DOES catch: an HTML/SVG/script payload (or a plain-text file)
+// renamed to any of these extensions, and an image renamed to a document
+// extension or vice versa.
+var allowedContentTypesByExt = map[string]map[string]bool{
+	".pdf":  {"application/pdf": true},
+	".png":  {"image/png": true},
+	".jpg":  {"image/jpeg": true},
+	".jpeg": {"image/jpeg": true},
+	".doc":  {"application/octet-stream": true, "application/x-cfb": true},
+	".xls":  {"application/octet-stream": true, "application/x-cfb": true},
+	".docx": {"application/zip": true, "application/octet-stream": true},
+	".xlsx": {"application/zip": true, "application/octet-stream": true},
+	".csv":  {"application/octet-stream": true, "text/plain; charset=utf-8": true},
+}
+
 // Storage abstracts where uploaded files (Quote PDFs, signed Contracts,
 // Attachments) actually live — see biz_spec/s3-migration-plan.md for why:
 // local disk on a stateless container platform is wiped on every redeploy
@@ -69,7 +102,45 @@ func validateUpload(fh *multipart.FileHeader) (ext string, err error) {
 	if !allowedUploadExts[ext] {
 		return "", ErrUnsupportedFileType
 	}
+	if err := validateContentSniff(fh, ext); err != nil {
+		return "", err
+	}
 	return ext, nil
+}
+
+// validateContentSniff rejects a file whose actual bytes (sniffed via
+// http.DetectContentType, the same algorithm net/http uses to guess a
+// response's Content-Type) don't match what ext claims to be — see
+// allowedContentTypesByExt's own doc for exactly what this does and doesn't
+// catch. The client-supplied fh.Header's Content-Type is never trusted for
+// this; it's attacker-controlled the same as the filename/extension.
+func validateContentSniff(fh *multipart.FileHeader, ext string) error {
+	// validateUpload only ever calls this after confirming ext is a key of
+	// allowedUploadExts, which allowedContentTypesByExt mirrors exactly —
+	// so allowed is never the nil map from a missing key in practice. If
+	// that precondition were ever violated, failing closed (nil map's zero
+	// value makes every sniffed type "not allowed" below) is the safe
+	// direction to get it wrong in, not silently skipping the check.
+	allowed := allowedContentTypesByExt[ext]
+	src, err := fh.Open()
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	// http.DetectContentType only ever looks at (up to) the first 512
+	// bytes — reading less than that (a small file) is fine, and
+	// io.ReadFull's ErrUnexpectedEOF/EOF for a short read just means "sniff
+	// on however many bytes the file actually has."
+	buf := make([]byte, 512)
+	n, err := io.ReadFull(src, buf)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if !allowed[http.DetectContentType(buf[:n])] {
+		return ErrUnsupportedFileType
+	}
+	return nil
 }
 
 func newUploadKey(ext string) string {

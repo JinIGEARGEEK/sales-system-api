@@ -75,6 +75,8 @@ func (h *NotificationLogHandler) List(c *fiber.Ctx) error {
 		}
 	}
 
+	resolved := h.resolveEntities(logs, ruleByID)
+
 	rows := []notificationFiringRow{}
 	for _, l := range logs {
 		if len(rows) >= notificationLogListLimit {
@@ -85,38 +87,30 @@ func (h *NotificationLogHandler) List(c *fiber.Ctx) error {
 			continue // rule since deleted — DELETE on NotificationRule is soft (is_active), so this shouldn't happen, but don't crash on it
 		}
 
-		if rule.EntityType == models.NotificationEntityProspect {
-			var prospect models.Prospect
-			if err := h.DB.First(&prospect, l.EntityID).Error; err != nil {
-				continue // entity since deleted
-			}
-			if !CanWrite(c, prospect.AssignedTo) {
+		switch rule.EntityType {
+		case models.NotificationEntityProspect:
+			prospect, ok := resolved.prospects[l.EntityID]
+			if !ok || !CanWrite(c, prospect.AssignedTo) {
 				continue
 			}
 			rows = append(rows, notificationFiringRow{
 				ID: l.ID, RuleName: rule.Name, EntityType: string(rule.EntityType),
 				ProspectID: prospect.ID, ProspectName: prospect.Name, NotifiedAt: l.NotifiedAt,
 			})
-			continue
-		}
 
-		if rule.EntityType == models.NotificationEntityCompany {
-			var company models.Company
-			if err := h.DB.First(&company, l.EntityID).Error; err != nil {
-				continue // entity since deleted
+		case models.NotificationEntityCompany:
+			company, ok := resolved.companies[l.EntityID]
+			if !ok {
+				continue
 			}
 			// Same most-recent-Deal-owner resolution as
 			// checkCompanyDormantRule (internal/notifier/workflow_rules.go) —
-			// nil when the Company has no Deals at all. Passed straight into
-			// CanWrite unchanged, exactly like resolveDeal's deal.AssignedTo
-			// below (which is also nilable for an unassigned Deal) —
-			// CanWrite's existing assignedTo == nil rule already governs
-			// that case identically, no special-casing needed here.
-			var ownerID *uint
-			var mostRecentDeal models.Deal
-			if err := h.DB.Where("company_id = ?", company.ID).Order("created_at DESC").First(&mostRecentDeal).Error; err == nil {
-				ownerID = mostRecentDeal.AssignedTo
-			}
+			// nil when the Company has no Deals at all (resolved.companyDealOwner
+			// simply has no entry). Passed straight into CanWrite unchanged,
+			// exactly like a Deal's own AssignedTo below (also nilable for an
+			// unassigned Deal) — CanWrite's existing assignedTo == nil rule
+			// already governs that case identically, no special-casing needed.
+			ownerID := resolved.companyDealOwner[company.ID]
 			if !CanWrite(c, ownerID) {
 				continue
 			}
@@ -124,54 +118,173 @@ func (h *NotificationLogHandler) List(c *fiber.Ctx) error {
 				ID: l.ID, RuleName: rule.Name, EntityType: string(rule.EntityType),
 				CompanyID: company.ID, CompanyName: company.Name, NotifiedAt: l.NotifiedAt,
 			})
-			continue
-		}
 
-		deal, ok := h.resolveDeal(rule.EntityType, l.EntityID)
-		if !ok {
-			continue // entity since deleted
+		default:
+			deal, ok := resolved.dealFor(rule.EntityType, l.EntityID)
+			if !ok || !CanWrite(c, deal.AssignedTo) {
+				continue
+			}
+			rows = append(rows, notificationFiringRow{
+				ID: l.ID, RuleName: rule.Name, EntityType: string(rule.EntityType),
+				DealID: deal.ID, DealTitle: deal.Title, NotifiedAt: l.NotifiedAt,
+			})
 		}
-		if !CanWrite(c, deal.AssignedTo) {
-			continue
-		}
-		rows = append(rows, notificationFiringRow{
-			ID: l.ID, RuleName: rule.Name, EntityType: string(rule.EntityType),
-			DealID: deal.ID, DealTitle: deal.Title, NotifiedAt: l.NotifiedAt,
-		})
 	}
 	return utils.OK(c, rows)
 }
 
-// resolveDeal resolves a NotificationRule's firing (a Deal, Quote, or
-// Contract id depending on EntityType) down to the Deal it belongs to —
-// Quote/Contract firings both need one extra hop via DealID, same as
-// checkQuoteExpiringRule/checkContractStuckRule in
-// internal/notifier/workflow_rules.go.
-func (h *NotificationLogHandler) resolveDeal(entityType models.NotificationEntityType, entityID uint) (models.Deal, bool) {
-	var deal models.Deal
+// resolvedEntities holds every entity List's row-building loop needs,
+// batch-loaded once up front instead of one query per log row (the previous
+// approach could issue 200-400+ queries for a single request — up to two
+// sequential lookups per row, times up to 200 over-fetched rows). ownerID for
+// each Deal/Quote/Contract firing is resolved by id lookup in dealFor;
+// Quote/Contract rows are pre-resolved down to their owning Deal ID during
+// resolveEntities so dealFor is a single map read, no query.
+type resolvedEntities struct {
+	prospects         map[uint]models.Prospect
+	companies         map[uint]models.Company
+	companyDealOwner  map[uint]*uint // company id -> most recent Deal's AssignedTo
+	deals             map[uint]models.Deal
+	dealIDForQuote    map[uint]uint // quote id -> deal id
+	dealIDForContract map[uint]uint // contract id -> deal id
+}
+
+// dealFor resolves a NotificationRule firing (a Deal, Quote, or Contract id
+// depending on entityType) down to the Deal it belongs to, purely from the
+// maps resolveEntities already populated — Quote/Contract firings both need
+// one extra hop via their own DealID, same logical resolution
+// checkQuoteExpiringRule/checkContractStuckRule (internal/notifier/
+// workflow_rules.go) perform, just pre-batched instead of per-row.
+func (r resolvedEntities) dealFor(entityType models.NotificationEntityType, entityID uint) (models.Deal, bool) {
 	switch entityType {
 	case models.NotificationEntityDeal:
-		if err := h.DB.First(&deal, entityID).Error; err != nil {
-			return models.Deal{}, false
-		}
+		deal, ok := r.deals[entityID]
+		return deal, ok
 	case models.NotificationEntityQuote:
-		var quote models.Quote
-		if err := h.DB.First(&quote, entityID).Error; err != nil {
+		dealID, ok := r.dealIDForQuote[entityID]
+		if !ok {
 			return models.Deal{}, false
 		}
-		if err := h.DB.First(&deal, quote.DealID).Error; err != nil {
-			return models.Deal{}, false
-		}
+		deal, ok := r.deals[dealID]
+		return deal, ok
 	case models.NotificationEntityContract:
-		var contract models.Contract
-		if err := h.DB.First(&contract, entityID).Error; err != nil {
+		dealID, ok := r.dealIDForContract[entityID]
+		if !ok {
 			return models.Deal{}, false
 		}
-		if err := h.DB.First(&deal, contract.DealID).Error; err != nil {
-			return models.Deal{}, false
-		}
+		deal, ok := r.deals[dealID]
+		return deal, ok
 	default:
 		return models.Deal{}, false
 	}
-	return deal, true
+}
+
+// dealIDsFor batch-loads T by id (via one `IN (...)` query, or none at all
+// if ids is empty) and returns id -> DealID via getIDAndDealID — the shared
+// "resolve down to the owning Deal ID" shape behind Quote/Contract in
+// resolveEntities below, which otherwise differ only by model type.
+func dealIDsFor[T any](db *gorm.DB, ids []uint, getIDAndDealID func(T) (id, dealID uint)) map[uint]uint {
+	out := map[uint]uint{}
+	if len(ids) == 0 {
+		return out
+	}
+	var rows []T
+	db.Where("id IN ?", ids).Find(&rows)
+	for _, row := range rows {
+		id, dealID := getIDAndDealID(row)
+		out[id] = dealID
+	}
+	return out
+}
+
+// resolveEntities batch-loads every Prospect/Company/Deal/Quote/Contract
+// List's row-building loop will need, grouped by rule.EntityType, so the loop
+// itself does zero further queries.
+func (h *NotificationLogHandler) resolveEntities(logs []models.NotificationLog, ruleByID map[uint]models.NotificationRule) resolvedEntities {
+	var prospectIDs, companyIDs, dealIDs, quoteIDs, contractIDs []uint
+	for _, l := range logs {
+		rule, ok := ruleByID[l.RuleID]
+		if !ok {
+			continue
+		}
+		switch rule.EntityType {
+		case models.NotificationEntityProspect:
+			prospectIDs = append(prospectIDs, l.EntityID)
+		case models.NotificationEntityCompany:
+			companyIDs = append(companyIDs, l.EntityID)
+		case models.NotificationEntityDeal:
+			dealIDs = append(dealIDs, l.EntityID)
+		case models.NotificationEntityQuote:
+			quoteIDs = append(quoteIDs, l.EntityID)
+		case models.NotificationEntityContract:
+			contractIDs = append(contractIDs, l.EntityID)
+		}
+	}
+
+	resolved := resolvedEntities{
+		prospects:        map[uint]models.Prospect{},
+		companies:        map[uint]models.Company{},
+		companyDealOwner: map[uint]*uint{},
+		deals:            map[uint]models.Deal{},
+		// dealIDForQuote/dealIDForContract are assigned below via
+		// dealIDsFor, which returns a non-nil map (empty when there's
+		// nothing to resolve) — no need to pre-initialize them here too.
+	}
+
+	if len(prospectIDs) > 0 {
+		var prospects []models.Prospect
+		h.DB.Where("id IN ?", prospectIDs).Find(&prospects)
+		for _, p := range prospects {
+			resolved.prospects[p.ID] = p
+		}
+	}
+
+	if len(companyIDs) > 0 {
+		var companies []models.Company
+		h.DB.Where("id IN ?", companyIDs).Find(&companies)
+		for _, co := range companies {
+			resolved.companies[co.ID] = co
+		}
+
+		// One query for "most recent Deal per Company" across every Company
+		// firing at once (ordered so the first row seen per company_id is the
+		// newest, since Go map assignment below only keeps the first),
+		// replacing what used to be a separate `ORDER BY created_at DESC
+		// LIMIT 1` query per Company row. `id DESC` breaks a created_at tie
+		// (e.g. Deals bulk-imported/seeded in the same transaction, so their
+		// timestamps are identical) the same deterministic way the old
+		// per-Company query already did — Postgres' own row order for equal
+		// ORDER BY keys isn't otherwise guaranteed to stay stable between
+		// this batched query and that one.
+		var recentDeals []models.Deal
+		h.DB.Where("company_id IN ?", companyIDs).Order("company_id, created_at DESC, id DESC").Find(&recentDeals)
+		for _, d := range recentDeals {
+			if _, seen := resolved.companyDealOwner[d.CompanyID]; !seen {
+				resolved.companyDealOwner[d.CompanyID] = d.AssignedTo
+			}
+		}
+	}
+
+	// Quote/Contract both resolve down to their owning Deal via one extra
+	// id hop (Quote.DealID/Contract.DealID) — dealIDsFor shares that "batch-
+	// load by id, extract a DealID per row" shape between them instead of
+	// two near-identical copies of the same loop.
+	resolved.dealIDForQuote = dealIDsFor(h.DB, quoteIDs, func(q models.Quote) (uint, uint) { return q.ID, q.DealID })
+	resolved.dealIDForContract = dealIDsFor(h.DB, contractIDs, func(ct models.Contract) (uint, uint) { return ct.ID, ct.DealID })
+	for _, dealID := range resolved.dealIDForQuote {
+		dealIDs = append(dealIDs, dealID)
+	}
+	for _, dealID := range resolved.dealIDForContract {
+		dealIDs = append(dealIDs, dealID)
+	}
+
+	if len(dealIDs) > 0 {
+		var deals []models.Deal
+		h.DB.Where("id IN ?", dealIDs).Find(&deals)
+		for _, d := range deals {
+			resolved.deals[d.ID] = d
+		}
+	}
+
+	return resolved
 }

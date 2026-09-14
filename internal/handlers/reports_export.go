@@ -47,7 +47,7 @@ func (h *ReportHandler) LeadSourceConversionExport(c *fiber.Ctx) error {
 	header := []string{"Source", "Total Leads", "Qualified", "Conversion Rate (%)"}
 	return streamCSV(c, "lead-source-conversion.csv", header, func(w *csv.Writer) error {
 		for _, r := range rows {
-			if err := w.Write([]string{
+			if err := writeCSVRow(w, []string{
 				string(r.Source), strconv.FormatInt(r.Total, 10), strconv.FormatInt(r.Qualified, 10),
 				strconv.FormatFloat(r.ConversionRate, 'f', 1, 64),
 			}); err != nil {
@@ -78,7 +78,7 @@ func (h *ReportHandler) ProspectSourceConversionExport(c *fiber.Ctx) error {
 	header := []string{"Source", "Total Prospects", "Converted", "Conversion Rate (%)"}
 	return streamCSV(c, "prospect-source-conversion.csv", header, func(w *csv.Writer) error {
 		for _, r := range rows {
-			if err := w.Write([]string{
+			if err := writeCSVRow(w, []string{
 				r.Source, strconv.FormatInt(r.Total, 10), strconv.FormatInt(r.Converted, 10),
 				strconv.FormatFloat(r.ConversionRate, 'f', 1, 64),
 			}); err != nil {
@@ -109,7 +109,7 @@ func (h *ReportHandler) CustomersByProductStatusExport(c *fiber.Ctx) error {
 	header := []string{"Company", "Product ID", "Status", "Start Date"}
 	return streamCSV(c, "customers-by-product-status.csv", header, func(w *csv.Writer) error {
 		for _, r := range rows {
-			if err := w.Write([]string{
+			if err := writeCSVRow(w, []string{
 				r.CompanyName, strconv.FormatUint(uint64(r.ProductID), 10), string(r.Status), r.StartDate,
 			}); err != nil {
 				return err
@@ -140,7 +140,7 @@ func (h *ReportHandler) WinLossReasonsExport(c *fiber.Ctx) error {
 	header := []string{"Reason", "Count", "Value"}
 	return streamCSV(c, "win-loss-reasons.csv", header, func(w *csv.Writer) error {
 		for _, r := range rows {
-			if err := w.Write([]string{
+			if err := writeCSVRow(w, []string{
 				r.Reason, strconv.FormatInt(r.Count, 10), strconv.FormatFloat(r.Value, 'f', 2, 64),
 			}); err != nil {
 				return err
@@ -170,7 +170,7 @@ func (h *ReportHandler) StalledDealsExport(c *fiber.Ctx) error {
 	header := []string{"Deal", "Company", "Stage", "Value", "Assigned To", "Last Activity", "Days Stalled"}
 	return streamCSV(c, "stalled-deals.csv", header, func(w *csv.Writer) error {
 		for _, r := range rows {
-			if err := w.Write([]string{
+			if err := writeCSVRow(w, []string{
 				r.Title, r.CompanyName, r.Stage, strconv.FormatFloat(r.Value, 'f', 2, 64),
 				derefUintStr(r.AssignedTo), r.LastActivityAt.Format("2006-01-02"), strconv.Itoa(r.DaysStalled),
 			}); err != nil {
@@ -200,7 +200,7 @@ func (h *ReportHandler) OutstandingBalanceExport(c *fiber.Ctx) error {
 	header := []string{"Deal", "Company", "Deal Value", "Paid", "Outstanding"}
 	return streamCSV(c, "outstanding-balance.csv", header, func(w *csv.Writer) error {
 		for _, r := range rows {
-			if err := w.Write([]string{
+			if err := writeCSVRow(w, []string{
 				r.DealTitle, r.CompanyName, strconv.FormatFloat(r.DealValue, 'f', 2, 64),
 				strconv.FormatFloat(r.PaidAmount, 'f', 2, 64), strconv.FormatFloat(r.OutstandingAmount, 'f', 2, 64),
 			}); err != nil {
@@ -231,7 +231,7 @@ func (h *ReportHandler) QuotesExpiringSoonExport(c *fiber.Ctx) error {
 	header := []string{"Deal", "Company", "Validity Date", "Total Value"}
 	return streamCSV(c, "quotes-expiring-soon.csv", header, func(w *csv.Writer) error {
 		for _, r := range rows {
-			if err := w.Write([]string{
+			if err := writeCSVRow(w, []string{
 				r.DealTitle, r.CompanyName, r.ValidityDate, strconv.FormatFloat(r.TotalValue, 'f', 2, 64),
 			}); err != nil {
 				return err
@@ -261,7 +261,7 @@ func (h *ReportHandler) ContractsStuckExport(c *fiber.Ctx) error {
 	header := []string{"Deal", "Company", "Status", "Assigned To", "Days Unsigned"}
 	return streamCSV(c, "contracts-stuck.csv", header, func(w *csv.Writer) error {
 		for _, r := range rows {
-			if err := w.Write([]string{
+			if err := writeCSVRow(w, []string{
 				r.DealTitle, r.CompanyName, r.Status, derefUintStr(r.AssignedTo), strconv.Itoa(r.DaysInStatus),
 			}); err != nil {
 				return err
@@ -289,7 +289,7 @@ func (h *ReportHandler) ProjectsAtRiskExport(c *fiber.Ctx) error {
 	header := []string{"Project", "Company", "Status", "Target End Date", "Days Overdue"}
 	return streamCSV(c, "projects-at-risk.csv", header, func(w *csv.Writer) error {
 		for _, r := range rows {
-			if err := w.Write([]string{
+			if err := writeCSVRow(w, []string{
 				r.Name, r.CompanyName, r.Status, r.TargetEndDate, strconv.Itoa(r.DaysOverdue),
 			}); err != nil {
 				return err

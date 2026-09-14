@@ -1417,6 +1417,48 @@ definitions:
       name:
         type: string
     type: object
+  internal_handlers.openOptions:
+    properties:
+      industries:
+        items:
+          type: string
+        type: array
+      job_titles:
+        items:
+          type: string
+        type: array
+      revenue_sizes:
+        items:
+          type: string
+        type: array
+      sizes:
+        items:
+          type: string
+        type: array
+    type: object
+  internal_handlers.openProjectForm:
+    properties:
+      company_id:
+        type: integer
+      deal_id:
+        type: integer
+      expected_proposal_date:
+        type: string
+      expected_start_date:
+        type: string
+      name:
+        type: string
+      notes:
+        type: string
+      production_reference:
+        type: string
+      start_date:
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProjectStatus'
+      target_end_date:
+        type: string
+    type: object
   internal_handlers.paymentForm:
     properties:
       amount:
@@ -1728,6 +1770,36 @@ paths:
       security:
       - BearerAuth: []
       summary: Create an API key (Admin only)
+      tags:
+      - admin
+  /admin/api-keys/{id}/logs:
+    get:
+      description: Returns this key's POST/PUT calls against /open/companies and /open/contacts
+        (see models.OpenAPIRequestLog) — distinct from /audit-log, whose actor is
+        the key's owner USER (several keys can share one owner), so this is the only
+        place "which specific integration made this change" is answerable.
+      parameters:
+      - description: API key ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated request-log list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: API key not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List a key's Open API write history (Admin only)
       tags:
       - admin
   /admin/api-keys/{id}/revoke:
@@ -4840,6 +4912,66 @@ paths:
       summary: List deleted leads (Admin/Sales Manager only)
       tags:
       - leads
+  /open/options:
+    get:
+      description: 'Returns every currently active option value Company/Contact fields
+        validate against: industry (free text, shown here as a reference list rather
+        than an enforced one — any value is still accepted), size, revenue_size, role_title.
+        Lets an external integrator discover valid values without a staff login.'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.openOptions'
+      security:
+      - ApiKeyAuth: []
+      summary: List valid option values (Open API)
+      tags:
+      - open
+  /open/projects:
+    post:
+      consumes:
+      - application/json
+      description: Creates a Project for a Company via the Open API. Unlike the staff-facing
+        POST /companies/{companyId}/projects, company_id is supplied in the request
+        body rather than the path. start_date defaults to now and status defaults
+        to "Not Started" when omitted.
+      parameters:
+      - description: Project fields, including company_id
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.openProjectForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Project'
+        "400":
+          description: Invalid body
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Company not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Missing name or company_id
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - ApiKeyAuth: []
+      summary: Create a project (Open API)
+      tags:
+      - projects
   /payments/{id}:
     delete:
       description: Hard delete of a Payment. Only the parent Deal's assigned Sales
@@ -4937,6 +5069,32 @@ paths:
       tags:
       - products
   /products/{id}:
+    get:
+      description: Returns a single Product by ID. Used by the Open API (GET /open/products/:id)
+        as well as any future top-level staff route.
+      parameters:
+      - description: Product ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Product'
+        "404":
+          description: Product not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get a product by ID
+      tags:
+      - products
     patch:
       consumes:
       - application/json
@@ -5067,6 +5225,32 @@ paths:
       tags:
       - projects
   /projects/{id}:
+    get:
+      description: Returns a single Project by ID. Used by the Open API (GET /open/projects/:id)
+        as well as any future top-level staff route.
+      parameters:
+      - description: Project ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Project'
+        "404":
+          description: Project not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get a project by ID
+      tags:
+      - projects
     patch:
       consumes:
       - application/json

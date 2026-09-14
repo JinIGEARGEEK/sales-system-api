@@ -1,9 +1,7 @@
 package handlers
 
 import (
-	"errors"
 	"net/mail"
-	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -66,35 +64,10 @@ func (h *LeadHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := h.DB.Model(&models.Lead{})
 
-	if v := c.Query("status"); v != "" {
-		query = query.Where("status = ?", v)
-	}
-	if v := c.Query("source"); v != "" {
-		query = query.Where("source = ?", v)
-	}
-	if v := c.Query("assigned_to"); v == "unassigned" {
-		query = query.Where("assigned_to IS NULL")
-	} else if v != "" {
-		query = query.Where("assigned_to = ?", v)
-	}
-	if v := c.Query("company_id"); v != "" {
-		query = query.Where("leads.company_id = ?", v)
-	}
-
-	sortField := strings.TrimPrefix(c.Query("sort"), "-")
-	search := c.Query("search")
-	// The related Company's name is needed for either a "search" match or a
-	// "company_name" sort — join once, up front, whenever either is in play
-	// (utils.ApplyNullableCompanySearch), rather than duplicating the join
-	// per use like deals.go/contacts.go's sort-only special case does (see
-	// utils.ApplyCompanyNameSort, which those two share; Lead/Prospect can't
-	// reuse that one since they also need the join for "search" and need a
-	// LEFT JOIN rather than that helper's INNER JOIN — see its doc comment
-	// for why).
-	query, needsCompanyJoin := utils.ApplyNullableCompanySearch(query, "leads", sortField, search)
-	if c.Query("exclude_converted") == "true" {
-		query = query.Where("converted_deal_id IS NULL")
-	}
+	// The filter shape here is identical to ProspectHandler.List's — see
+	// applyLeadLikeFilters's own doc for why it's shared (including the
+	// Company-name join/sort reasoning previously duplicated in both).
+	query, needsCompanyJoin, sortField := applyLeadLikeFilters(query, c, "leads", "converted_deal_id")
 
 	var total int64
 	// Count() before the Select below — a plain COUNT(*) works fine against
@@ -543,26 +516,9 @@ func (h *LeadHandler) Restore(c *fiber.Ctx) error {
 // @Failure 400 {object} map[string]interface{} "ids is required"
 // @Router /leads/bulk-reassign [patch]
 func (h *LeadHandler) BulkReassign(c *fiber.Ctx) error {
-	var form bulkReassignForm
-	if err := c.BodyParser(&form); err != nil {
-		return utils.BadRequest(c, "Invalid request body")
-	}
-	if len(form.IDs) == 0 {
-		return utils.ValidationError(c, "ids is required", map[string][]string{"ids": {"required"}})
-	}
-
-	actorID := middleware.CurrentUserID(c)
-	err := utils.BulkUpdate(h.DB, form.IDs, "lead", "bulk_reassigned", actorID,
-		func(tx *gorm.DB, lead *models.Lead) (models.JSONMap, models.JSONMap, error) {
-			before := models.JSONMap{"assigned_to": lead.AssignedTo}
-			lead.AssignedTo = form.AssignedTo
-			after := models.JSONMap{"assigned_to": lead.AssignedTo}
-			return before, after, tx.Save(lead).Error
-		})
-	if err != nil {
-		return utils.Internal(c, "Failed to bulk reassign leads")
-	}
-	return utils.NoContent(c)
+	return bulkReassignEntity(c, h.DB, "lead",
+		func(l *models.Lead) *uint { return l.AssignedTo },
+		func(l *models.Lead, v *uint) { l.AssignedTo = v })
 }
 
 // BulkTag godoc
@@ -577,30 +533,10 @@ func (h *LeadHandler) BulkReassign(c *fiber.Ctx) error {
 // @Failure 400 {object} map[string]interface{} "ids is required"
 // @Router /leads/bulk-tag [patch]
 func (h *LeadHandler) BulkTag(c *fiber.Ctx) error {
-	var form bulkTagForm
-	if err := c.BodyParser(&form); err != nil {
-		return utils.BadRequest(c, "Invalid request body")
-	}
-	if len(form.IDs) == 0 {
-		return utils.ValidationError(c, "ids is required", map[string][]string{"ids": {"required"}})
-	}
-
-	actorID := middleware.CurrentUserID(c)
-	err := utils.BulkUpdate(h.DB, form.IDs, "lead", "bulk_tagged", actorID,
-		func(tx *gorm.DB, lead *models.Lead) (models.JSONMap, models.JSONMap, error) {
-			before := models.JSONMap{"tags": []string(lead.Tags)}
-			if form.Mode == "set" {
-				lead.Tags = form.Tags
-			} else {
-				lead.Tags = mergeTags(lead.Tags, form.Tags)
-			}
-			after := models.JSONMap{"tags": []string(lead.Tags)}
-			return before, after, tx.Save(lead).Error
-		})
-	if err != nil {
-		return utils.Internal(c, "Failed to bulk tag leads")
-	}
-	return utils.NoContent(c)
+	return bulkTagEntity(c, h.DB, "lead",
+		func(l *models.Lead) *uint { return l.AssignedTo },
+		func(l *models.Lead) []string { return []string(l.Tags) },
+		func(l *models.Lead, tags []string) { l.Tags = tags })
 }
 
 // BulkArchive godoc
@@ -615,27 +551,7 @@ func (h *LeadHandler) BulkTag(c *fiber.Ctx) error {
 // @Failure 400 {object} map[string]interface{} "ids is required"
 // @Router /leads/bulk-archive [patch]
 func (h *LeadHandler) BulkArchive(c *fiber.Ctx) error {
-	var form bulkIDsForm
-	if err := c.BodyParser(&form); err != nil {
-		return utils.BadRequest(c, "Invalid request body")
-	}
-	if len(form.IDs) == 0 {
-		return utils.ValidationError(c, "ids is required", map[string][]string{"ids": {"required"}})
-	}
-
-	actorID := middleware.CurrentUserID(c)
-	err := utils.BulkUpdate(h.DB, form.IDs, "lead", "bulk_archived", actorID,
-		func(tx *gorm.DB, lead *models.Lead) (models.JSONMap, models.JSONMap, error) {
-			if err := tx.Model(lead).Update("deleted_by", actorID).Error; err != nil {
-				return nil, nil, err
-			}
-			err := tx.Delete(lead).Error
-			return models.JSONMap{"deleted_at": nil}, models.JSONMap{"deleted_by": actorID}, err
-		})
-	if err != nil {
-		return utils.Internal(c, "Failed to bulk archive leads")
-	}
-	return utils.NoContent(c)
+	return bulkArchiveEntity(c, h.DB, "lead", func(l *models.Lead) *uint { return l.AssignedTo })
 }
 
 type convertRequest struct {
@@ -696,57 +612,20 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 	var deal models.Deal
 
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
-		switch {
-		case req.CompanyID != nil:
-			// Explicit override from the Convert form always wins, even if
-			// it differs from whatever Company the Lead itself was already
-			// linked to.
-			if err := tx.First(&company, *req.CompanyID).Error; err != nil {
-				return err
-			}
-		case lead.CompanyID != nil:
-			// The normal case since 2026-08-24: the Lead was already linked
-			// to a real Company (via the create/edit combobox), so reuse it
-			// directly instead of creating a fresh duplicate from its name —
-			// closes the dedupe gap this convert path used to have. Unlike
-			// an explicit req.CompanyID above (a caller mistake, worth
-			// failing loudly on), this id was never caller-supplied on this
-			// request — if the Company it points to has since been
-			// soft-deleted, fall back to creating a fresh one rather than
-			// failing the whole conversion over a Company the rep never
-			// chose here in the first place.
-			if err := tx.First(&company, *lead.CompanyID).Error; err != nil {
-				if !errors.Is(err, gorm.ErrRecordNotFound) {
-					return err
-				}
-				company = models.Company{Status: models.StatusActive}
-				if err := tx.Create(&company).Error; err != nil {
-					return err
-				}
-			}
-		default:
-			// Rare going forward (every new Lead picks/creates a Company via
-			// the frontend combobox), but a Lead can still reach here with no
-			// Company at all — preserves the old fallback behavior rather
-			// than newly requiring one at convert time.
-			company = models.Company{Status: models.StatusActive}
-			if err := tx.Create(&company).Error; err != nil {
-				return err
-			}
+		// resolveOrCreateCompany's explicitID (req.CompanyID) always wins,
+		// even if it differs from whatever Company the Lead itself was
+		// already linked to; its fallbackID (lead.CompanyID) is the normal
+		// case since 2026-08-24 (the Lead was already linked via the
+		// create/edit combobox) — see its own doc for the full reasoning,
+		// shared with ProspectHandler.Convert's identical resolution.
+		var err error
+		company, err = resolveOrCreateCompany(tx, req.CompanyID, lead.CompanyID)
+		if err != nil {
+			return err
 		}
-
-		if req.ContactID != nil {
-			if err := tx.First(&contact, *req.ContactID).Error; err != nil {
-				return err
-			}
-		} else {
-			contact = models.Contact{
-				CompanyID: company.ID, Name: lead.Name, Email: lead.Email, Phone: lead.Phone,
-				Status: models.StatusActive,
-			}
-			if err := tx.Create(&contact).Error; err != nil {
-				return err
-			}
+		contact, err = resolveOrCreateContact(tx, req.ContactID, company.ID, lead.Name, lead.Email, lead.Phone)
+		if err != nil {
+			return err
 		}
 
 		deal = models.Deal{

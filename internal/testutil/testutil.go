@@ -62,6 +62,13 @@ var tables = []string{
 	// run's.
 	"notification_logs",
 	"notification_rules",
+	// lead_scoring_criteria.name is uniqueIndex'd too, same as
+	// notification_rules above — previously missing from this list entirely
+	// (not a deliberate "seed once" exclusion like PipelineStage/
+	// LeadSourceOption below, just an oversight), so a test creating one
+	// left it behind to collide with same-named rows the next test run
+	// created.
+	"lead_scoring_criteria",
 	"projects",
 	"customer_products",
 	"products",

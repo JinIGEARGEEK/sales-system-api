@@ -225,4 +225,25 @@ func TestLeadList_FiltersAndSortsByCompany(t *testing.T) {
 		}
 		assert.Contains(t, ids, unlinked.ID)
 	})
+
+	// TestLeadList_StatusFilterCombinedWithCompanyJoin guards a column-
+	// ambiguity bug: applyLeadLikeFilters' status filter and
+	// utils.ApplyNullableCompanySearch's LEFT JOIN companies both touch a
+	// `status` column (Lead's own and Company's) — combining ?status= with
+	// ?search= (or a company_name sort) in one call used to produce
+	// `WHERE status = ? ... JOIN companies ...` with an unqualified column
+	// reference, which Postgres rejects as ambiguous (500) rather than
+	// filtering correctly. Every filter column is now qualified with the
+	// table name to prevent this.
+	t.Run("status filter combined with search (company join) does not 500", func(t *testing.T) {
+		var out struct {
+			Data []models.Lead `json:"data"`
+		}
+		req := testutil.AuthRequest(t, http.MethodGet,
+			"/api/v1/leads?status="+string(models.LeadStatusQualified)+"&search=zebra", nil, admin.ID, admin.Role)
+		resp := doJSON(t, app, req, &out)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		require.Len(t, out.Data, 1)
+		assert.Equal(t, leadZ.ID, out.Data[0].ID)
+	})
 }

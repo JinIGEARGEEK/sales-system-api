@@ -97,6 +97,70 @@ func exportStream[T any](c *fiber.Ctx, query *gorm.DB, filename string, header [
 	})
 }
 
+// csvFormulaPrefixes are the leading characters spreadsheet software (Excel,
+// Google Sheets, LibreOffice) treats as the start of a formula. Every export
+// in this package (and reports_export.go) writes free-text, user-controlled
+// fields — company/contact/deal names, notes, etc. — straight from the
+// database. Without this guard, a value like `=HYPERLINK("http://evil","x")`
+// typed into any such field by any authenticated role executes as a live
+// formula the moment an Admin/Sales Manager opens the CSV in a spreadsheet
+// (CWE-1236, "CSV/formula injection"), which can exfiltrate data or chain
+// into further exploitation via legacy DDE. Every row written by any
+// exportStream/streamCSV callback in this package must go through
+// writeCSVRow below rather than calling w.Write directly.
+//
+// '+'/'-' are handled separately in sanitizeCSVField below, not via this
+// list — a bare leading '+'/'-' is exactly as likely to be a legitimate
+// negative number (OutstandingAmount, Value, a discount, ...) as it is a
+// formula, and this package's own numeric columns are rendered with a
+// leading '-' via strconv.FormatFloat for any negative value.
+var csvFormulaPrefixes = []byte{'=', '@', '\t', '\r'}
+
+// sanitizeCSVField neutralizes formula injection in a single field: a
+// leading `'` forces spreadsheet software to treat the cell as plain text,
+// while remaining inert for CSV consumers that don't do formula evaluation.
+func sanitizeCSVField(s string) string {
+	if s == "" {
+		return s
+	}
+	for _, p := range csvFormulaPrefixes {
+		if s[0] == p {
+			return "'" + s
+		}
+	}
+	if s[0] == '+' || s[0] == '-' {
+		// Guard a leading +/- only when the field ISN'T a plain signed
+		// number — a real attack payload here ("-2+3+cmd|'/C calc'!A0",
+		// "+HYPERLINK(...)") deliberately looks numeric-ish at a glance but
+		// fails to parse as one; an actually-negative Value/
+		// OutstandingAmount/etc. column (this package's own strconv.
+		// FormatFloat/FormatInt output) always parses cleanly and is left
+		// alone so spreadsheet SUM/arithmetic on that column still works.
+		if _, err := strconv.ParseFloat(s, 64); err != nil {
+			return "'" + s
+		}
+	}
+	return s
+}
+
+// sanitizeCSVRow applies sanitizeCSVField to every field in a row.
+func sanitizeCSVRow(fields []string) []string {
+	out := make([]string, len(fields))
+	for i, f := range fields {
+		out[i] = sanitizeCSVField(f)
+	}
+	return out
+}
+
+// writeCSVRow sanitizes fields for formula injection (see
+// sanitizeCSVRow/csvFormulaPrefixes) before writing — every export handler
+// in this package writes rows through this instead of calling w.Write
+// directly. Header rows are exempt (streamCSV writes those itself) since
+// they're static strings, never user-controlled data.
+func writeCSVRow(w *csv.Writer, fields []string) error {
+	return w.Write(sanitizeCSVRow(fields))
+}
+
 func boolYesNo(b bool) string {
 	if b {
 		return "Yes"
@@ -126,7 +190,7 @@ func (h *ExportHandler) Companies(c *fiber.Ctx) error {
 	header := []string{"Name", "Industry", "Size", "Website", "Tags", "Status", "Legal Name", "Address", "Tax ID", "Notes", "Created Date"}
 	return exportStream(c, query, "companies.csv", header, func(w *csv.Writer, batch []models.Company) error {
 		for _, co := range batch {
-			if err := w.Write([]string{
+			if err := writeCSVRow(w, []string{
 				co.Name, co.Industry, co.Size, co.Website, joinTags(co.Tags), string(co.Status),
 				derefStr(co.LegalName), derefStr(co.Address), derefStr(co.TaxID), co.Notes,
 				co.CreatedAt.Format("2006-01-02"),
@@ -154,7 +218,7 @@ func (h *ExportHandler) Contacts(c *fiber.Ctx) error {
 	return exportStream(c, query, "contacts.csv", header, func(w *csv.Writer, batch []models.Contact) error {
 		companyNameByID := h.companyNamesFor(uniqueUintsFrom(batch, func(ct models.Contact) uint { return ct.CompanyID }))
 		for _, ct := range batch {
-			if err := w.Write([]string{
+			if err := writeCSVRow(w, []string{
 				ct.Name, companyNameByID[ct.CompanyID], ct.Email, ct.Phone, ct.RoleTitle,
 				joinTags(ct.Tags), string(ct.Status), ct.CreatedAt.Format("2006-01-02"),
 			}); err != nil {
@@ -194,7 +258,7 @@ func (h *ExportHandler) Deals(c *fiber.Ctx) error {
 			if d.BusinessUnit != nil {
 				businessUnit = string(*d.BusinessUnit)
 			}
-			if err := w.Write([]string{
+			if err := writeCSVRow(w, []string{
 				d.Title, companyNameByID[d.CompanyID], strconv.FormatFloat(d.Value, 'f', 2, 64),
 				string(d.Stage), string(d.Status), derefStr(d.ExpectedCloseDate),
 				assignedName, string(d.Channel), businessUnit, derefStr(d.BusinessUnitItem),
@@ -222,7 +286,7 @@ func (h *ExportHandler) Products(c *fiber.Ctx) error {
 	header := []string{"Name", "Category", "Description", "Active", "Created Date"}
 	return exportStream(c, query, "products.csv", header, func(w *csv.Writer, batch []models.Product) error {
 		for _, p := range batch {
-			if err := w.Write([]string{
+			if err := writeCSVRow(w, []string{
 				p.Name, p.Category, p.Description, boolYesNo(p.IsActive), p.CreatedAt.Format("2006-01-02"),
 			}); err != nil {
 				return err
@@ -252,7 +316,7 @@ func (h *ExportHandler) Projects(c *fiber.Ctx) error {
 			if p.TargetEndDate != nil {
 				targetEnd = p.TargetEndDate.Format("2006-01-02")
 			}
-			if err := w.Write([]string{
+			if err := writeCSVRow(w, []string{
 				p.Name, companyNameByID[p.CompanyID], string(p.Status),
 				p.StartDate.Format("2006-01-02"), targetEnd, derefStr(p.ProductionReference), p.Notes,
 				p.CreatedAt.Format("2006-01-02"),
