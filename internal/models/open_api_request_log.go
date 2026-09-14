@@ -2,9 +2,10 @@ package models
 
 import "time"
 
-// OpenAPIRequestLog is an append-only record of every write (POST/PUT) an
-// /open/* API key makes. This exists alongside AuditLogEntry, not instead of
-// it: AuditLogEntry's actor is CreatedBy/UpdatedBy — the key's OWNER user —
+// OpenAPIRequestLog is an append-only record of every write (any non-GET
+// call — POST/PUT/PATCH) an /open/* API key makes. This exists alongside
+// AuditLogEntry, not instead of it: AuditLogEntry's actor is
+// CreatedBy/UpdatedBy — the key's OWNER user —
 // and one owner can have several keys (e.g. one per internal system synced
 // against this CRM), so nothing in a Company/Contact row itself can answer
 // "which integration made this change". With multiple internal systems now

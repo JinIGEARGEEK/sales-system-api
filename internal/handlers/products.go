@@ -92,6 +92,24 @@ func (h *ProductHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, product)
 }
 
+// Get godoc
+// @Summary Get a product by ID
+// @Description Returns a single Product by ID. Used by the Open API (GET /open/products/:id) as well as any future top-level staff route.
+// @Tags products
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "Product ID"
+// @Success 200 {object} models.Product
+// @Failure 404 {object} map[string]interface{} "Product not found"
+// @Router /products/{id} [get]
+func (h *ProductHandler) Get(c *fiber.Ctx) error {
+	var product models.Product
+	if err := h.DB.First(&product, c.Params("id")).Error; err != nil {
+		return utils.NotFound(c, "Product not found")
+	}
+	return utils.OK(c, product)
+}
+
 // Update — PATCH /products/:id (any authenticated role). Full edit of the
 // catalog entry's own fields — distinct from Deactivate, which only ever
 // flips is_active off and is left as the dedicated "remove from catalog" action.

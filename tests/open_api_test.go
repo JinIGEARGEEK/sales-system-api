@@ -3,6 +3,7 @@ package apitests
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/require"
@@ -408,4 +409,295 @@ func TestOpenAPI_RevokedKeyRejected(t *testing.T) {
 	deniedReq := openRequest(t, http.MethodGet, "/api/v1/open/companies", nil, apiKey)
 	deniedResp := doJSON(t, app, deniedReq, nil)
 	require.Equal(t, fiber.StatusUnauthorized, deniedResp.StatusCode)
+}
+
+// TestOpenAPI_ProjectCreateGetUpdateList guards the Open API's Project
+// endpoints: CreateOpen takes company_id in the body (unlike the staff-facing
+// nested POST /companies/:companyId/projects), Update is a partial PATCH
+// (ProjectHandler.Update's own semantics, not a full-replace PUT).
+func TestOpenAPI_ProjectCreateGetUpdateList(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	apiKey := createAPIKey(t, app, admin.ID, admin.ID)
+	company := seedCompany(t, db)
+
+	createReq := openRequest(t, http.MethodPost, "/api/v1/open/projects", map[string]interface{}{
+		"company_id": company.ID,
+		"name":       "Open API Project",
+	}, apiKey)
+	var created struct {
+		Data models.Project `json:"data"`
+	}
+	resp := doJSON(t, app, createReq, &created)
+	require.Equal(t, fiber.StatusCreated, resp.StatusCode)
+	require.Equal(t, "Open API Project", created.Data.Name)
+	require.Equal(t, company.ID, created.Data.CompanyID)
+	require.Equal(t, models.ProjectStatusNotStarted, created.Data.Status)
+	require.NotNil(t, created.Data.CreatedBy)
+	require.Equal(t, admin.ID, *created.Data.CreatedBy)
+
+	getReq := openRequest(t, http.MethodGet, "/api/v1/open/projects/"+itoa(created.Data.ID), nil, apiKey)
+	getResp := doJSON(t, app, getReq, nil)
+	require.Equal(t, fiber.StatusOK, getResp.StatusCode)
+
+	updateReq := openRequest(t, http.MethodPatch, "/api/v1/open/projects/"+itoa(created.Data.ID), map[string]interface{}{
+		"name": "Open API Project Renamed",
+	}, apiKey)
+	var updated struct {
+		Data models.Project `json:"data"`
+	}
+	updResp := doJSON(t, app, updateReq, &updated)
+	require.Equal(t, fiber.StatusOK, updResp.StatusCode)
+	require.Equal(t, "Open API Project Renamed", updated.Data.Name)
+
+	listReq := openRequest(t, http.MethodGet, "/api/v1/open/projects?company_id="+itoa(company.ID), nil, apiKey)
+	listResp := doJSON(t, app, listReq, nil)
+	require.Equal(t, fiber.StatusOK, listResp.StatusCode)
+}
+
+// TestOpenAPI_ProjectCreateRequiresCompanyAndName guards CreateOpen's
+// validation: a missing company_id or an unknown one, and a missing name,
+// must each be rejected rather than silently creating an orphaned Project.
+func TestOpenAPI_ProjectCreateRequiresCompanyAndName(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	apiKey := createAPIKey(t, app, admin.ID, admin.ID)
+	company := seedCompany(t, db)
+
+	missingCompany := openRequest(t, http.MethodPost, "/api/v1/open/projects", map[string]interface{}{
+		"name": "No Company Project",
+	}, apiKey)
+	resp := doJSON(t, app, missingCompany, nil)
+	require.Equal(t, fiber.StatusUnprocessableEntity, resp.StatusCode)
+
+	unknownCompany := openRequest(t, http.MethodPost, "/api/v1/open/projects", map[string]interface{}{
+		"company_id": 999999, "name": "Ghost Co Project",
+	}, apiKey)
+	unknownResp := doJSON(t, app, unknownCompany, nil)
+	require.Equal(t, fiber.StatusNotFound, unknownResp.StatusCode)
+
+	missingName := openRequest(t, http.MethodPost, "/api/v1/open/projects", map[string]interface{}{
+		"company_id": company.ID,
+	}, apiKey)
+	nameResp := doJSON(t, app, missingName, nil)
+	require.Equal(t, fiber.StatusUnprocessableEntity, nameResp.StatusCode)
+}
+
+// TestOpenAPI_ProductCreateGetUpdateList guards the Open API's Product
+// endpoints — List/Create/Update reuse the exact same top-level
+// ProductHandler methods the staff-facing /products routes use.
+func TestOpenAPI_ProductCreateGetUpdateList(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	apiKey := createAPIKey(t, app, admin.ID, admin.ID)
+	require.NoError(t, db.Create(&models.ProductCategoryOption{Name: "Software", IsActive: true}).Error)
+
+	createReq := openRequest(t, http.MethodPost, "/api/v1/open/products", map[string]interface{}{
+		"name": "Open API Product", "category": "Software", "price": 100.0,
+	}, apiKey)
+	var created struct {
+		Data models.Product `json:"data"`
+	}
+	resp := doJSON(t, app, createReq, &created)
+	require.Equal(t, fiber.StatusCreated, resp.StatusCode)
+	require.Equal(t, "Open API Product", created.Data.Name)
+	require.True(t, created.Data.IsActive)
+	require.NotNil(t, created.Data.CreatedBy)
+	require.Equal(t, admin.ID, *created.Data.CreatedBy)
+
+	getReq := openRequest(t, http.MethodGet, "/api/v1/open/products/"+itoa(created.Data.ID), nil, apiKey)
+	getResp := doJSON(t, app, getReq, nil)
+	require.Equal(t, fiber.StatusOK, getResp.StatusCode)
+
+	updateReq := openRequest(t, http.MethodPatch, "/api/v1/open/products/"+itoa(created.Data.ID), map[string]interface{}{
+		"name": "Open API Product Renamed", "category": "Software", "price": 150.0,
+	}, apiKey)
+	var updated struct {
+		Data models.Product `json:"data"`
+	}
+	updResp := doJSON(t, app, updateReq, &updated)
+	require.Equal(t, fiber.StatusOK, updResp.StatusCode)
+	require.Equal(t, "Open API Product Renamed", updated.Data.Name)
+
+	listReq := openRequest(t, http.MethodGet, "/api/v1/open/products?category=Software", nil, apiKey)
+	listResp := doJSON(t, app, listReq, nil)
+	require.Equal(t, fiber.StatusOK, listResp.StatusCode)
+}
+
+// TestOpenAPI_ProspectCreateGetUpdateList guards the Open API's Prospect
+// endpoints, which reuse ProspectHandler's existing top-level List/Create/
+// Get/Update methods as-is.
+func TestOpenAPI_ProspectCreateGetUpdateList(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	apiKey := createAPIKey(t, app, admin.ID, admin.ID)
+	// "Social Media" is one of DefaultProspectSourceOptions, seeded once per
+	// test binary (testutil.seedPipelineConfig) — creating it again here
+	// would collide with that seed's uniqueIndex on name.
+
+	createReq := openRequest(t, http.MethodPost, "/api/v1/open/prospects", map[string]interface{}{
+		"name": "Open API Prospect", "source": "Social Media",
+	}, apiKey)
+	var created struct {
+		Data models.Prospect `json:"data"`
+	}
+	resp := doJSON(t, app, createReq, &created)
+	require.Equal(t, fiber.StatusCreated, resp.StatusCode)
+	require.Equal(t, "Open API Prospect", created.Data.Name)
+	require.Equal(t, models.ProspectStatusNew, created.Data.Status)
+
+	getReq := openRequest(t, http.MethodGet, "/api/v1/open/prospects/"+itoa(created.Data.ID), nil, apiKey)
+	getResp := doJSON(t, app, getReq, nil)
+	require.Equal(t, fiber.StatusOK, getResp.StatusCode)
+
+	updateReq := openRequest(t, http.MethodPut, "/api/v1/open/prospects/"+itoa(created.Data.ID), map[string]interface{}{
+		"name": "Open API Prospect Renamed", "source": "Social Media",
+	}, apiKey)
+	var updated struct {
+		Data models.Prospect `json:"data"`
+	}
+	updResp := doJSON(t, app, updateReq, &updated)
+	require.Equal(t, fiber.StatusOK, updResp.StatusCode)
+	require.Equal(t, "Open API Prospect Renamed", updated.Data.Name)
+
+	listReq := openRequest(t, http.MethodGet, "/api/v1/open/prospects", nil, apiKey)
+	listResp := doJSON(t, app, listReq, nil)
+	require.Equal(t, fiber.StatusOK, listResp.StatusCode)
+}
+
+// TestOpenAPI_LeadCreateGetUpdateList guards the Open API's Lead endpoints,
+// which reuse LeadHandler's existing top-level List/Create/Get/Update
+// methods as-is.
+func TestOpenAPI_LeadCreateGetUpdateList(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	apiKey := createAPIKey(t, app, admin.ID, admin.ID)
+	// "Referral" is one of DefaultLeadSourceOptions, seeded once per test
+	// binary (testutil.seedPipelineConfig) — creating it again here would
+	// collide with that seed's uniqueIndex on name.
+
+	createReq := openRequest(t, http.MethodPost, "/api/v1/open/leads", map[string]interface{}{
+		"name": "Open API Lead", "source": "Referral",
+	}, apiKey)
+	var created struct {
+		Data models.Lead `json:"data"`
+	}
+	resp := doJSON(t, app, createReq, &created)
+	require.Equal(t, fiber.StatusCreated, resp.StatusCode)
+	require.Equal(t, "Open API Lead", created.Data.Name)
+	require.Equal(t, models.LeadStatusNew, created.Data.Status)
+
+	getReq := openRequest(t, http.MethodGet, "/api/v1/open/leads/"+itoa(created.Data.ID), nil, apiKey)
+	getResp := doJSON(t, app, getReq, nil)
+	require.Equal(t, fiber.StatusOK, getResp.StatusCode)
+
+	updateReq := openRequest(t, http.MethodPut, "/api/v1/open/leads/"+itoa(created.Data.ID), map[string]interface{}{
+		"name": "Open API Lead Renamed", "source": "Referral",
+	}, apiKey)
+	var updated struct {
+		Data models.Lead `json:"data"`
+	}
+	updResp := doJSON(t, app, updateReq, &updated)
+	require.Equal(t, fiber.StatusOK, updResp.StatusCode)
+	require.Equal(t, "Open API Lead Renamed", updated.Data.Name)
+
+	listReq := openRequest(t, http.MethodGet, "/api/v1/open/leads", nil, apiKey)
+	listResp := doJSON(t, app, listReq, nil)
+	require.Equal(t, fiber.StatusOK, listResp.StatusCode)
+}
+
+// TestOpenAPI_PatchWritesAreLogged guards the fix for a gap where
+// LogOpenAPIWrites only recognized POST/PUT — Project/Product's Open API
+// Update uses PATCH (§8/§9's own semantics, not a full-replace PUT like
+// Company/Contact), and that method fell straight through the old
+// allowlist, leaving PATCH writes to /open/projects and /open/products
+// completely absent from OpenAPIRequestLog/GET /admin/api-keys/:id/logs —
+// exactly the audit trail this logging exists for. The write happens in a
+// goroutine (utils.SafeGo) after the response is already on the wire, so
+// this polls briefly rather than asserting immediately after the request.
+func TestOpenAPI_PatchWritesAreLogged(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	apiKey := createAPIKey(t, app, admin.ID, admin.ID)
+	company := seedCompany(t, db)
+
+	createReq := openRequest(t, http.MethodPost, "/api/v1/open/projects", map[string]interface{}{
+		"company_id": company.ID, "name": "Logged Project",
+	}, apiKey)
+	var created struct {
+		Data models.Project `json:"data"`
+	}
+	require.Equal(t, fiber.StatusCreated, doJSON(t, app, createReq, &created).StatusCode)
+
+	patchReq := openRequest(t, http.MethodPatch, "/api/v1/open/projects/"+itoa(created.Data.ID), map[string]interface{}{
+		"name": "Logged Project Renamed",
+	}, apiKey)
+	require.Equal(t, fiber.StatusOK, doJSON(t, app, patchReq, nil).StatusCode)
+
+	require.Eventually(t, func() bool {
+		var count int64
+		db.Model(&models.OpenAPIRequestLog{}).
+			Where("method = ? AND resource_type = ? AND resource_id = ?", http.MethodPatch, "project", created.Data.ID).
+			Count(&count)
+		return count == 1
+	}, 2*time.Second, 10*time.Millisecond, "expected the PATCH to /open/projects/:id to be written to OpenAPIRequestLog")
+}
+
+// TestOpenAPI_ProspectLeadListGetNotScopedByOwnership guards an explicit
+// invariant (documented in docs/OPEN_API_GUIDE.md §1): CanWrite's ownership
+// restriction applies to Prospect/Lead create/update only — a key acting as
+// a Sales Rep can still list and get every Prospect/Lead in the system
+// through /open/prospects and /open/leads, including ones assigned to a
+// different rep, the same "reads aren't ownership-filtered" behavior the
+// staff app's own List/Get already have. This is intentional, not a gap —
+// pinned down here so a future change can't silently narrow (or someone
+// can't mistake the lack of narrowing for a bug) without a test noticing.
+func TestOpenAPI_ProspectLeadListGetNotScopedByOwnership(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	rep := testutil.CreateUser(t, db, models.RoleSalesRep)
+	// The key acts as `rep` (a plain Sales Rep) — CanWrite would restrict
+	// this identity's create/update to its own records, but List/Get should
+	// still return everything.
+	apiKey := createAPIKey(t, app, admin.ID, rep.ID)
+
+	othersProspect := seedProspect(t, db, nil)
+	othersProspect.AssignedTo = &admin.ID
+	require.NoError(t, db.Save(othersProspect).Error)
+
+	othersLead := seedLead(t, db, nil)
+	othersLead.AssignedTo = &admin.ID
+	require.NoError(t, db.Save(othersLead).Error)
+
+	getProspect := openRequest(t, http.MethodGet, "/api/v1/open/prospects/"+itoa(othersProspect.ID), nil, apiKey)
+	require.Equal(t, fiber.StatusOK, doJSON(t, app, getProspect, nil).StatusCode)
+
+	listProspects := openRequest(t, http.MethodGet, "/api/v1/open/prospects", nil, apiKey)
+	var prospectList struct {
+		Data []models.Prospect `json:"data"`
+	}
+	require.Equal(t, fiber.StatusOK, doJSON(t, app, listProspects, &prospectList).StatusCode)
+	found := false
+	for _, p := range prospectList.Data {
+		if p.ID == othersProspect.ID {
+			found = true
+		}
+	}
+	require.True(t, found, "a Sales-Rep-owned key must still see another rep's Prospect in the list")
+
+	getLead := openRequest(t, http.MethodGet, "/api/v1/open/leads/"+itoa(othersLead.ID), nil, apiKey)
+	require.Equal(t, fiber.StatusOK, doJSON(t, app, getLead, nil).StatusCode)
+
+	listLeads := openRequest(t, http.MethodGet, "/api/v1/open/leads", nil, apiKey)
+	var leadList struct {
+		Data []models.Lead `json:"data"`
+	}
+	require.Equal(t, fiber.StatusOK, doJSON(t, app, listLeads, &leadList).StatusCode)
+	found = false
+	for _, l := range leadList.Data {
+		if l.ID == othersLead.ID {
+			found = true
+		}
+	}
+	require.True(t, found, "a Sales-Rep-owned key must still see another rep's Lead in the list")
 }

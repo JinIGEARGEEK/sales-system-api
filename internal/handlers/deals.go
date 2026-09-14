@@ -541,26 +541,9 @@ type bulkTagForm struct {
 // @Failure 400 {object} map[string]interface{} "Invalid request body, or ids is required"
 // @Router /deals/bulk-reassign [patch]
 func (h *DealHandler) BulkReassign(c *fiber.Ctx) error {
-	var form bulkReassignForm
-	if err := c.BodyParser(&form); err != nil {
-		return utils.BadRequest(c, "Invalid request body")
-	}
-	if len(form.IDs) == 0 {
-		return utils.ValidationError(c, "ids is required", map[string][]string{"ids": {"required"}})
-	}
-
-	actorID := middleware.CurrentUserID(c)
-	err := utils.BulkUpdate(h.DB, form.IDs, "deal", "bulk_reassigned", actorID,
-		func(tx *gorm.DB, deal *models.Deal) (models.JSONMap, models.JSONMap, error) {
-			before := models.JSONMap{"assigned_to": deal.AssignedTo}
-			deal.AssignedTo = form.AssignedTo
-			after := models.JSONMap{"assigned_to": deal.AssignedTo}
-			return before, after, tx.Save(deal).Error
-		})
-	if err != nil {
-		return utils.Internal(c, "Failed to bulk reassign deals")
-	}
-	return utils.NoContent(c)
+	return bulkReassignEntity(c, h.DB, "deal",
+		func(d *models.Deal) *uint { return d.AssignedTo },
+		func(d *models.Deal, v *uint) { d.AssignedTo = v })
 }
 
 // BulkTag godoc
@@ -575,30 +558,10 @@ func (h *DealHandler) BulkReassign(c *fiber.Ctx) error {
 // @Failure 400 {object} map[string]interface{} "Invalid request body, or ids is required"
 // @Router /deals/bulk-tag [patch]
 func (h *DealHandler) BulkTag(c *fiber.Ctx) error {
-	var form bulkTagForm
-	if err := c.BodyParser(&form); err != nil {
-		return utils.BadRequest(c, "Invalid request body")
-	}
-	if len(form.IDs) == 0 {
-		return utils.ValidationError(c, "ids is required", map[string][]string{"ids": {"required"}})
-	}
-
-	actorID := middleware.CurrentUserID(c)
-	err := utils.BulkUpdate(h.DB, form.IDs, "deal", "bulk_tagged", actorID,
-		func(tx *gorm.DB, deal *models.Deal) (models.JSONMap, models.JSONMap, error) {
-			before := models.JSONMap{"tags": []string(deal.Tags)}
-			if form.Mode == "set" {
-				deal.Tags = form.Tags
-			} else {
-				deal.Tags = mergeTags(deal.Tags, form.Tags)
-			}
-			after := models.JSONMap{"tags": []string(deal.Tags)}
-			return before, after, tx.Save(deal).Error
-		})
-	if err != nil {
-		return utils.Internal(c, "Failed to bulk tag deals")
-	}
-	return utils.NoContent(c)
+	return bulkTagEntity(c, h.DB, "deal",
+		func(d *models.Deal) *uint { return d.AssignedTo },
+		func(d *models.Deal) []string { return []string(d.Tags) },
+		func(d *models.Deal, tags []string) { d.Tags = tags })
 }
 
 // BulkArchive godoc
@@ -613,27 +576,7 @@ func (h *DealHandler) BulkTag(c *fiber.Ctx) error {
 // @Failure 400 {object} map[string]interface{} "Invalid request body, or ids is required"
 // @Router /deals/bulk-archive [patch]
 func (h *DealHandler) BulkArchive(c *fiber.Ctx) error {
-	var form bulkIDsForm
-	if err := c.BodyParser(&form); err != nil {
-		return utils.BadRequest(c, "Invalid request body")
-	}
-	if len(form.IDs) == 0 {
-		return utils.ValidationError(c, "ids is required", map[string][]string{"ids": {"required"}})
-	}
-
-	actorID := middleware.CurrentUserID(c)
-	err := utils.BulkUpdate(h.DB, form.IDs, "deal", "bulk_archived", actorID,
-		func(tx *gorm.DB, deal *models.Deal) (models.JSONMap, models.JSONMap, error) {
-			if err := tx.Model(deal).Update("deleted_by", actorID).Error; err != nil {
-				return nil, nil, err
-			}
-			err := tx.Delete(deal).Error
-			return models.JSONMap{"deleted_at": nil}, models.JSONMap{"deleted_by": actorID}, err
-		})
-	if err != nil {
-		return utils.Internal(c, "Failed to bulk archive deals")
-	}
-	return utils.NoContent(c)
+	return bulkArchiveEntity(c, h.DB, "deal", func(d *models.Deal) *uint { return d.AssignedTo })
 }
 
 // mergeTags appends tags not already present, case-sensitively, preserving order.

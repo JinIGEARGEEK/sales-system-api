@@ -16,10 +16,13 @@ const (
 // sub-resources for tasks/sprints/milestones per FR-CRM-071.
 type Project struct {
 	AuditedModel
-	CompanyID     uint          `gorm:"not null;index" json:"company_id"`
-	DealID        *uint         `gorm:"index" json:"deal_id"`
-	Name          string        `gorm:"not null" json:"name"`
-	Status        ProjectStatus `gorm:"type:varchar(16);default:'Not Started'" json:"status"`
+	CompanyID uint   `gorm:"not null;index" json:"company_id"`
+	DealID    *uint  `gorm:"index" json:"deal_id"`
+	Name      string `gorm:"not null" json:"name"`
+	// index — List/Export both filter on this column (applyProjectFilters);
+	// previously the one status column among Company/Contact/Project left
+	// unindexed despite the identical filter shape.
+	Status        ProjectStatus `gorm:"type:varchar(16);default:'Not Started';index" json:"status"`
 	StartDate     time.Time     `json:"start_date"`
 	TargetEndDate *time.Time    `json:"target_end_date"`
 	// ExpectedProposalDate/ExpectedStartDate are planning estimates set by

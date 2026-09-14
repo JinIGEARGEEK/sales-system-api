@@ -336,58 +336,85 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	var upsellOpportunities []upsellCompany
 
 	var wg sync.WaitGroup
-	run := func(f func()) {
+	// degradedMu guards degraded below, appended to from whichever aggregate
+	// goroutine's recover() fires — see run's own comment.
+	var degradedMu sync.Mutex
+	degraded := []string{} // non-nil so it serializes as [] rather than null in the common case
+	// run fans each named aggregate out onto its own goroutine — see the
+	// comment above for why this is safe to do concurrently. Built on
+	// utils.SafeGoNotify (rather than a hand-rolled recover() wrapper) so
+	// this shares its one panic-recovery/logging implementation with every
+	// other background goroutine in the codebase (apikey.go,
+	// open_api_log.go) instead of drifting from it. recover() here is
+	// load-bearing, not defensive boilerplate: without it, a panic in any
+	// single one of the ~14 closures below (a nil dereference from an
+	// unexpected scan shape, a slice index, ...) would be an unrecovered
+	// panic in a goroutine, which crashes the entire process — every other
+	// in-flight request too, not just this one. name is recorded into the
+	// response's own `degraded_aggregates` field (rather than only the
+	// server log) if this aggregate's goroutine panics, so a caller/on-call
+	// engineer can tell "this number is genuinely zero" apart from
+	// "this number silently failed to compute" instead of the two looking
+	// identical in the response.
+	run := func(name string, f func()) {
 		wg.Add(1)
-		go func() { defer wg.Done(); f() }()
+		utils.SafeGoNotify(func() {
+			defer wg.Done()
+			f()
+		}, func(r any) {
+			degradedMu.Lock()
+			degraded = append(degraded, name)
+			degradedMu.Unlock()
+		})
 	}
 
-	run(func() {
+	run("open_pipeline_value", func() {
 		base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusOpen).
 			Select("COALESCE(SUM(deals.value), 0)").Scan(&openPipelineValue)
 	})
-	run(func() {
+	run("won_value", func() {
 		base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusWon).
 			Select("COALESCE(SUM(deals.value), 0)").Scan(&wonValue)
 	})
-	run(func() {
+	run("avg_deal_size", func() {
 		base.Session(&gorm.Session{}).Select("COALESCE(AVG(deals.value), 0)").Scan(&avgDealSize)
 	})
-	run(func() {
+	run("open_deals_count", func() {
 		base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusOpen).Count(&openDealsCount)
 	})
 	// forecastedRevenue — sum of (open Deal value × probability/100). Probability
 	// defaults per-stage at write time (see StageDefaultProbability) so every open
 	// Deal has one, but COALESCE guards any pre-existing row a migration missed.
-	run(func() {
+	run("forecasted_revenue", func() {
 		base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusOpen).
 			Select("COALESCE(SUM(deals.value * COALESCE(deals.probability, 0) / 100.0), 0)").Scan(&forecastedRevenue)
 	})
-	run(func() {
+	run("win_rate", func() {
 		base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusWon).Count(&wonCount)
 	})
-	run(func() {
+	run("win_rate", func() {
 		base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusLost).Count(&lostCount)
 	})
-	run(func() { revenueTrend = h.revenueTrend() })
-	run(func() { forecastTrend = h.forecastTrend() })
-	run(func() { stageBreakdown = h.stageBreakdown(base) })
-	run(func() { forecastByCategory = h.forecastByCategory(base) })
-	run(func() { industryBreakdown = h.industryBreakdown(base, companyTagSet) })
-	run(func() { teamPerformance = h.teamPerformance(base) })
-	run(func() { annualRevenueTrend = h.annualRevenueTrend(settings.AnnualRevenueGoal) })
+	run("revenue_trend", func() { revenueTrend = h.revenueTrend() })
+	run("forecast_trend", func() { forecastTrend = h.forecastTrend() })
+	run("stage_breakdown", func() { stageBreakdown = h.stageBreakdown(base) })
+	run("forecast_by_category", func() { forecastByCategory = h.forecastByCategory(base) })
+	run("industry_breakdown", func() { industryBreakdown = h.industryBreakdown(base, companyTagSet) })
+	run("team_performance", func() { teamPerformance = h.teamPerformance(base) })
+	run("annual_revenue_trend", func() { annualRevenueTrend = h.annualRevenueTrend(settings.AnnualRevenueGoal) })
 	// upsellOpportunities is Company-centric (not Deal-scoped), so it's
 	// deliberately independent of `base`/baseFilter's Deal-side query params —
 	// see h.upsellOpportunities's own doc comment.
-	run(func() { upsellOpportunities = h.upsellOpportunities(upsellMinStaleDays) })
+	run("upsell_opportunities", func() { upsellOpportunities = h.upsellOpportunities(upsellMinStaleDays) })
 	var quarterlySalesTarget float64
-	run(func() { quarterlySalesTarget = h.currentQuarterTarget(settings.QuarterlySalesTarget) })
+	run("quarterly_sales_target", func() { quarterlySalesTarget = h.currentQuarterTarget(settings.QuarterlySalesTarget) })
 	// FR-CRM-099's report computation, reused here rather than duplicated —
 	// only assigned_to/date_from/date_to are honored (business_unit/channel/
 	// company_tag are not, same as annual_revenue_actual's precedent of not
 	// applying every dashboard filter to every figure). A query error just
 	// leaves this at 0 rather than failing the whole dashboard summary.
 	var avgSalesCycleDaysRaw float64
-	run(func() {
+	run("avg_sales_cycle_days", func() {
 		if result, err := (&ReportHandler{DB: h.DB}).fetchSalesCycle(assignedTo, dateFrom, dateTo); err == nil {
 			if v, ok := result["avg_sales_cycle_days"].(float64); ok {
 				avgSalesCycleDaysRaw = v
@@ -403,9 +430,19 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 
 	// annualRevenueActual is the trend's last cumulative point (Jan through
 	// the current month) rather than a duplicate SUM query — annualRevenueTrend
-	// always has at least one point since now.Month() is never 0.
+	// normally always has at least one point since now.Month() is never 0,
+	// but that guarantee only holds if h.annualRevenueTrend actually ran:
+	// if its own goroutine above panicked and got recovered, annualRevenueTrend
+	// is left at its zero value (nil), and indexing the last element of a nil
+	// slice would itself panic — in the request's own goroutine this time,
+	// which utils.SafeGoNotify's recover() can't reach. Guard it explicitly
+	// rather than relying on an invariant that no longer holds once one
+	// aggregate has already degraded.
 	annualRevenueGoal := settings.AnnualRevenueGoal
-	annualRevenueActual := annualRevenueTrend[len(annualRevenueTrend)-1].Actual
+	annualRevenueActual := 0.0
+	if len(annualRevenueTrend) > 0 {
+		annualRevenueActual = annualRevenueTrend[len(annualRevenueTrend)-1].Actual
+	}
 	annualRevenueProgressRatio := 0.0
 	if annualRevenueGoal > 0 {
 		annualRevenueProgressRatio = annualRevenueActual / float64(annualRevenueGoal)
@@ -434,11 +471,26 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 		"industry_breakdown":            industryBreakdown,
 		"team_performance":              teamPerformance,
 		"upsell_opportunities":          upsellOpportunities,
+		// degraded_aggregates names any of the fields above whose own
+		// goroutine (see run's own comment) panicked and got recovered
+		// rather than actually computing — always present, empty in the
+		// normal case, so a caller can tell "this number is really zero"
+		// apart from "this number silently failed" instead of the two
+		// looking identical. Never cached stale: this dashboard IS cached
+		// (summaryCache below), but a degraded response is never written
+		// into it — see the skip-caching check just below.
+		"degraded_aggregates": degraded,
 	}
 
-	summaryCacheMu.Lock()
-	summaryCache[cacheKey] = summaryCacheEntry{body: body, expiresAt: time.Now().Add(summaryCacheTTL)}
-	summaryCacheMu.Unlock()
+	// A degraded response (one or more aggregates panicked) is never cached
+	// — caching a transient failure would keep serving it for the rest of
+	// summaryCacheTTL even after whatever caused the panic (bad data, a
+	// flaky query) has cleared up on its own.
+	if len(degraded) == 0 {
+		summaryCacheMu.Lock()
+		summaryCache[cacheKey] = summaryCacheEntry{body: body, expiresAt: time.Now().Add(summaryCacheTTL)}
+		summaryCacheMu.Unlock()
+	}
 
 	return utils.OK(c, body)
 }

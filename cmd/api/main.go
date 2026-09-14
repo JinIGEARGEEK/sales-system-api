@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -41,6 +42,19 @@ import (
 
 func main() {
 	cfg := config.Load()
+
+	// APP_ENV itself defaults to "development" when unset (config.Load) —
+	// harmless for local/test runs (.env always sets it there), but it means
+	// an operator who simply forgets to configure APP_ENV on a real
+	// deployment silently gets the permissive dev path below rather than the
+	// deny-by-default checks that path is meant to skip only intentionally.
+	// Not a hard failure (unlike the checks below) since this repo can't
+	// confirm every deployment's env already sets this — a loud warning
+	// instead of refusing to start avoids turning an unconfirmed assumption
+	// into an outage.
+	if _, appEnvSet := os.LookupEnv("APP_ENV"); !appEnvSet {
+		log.Println("WARNING: APP_ENV is not set — defaulting to \"development\", which skips the JWT_SECRET/CORS_ORIGINS production checks below. Set APP_ENV explicitly if this is a real deployment.")
+	}
 
 	// Deny-by-default: only the explicit "development" env may run with the
 	// placeholder secret/wildcard CORS. A misspelled or unset APP_ENV (e.g.

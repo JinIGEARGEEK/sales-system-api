@@ -134,13 +134,37 @@ func validateQuoteForm(c *fiber.Ctx, form quoteForm) bool {
 // never retroactively change a quote that already saved a snapshot. The
 // ProductID itself is kept on the item for traceability/reporting. Items
 // without a ProductID are left exactly as submitted (pure free text).
+//
+// Batches the Product lookup into a single `IN (...)` query over the
+// distinct referenced ids instead of one `First()` per line item — a
+// 30-line quote previously issued 30 sequential round trips here.
 func snapshotQuoteItems(db *gorm.DB, items []models.QuoteItem) []models.QuoteItem {
+	productIDs := make([]uint, 0, len(items))
+	seen := make(map[uint]bool, len(items))
+	for _, item := range items {
+		if item.ProductID == nil || *item.ProductID == 0 || seen[*item.ProductID] {
+			continue
+		}
+		seen[*item.ProductID] = true
+		productIDs = append(productIDs, *item.ProductID)
+	}
+	if len(productIDs) == 0 {
+		return items
+	}
+
+	var products []models.Product
+	db.Where("id IN ?", productIDs).Find(&products)
+	productByID := make(map[uint]models.Product, len(products))
+	for _, p := range products {
+		productByID[p.ID] = p
+	}
+
 	for i, item := range items {
 		if item.ProductID == nil || *item.ProductID == 0 {
 			continue
 		}
-		var product models.Product
-		if err := db.First(&product, *item.ProductID).Error; err != nil {
+		product, ok := productByID[*item.ProductID]
+		if !ok {
 			continue
 		}
 		items[i].Description = product.Name

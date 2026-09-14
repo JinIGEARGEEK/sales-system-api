@@ -6,13 +6,14 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/utils"
+	fiberutils "github.com/gofiber/fiber/v2/utils"
 	"gorm.io/gorm"
 
 	"github.com/igeargeek/sales-system-api/internal/models"
+	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
-// LogOpenAPIWrites records every POST/PUT an /open/* API key makes into
+// LogOpenAPIWrites records every mutating call an /open/* API key makes into
 // models.OpenAPIRequestLog — see that model's doc for why this exists
 // alongside AuditLogEntry. Read-only calls (GET) aren't logged; they don't
 // change data, and logging every list/get would dwarf the write log with no
@@ -21,13 +22,20 @@ import (
 // group-level middleware wrapping that route-level one, so this resumes
 // after RequireIdempotency has already decided whether it replayed).
 //
+// Excludes GET rather than allowlisting {POST, PUT} (as this used to, before
+// Project/Product's Open API Update added PATCH to the mix): every /open/*
+// route is one of GET/POST/PUT/PATCH, so "not GET" is the correct, and only,
+// generalization that doesn't need a third method name added by hand the
+// next time a new resource picks yet another write verb — POST/PUT/PATCH all
+// mutate and all deserve an audit-log entry.
+//
 // Best-effort: the DB write happens in a goroutine after the response is
 // already on the wire, so a logging failure (or a slow one) never delays or
 // breaks the caller's actual request.
 func LogOpenAPIWrites(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		method := c.Method()
-		if method != fiber.MethodPost && method != fiber.MethodPut {
+		if method == fiber.MethodGet {
 			return c.Next()
 		}
 
@@ -53,13 +61,13 @@ func LogOpenAPIWrites(db *gorm.DB) fiber.Handler {
 		entry := models.OpenAPIRequestLog{
 			APIKeyID:     keyID,
 			OwnerUserID:  ownerID,
-			Method:       utils.CopyString(method),
-			Path:         utils.CopyString(c.Path()),
+			Method:       fiberutils.CopyString(method),
+			Path:         fiberutils.CopyString(c.Path()),
 			ResourceType: openAPIResourceType(c.Path()),
 			ResourceID:   openAPIResourceID(c),
 			StatusCode:   c.Response().StatusCode(),
 		}
-		go db.Create(&entry)
+		utils.SafeGo(func() { db.Create(&entry) })
 
 		return err
 	}
@@ -71,6 +79,14 @@ func openAPIResourceType(path string) string {
 		return "company"
 	case strings.Contains(path, "/contacts"):
 		return "contact"
+	case strings.Contains(path, "/projects"):
+		return "project"
+	case strings.Contains(path, "/products"):
+		return "product"
+	case strings.Contains(path, "/prospects"):
+		return "prospect"
+	case strings.Contains(path, "/leads"):
+		return "lead"
 	default:
 		return ""
 	}

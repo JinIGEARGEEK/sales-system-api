@@ -69,3 +69,24 @@ func TestDashboardSummary_DateRangeWithCompanyTagFilter(t *testing.T) {
 	// of failing the request.
 	assert.Equal(t, float64(1000), out.Data.OpenPipelineValue)
 }
+
+// TestDashboardSummary_DegradedAggregatesFieldPresent guards that the
+// degraded_aggregates response field (added alongside SafeGoNotify — see
+// dashboard.go's run/degraded) is always present and empty in the normal,
+// nothing-panicked case, so a frontend/consumer can rely on checking its
+// length rather than the key being absent entirely.
+func TestDashboardSummary_DegradedAggregatesFieldPresent(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/dashboard/summary", nil, admin.ID, admin.Role)
+	var out struct {
+		Data struct {
+			DegradedAggregates []string `json:"degraded_aggregates"`
+		} `json:"data"`
+	}
+	resp := doJSON(t, app, req, &out)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.NotNil(t, out.Data.DegradedAggregates)
+	assert.Empty(t, out.Data.DegradedAggregates)
+}
