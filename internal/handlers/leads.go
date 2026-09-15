@@ -56,6 +56,7 @@ func NewLeadHandler(db *gorm.DB) *LeadHandler {
 // @Param search query string false "Search by name, email, or company name"
 // @Param sort query string false "Sort field, prefix with - for descending (e.g. -created_at, name)"
 // @Param exclude_converted query bool false "Exclude leads already converted to a Deal"
+// @Param only_converted query bool false "Only leads already converted to a Deal"
 // @Param page query int false "Page number (default 1)"
 // @Param per_page query int false "Items per page (default 20, max 200)"
 // @Success 200 {object} map[string]interface{} "Paginated lead list (data, page, per_page, total)"
