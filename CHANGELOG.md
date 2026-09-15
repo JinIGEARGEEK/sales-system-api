@@ -4,6 +4,18 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-09-15 — Payment Installment schedule, Outstanding Balance aging, and a new reminder rule
+
+Added `PaymentInstallment` (`internal/models/payment_installment.go`) — a planned installment (amount + due date) a rep defines on a Won Deal before money actually arrives, distinct from `Payment` (which only records money already received). No stored status: every read derives paid/partial/overdue/upcoming via a new shared helper, `utils.ComputeInstallmentStatuses` (`internal/utils/payment_schedule.go`) — a cumulative **waterfall** allocation against the Deal's actual Payment total (sorted by due date, earliest first), not an explicit link between one Payment and one installment (that reconciliation model was confirmed with the business owner over the more precise but more invasive alternative).
+
+New CRUD: `GET`/`POST /deals/:dealId/payment-installments`, `PUT`/`DELETE /payment-installments/:id` (`internal/handlers/payment_installments.go`), same `dealForSubResource`/`CanWrite` RBAC as Payments/Quotes/Contracts.
+
+`GET /reports/outstanding-balance` (and its CSV export) now returns an `aging` field per row (`overdue`/`upcoming`/`none`) — `applyOutstandingBalanceAging` batches every relevant Deal's installments in one query and runs the waterfall helper in Go, not N+1 per-row lookups. A Deal with no schedule keeps this report's original flat behavior (`aging: "none"`).
+
+New `NotificationRule` entity type `payment_installment` (`checkPaymentInstallmentDueRule`, `internal/notifier/workflow_rules.go`) fires once per non-fully-paid installment due within `ThresholdDays` — covers both "coming due" and "overdue" in one condition, same shape every other rule already uses. `NotificationRule.entity_type`'s column was widened `varchar(16)` → `varchar(32)` since `"payment_installment"` (20 chars) didn't fit.
+
+Regression-guarded: `internal/utils/payment_schedule_test.go` (waterfall allocation), `tests/payment_installment_test.go` (CRUD/RBAC/validation), `internal/notifier/payment_installment_rule_test.go` (reminder firing/dedup). Spec: `api-system-spec.md` §7.5a, §8.4, §8.7c.
+
 ## 2026-09-15 — Lead gains `referred_by_type`/`referred_by_id`
 
 Added two optional, both-or-neither fields to `Lead` (`internal/models/lead.go`): `ReferredByType` and `ReferredByID`, capturing which existing Company or Contact referred a Lead in — previously the only place to note that was the free-text `Notes` field. `ReferredByType` is typed as `models.ActivityRelatedType` itself (not a bare string), matching every other enum field on this struct (`Source`, `Status`, `BusinessUnit`), restricted to `RelatedTypeCompany`/`RelatedTypeContact` via a new `models.IsValidReferrerType` (`activity.go`, alongside `ActivityRelatedType`'s own definition — the same restrict-the-enum-to-a-subset pattern `IsValidCampaignTargetType` already established for Campaign targets). Validated in both `Create` and `Update` (`internal/handlers/leads.go`'s new `validateReferredBy`): setting one without the other is `422`. Neither field is checked for existence against its referenced table, matching `company_id`'s own unchecked convention on this same model. No reporting yet — the existing Lead Source Conversion report groups by `source` string only; drilling into a specific referrer needs a new endpoint, deliberately out of scope here. Regression-guarded: `tests/lead_referred_by_test.go`. Spec: `api-system-spec.md` §3.

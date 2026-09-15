@@ -51,6 +51,8 @@ func checkWorkflowRules(db *gorm.DB, cfg *config.Config) {
 			checkProspectStaleRule(db, cfg, rule)
 		case models.NotificationEntityCompany:
 			checkCompanyDormantRule(db, cfg, rule)
+		case models.NotificationEntityPaymentInstallment:
+			checkPaymentInstallmentDueRule(db, cfg, rule)
 		}
 	}
 }
@@ -255,6 +257,71 @@ func checkContractStuckRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 		sendRuleNotification(cfg, emails, subject, body)
 		if err := recordNotified(db, rule.ID, contract.ID, ""); err != nil {
 			log.Printf("notifier: failed to record notification for contract %d: %v", contract.ID, err)
+		}
+	}
+}
+
+// checkPaymentInstallmentDueRule — fires once per non-fully-paid
+// PaymentInstallment whose due date falls within rule.ThresholdDays from now
+// (covers both "coming due soon" and "already overdue" in one condition —
+// see NotificationRule's own doc comment). Status is derived the same way
+// the Payment Schedule UI and the Outstanding Balance report do
+// (utils.ComputeInstallmentStatuses), grouped by Deal since the waterfall
+// allocation needs each Deal's own running total-paid.
+func checkPaymentInstallmentDueRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule) {
+	var installments []models.PaymentInstallment
+	if err := db.Find(&installments).Error; err != nil {
+		log.Printf("notifier: failed to query payment installments for rule %d: %v", rule.ID, err)
+		return
+	}
+	if len(installments) == 0 {
+		return
+	}
+
+	byDeal := make(map[uint][]models.PaymentInstallment)
+	for _, inst := range installments {
+		byDeal[inst.DealID] = append(byDeal[inst.DealID], inst)
+	}
+
+	now := time.Now()
+	cutoff := now.Add(time.Duration(rule.ThresholdDays) * 24 * time.Hour)
+
+	for dealID, dealInstallments := range byDeal {
+		var totalPaid float64
+		db.Model(&models.Payment{}).Where("deal_id = ?", dealID).Select("COALESCE(SUM(amount), 0)").Scan(&totalPaid)
+
+		var deal *models.Deal
+		for _, s := range utils.ComputeInstallmentStatuses(dealInstallments, totalPaid, now) {
+			if s.Status == utils.InstallmentStatusPaid {
+				continue
+			}
+			if s.Installment.DueDate.After(cutoff) {
+				continue
+			}
+			if alreadyNotified(db, rule.ID, s.Installment.ID, "") {
+				continue
+			}
+
+			if deal == nil {
+				var d models.Deal
+				if err := db.First(&d, dealID).Error; err != nil {
+					break
+				}
+				deal = &d
+			}
+			emails := recipientEmails(db, deal.AssignedTo, rule.RecipientRole)
+			if len(emails) == 0 {
+				continue
+			}
+			subject := fmt.Sprintf("Payment installment due: %s", deal.Title)
+			body := fmt.Sprintf(
+				"Reminder: a payment installment on the following deal is %s.\n\nDeal: %s\nAmount: %.2f\nDue date: %s\n",
+				s.Status, deal.Title, s.Installment.Amount, s.Installment.DueDate.Format("2006-01-02"),
+			)
+			sendRuleNotification(cfg, emails, subject, body)
+			if err := recordNotified(db, rule.ID, s.Installment.ID, ""); err != nil {
+				log.Printf("notifier: failed to record notification for payment installment %d: %v", s.Installment.ID, err)
+			}
 		}
 	}
 }
