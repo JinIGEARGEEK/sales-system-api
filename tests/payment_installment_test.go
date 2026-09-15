@@ -135,3 +135,74 @@ func TestPaymentInstallmentCreate_RejectsWrongOwner(t *testing.T) {
 	resp := doJSON(t, app, req, nil)
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 }
+
+// TestPaymentInstallmentBulkCreate_CreatesAllInOneCall guards the "generate
+// schedule" bulk endpoint: N installments created from one request/one
+// transaction, all reflected in a subsequent List.
+func TestPaymentInstallmentBulkCreate_CreatesAllInOneCall(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	deal := seedDeal(t, db, nil)
+
+	var out struct {
+		Data []models.PaymentInstallment `json:"data"`
+	}
+	req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/deals/"+itoa(deal.ID)+"/payment-installments/bulk", map[string]interface{}{
+		"installments": []map[string]interface{}{
+			{"amount": 10000, "due_date": time.Now().AddDate(0, 1, 0).Format(time.RFC3339)},
+			{"amount": 10000, "due_date": time.Now().AddDate(0, 2, 0).Format(time.RFC3339)},
+			{"amount": 10000, "due_date": time.Now().AddDate(0, 3, 0).Format(time.RFC3339)},
+		},
+	}, admin.ID, admin.Role)
+	resp := doJSON(t, app, req, &out)
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	require.Len(t, out.Data, 3)
+
+	var listOut struct {
+		Data []utils.InstallmentStatus `json:"data"`
+	}
+	listReq := testutil.AuthRequest(t, http.MethodGet, "/api/v1/deals/"+itoa(deal.ID)+"/payment-installments", nil, admin.ID, admin.Role)
+	listResp := doJSON(t, app, listReq, &listOut)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	assert.Len(t, listOut.Data, 3)
+}
+
+// TestPaymentInstallmentBulkCreate_RejectsEmptyList guards the non-empty
+// check.
+func TestPaymentInstallmentBulkCreate_RejectsEmptyList(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	deal := seedDeal(t, db, nil)
+
+	req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/deals/"+itoa(deal.ID)+"/payment-installments/bulk", map[string]interface{}{
+		"installments": []map[string]interface{}{},
+	}, admin.ID, admin.Role)
+	resp := doJSON(t, app, req, nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+}
+
+// TestPaymentInstallmentBulkCreate_RejectsInvalidRow guards that per-row
+// validation (amount>0, due_date required) still applies inside the batch —
+// one bad row fails the whole request rather than silently skipping it.
+func TestPaymentInstallmentBulkCreate_RejectsInvalidRow(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	deal := seedDeal(t, db, nil)
+
+	req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/deals/"+itoa(deal.ID)+"/payment-installments/bulk", map[string]interface{}{
+		"installments": []map[string]interface{}{
+			{"amount": 10000, "due_date": time.Now().AddDate(0, 1, 0).Format(time.RFC3339)},
+			{"amount": 0, "due_date": time.Now().AddDate(0, 2, 0).Format(time.RFC3339)},
+		},
+	}, admin.ID, admin.Role)
+	resp := doJSON(t, app, req, nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+
+	var listOut struct {
+		Data []utils.InstallmentStatus `json:"data"`
+	}
+	listReq := testutil.AuthRequest(t, http.MethodGet, "/api/v1/deals/"+itoa(deal.ID)+"/payment-installments", nil, admin.ID, admin.Role)
+	listResp := doJSON(t, app, listReq, &listOut)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	assert.Empty(t, listOut.Data, "an invalid row must fail the whole batch, not partially insert")
+}

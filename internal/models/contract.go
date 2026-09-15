@@ -11,6 +11,26 @@ const (
 	ContractStatusExpired ContractStatus = "expired"
 )
 
+// ValidContractStatuses/IsValidContractStatus mirror Payment's own
+// ValidPaymentMethods/IsValidPaymentMethod (payment.go) — a fixed enum,
+// handler-layer validated. PUT /contracts/:id previously accepted any string
+// with no check at all (not even enum membership); this closes that gap.
+var ValidContractStatuses = []ContractStatus{
+	ContractStatusDraft, ContractStatusSent, ContractStatusSigned, ContractStatusExpired,
+}
+
+func IsValidContractStatus(s ContractStatus) bool {
+	if s == "" {
+		return true
+	}
+	for _, v := range ValidContractStatuses {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 // Contract — api-system-spec.md §8.1. QuoteID links back to the Quote a
 // Contract's PDF pulls line items/total from (optional — a Contract can be
 // drafted before a Quote is finalized).

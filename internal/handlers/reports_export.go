@@ -212,6 +212,38 @@ func (h *ReportHandler) OutstandingBalanceExport(c *fiber.Ctx) error {
 	})
 }
 
+// TopReferrersExport godoc
+// @Summary Export top referrers report as CSV (Admin/Sales Manager only)
+// @Description CSV download of the top referrers report (see GET /reports/top-referrers). FR-CRM-121. Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce text/csv
+// @Param assigned_to query string false "Filter by the referred Lead's assigned Sales Rep user ID"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD)"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD)"
+// @Success 200 {file} file "CSV export"
+// @Failure 500 {object} map[string]interface{} "Failed to export top referrers"
+// @Router /reports/top-referrers/export [get]
+func (h *ReportHandler) TopReferrersExport(c *fiber.Ctx) error {
+	rows, err := h.fetchTopReferrers(c)
+	if err != nil {
+		return utils.Internal(c, "Failed to export top referrers")
+	}
+	header := []string{"Referrer", "Type", "Leads Referred", "Deals Created", "Deals Won", "Won Revenue"}
+	return streamCSV(c, "top-referrers.csv", header, func(w *csv.Writer) error {
+		for _, r := range rows {
+			if err := writeCSVRow(w, []string{
+				r.ReferrerName, r.ReferrerType, strconv.FormatInt(r.LeadsReferred, 10),
+				strconv.FormatInt(r.DealsCreated, 10), strconv.FormatInt(r.DealsWon, 10),
+				strconv.FormatFloat(r.WonRevenue, 'f', 2, 64),
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // QuotesExpiringSoonExport godoc
 // @Summary Export quotes expiring soon report as CSV (Admin/Sales Manager only)
 // @Description CSV download of the quotes expiring soon report (see GET /reports/quotes-expiring-soon). FR-CRM-096. Admin/Sales Manager only.

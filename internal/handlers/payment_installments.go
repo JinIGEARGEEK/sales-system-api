@@ -7,6 +7,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
@@ -114,6 +115,64 @@ func (h *PaymentInstallmentHandler) Create(c *fiber.Ctx) error {
 		return utils.Internal(c, "Failed to create payment installment")
 	}
 	return utils.Created(c, installment)
+}
+
+type paymentInstallmentBulkForm struct {
+	Installments []paymentInstallmentForm `json:"installments"`
+}
+
+// BulkCreate godoc
+// @Summary Generate a payment schedule in one action (Admin/Sales Rep/Sales Manager)
+// @Description Creates every installment in one batch insert + one summary audit-log entry, instead of the caller looping N calls to Create — mirrors CampaignHandler.BulkCreateTasks's shape. The frontend computes the actual split (equal amounts, spaced dates); this endpoint only validates and inserts, same permissive per-row rules as the single-row Create. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create.
+// @Tags payment-installments
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param dealId path int true "Deal ID"
+// @Param body body paymentInstallmentBulkForm true "Installments to create"
+// @Success 201 {array} models.PaymentInstallment
+// @Failure 400 {object} map[string]interface{} "Invalid request body"
+// @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
+// @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Router /deals/{dealId}/payment-installments/bulk [post]
+func (h *PaymentInstallmentHandler) BulkCreate(c *fiber.Ctx) error {
+	deal, err := dealForSubResource(c, h.DB, c.Params("dealId"))
+	if err != nil {
+		return respondFindErr(c, err, "Deal not found")
+	}
+
+	var form paymentInstallmentBulkForm
+	if err := c.BodyParser(&form); err != nil {
+		return utils.BadRequest(c, "Invalid request body")
+	}
+	if len(form.Installments) == 0 {
+		return utils.ValidationError(c, "installments is required", map[string][]string{"installments": {"required"}})
+	}
+	for _, row := range form.Installments {
+		if !row.validate(c) {
+			return nil
+		}
+	}
+
+	installments := make([]models.PaymentInstallment, 0, len(form.Installments))
+	for _, row := range form.Installments {
+		installments = append(installments, models.PaymentInstallment{
+			DealID: deal.ID, Amount: row.Amount, DueDate: *row.DueDate, Note: row.Note,
+		})
+	}
+
+	actorID := middleware.CurrentUserID(c)
+	err = h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&installments).Error; err != nil {
+			return err
+		}
+		after := models.JSONMap{"deal_id": deal.ID, "installment_count": len(installments)}
+		return utils.WriteAuditLog(tx, "deal", deal.ID, "bulk_created_payment_installments", nil, after, actorID)
+	})
+	if err != nil {
+		return utils.Internal(c, "Failed to generate payment schedule")
+	}
+	return utils.Created(c, installments)
 }
 
 // Update godoc
