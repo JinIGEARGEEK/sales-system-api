@@ -4,6 +4,20 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-09-16 — Top Referrers report, Contract status validation, bulk payment schedule, FK existence checks
+
+Four follow-ups from the last two features:
+
+**Top Referrers report** — `GET`/`GET .../export /reports/top-referrers` (Admin/Sales Manager, same group as `lead-source-conversion`). Per referring Company/Contact (`Lead.referred_by_type`/`referred_by_id`), counts Leads referred, Deals created (`deals.lead_id`), Deals Won, and total Won revenue. Resolves the polymorphic referrer's name via a double-`LEFT JOIN` against `companies`/`contacts` keyed by `referred_by_type` — no existing pattern in this codebase resolves a polymorphic type+id pair to a name in SQL, so this is a new (standard) shape. Closes the "capture only" fast-follow left open when `referred_by_type`/`referred_by_id` shipped.
+
+**Contract status validation** — `models.IsValidContractStatus` (mirroring `Payment`'s own `IsValidPaymentMethod`) now validates `status` on both `Create` and `Update`; previously any string was accepted with no check at all, not even enum membership. `quote_id`, if set, is now also checked to exist and to belong to the same Deal as the Contract (`404`/`422` respectively) via a new shared `validateContractForm`.
+
+**Bulk payment schedule generation** — `POST /deals/:dealId/payment-installments/bulk`, mirroring `CampaignHandler.BulkCreateTasks`'s batch-insert-plus-one-audit-log-entry shape, so a rep generating an N-installment schedule doesn't produce N separate audit-log rows the way N calls to the single-row `POST` would.
+
+**FK existence checks** — `Lead.company_id` (optional) and `Lead.referred_by_id` are now existence-checked against their target tables (previously accepted any id unchecked, including ones that don't exist at all) — `validateLeadCompanyID`/extended `validateReferredBy` in `internal/handlers/leads.go`. Deal/Contact's own required `company_id`/`contact_id` remain presence-checked only (a separate, wider, deliberately out-of-scope inconsistency, left alone here).
+
+Regression-guarded: `tests/top_referrers_test.go`, `tests/contract_validation_test.go`, new cases in `tests/payment_installment_test.go`/`tests/lead_company_test.go`/`tests/lead_referred_by_test.go`. Spec: `api-system-spec.md` §3, §7.5a, §8.1, §8.4.
+
 ## 2026-09-15 — Payment Installment schedule, Outstanding Balance aging, and a new reminder rule
 
 Added `PaymentInstallment` (`internal/models/payment_installment.go`) — a planned installment (amount + due date) a rep defines on a Won Deal before money actually arrives, distinct from `Payment` (which only records money already received). No stored status: every read derives paid/partial/overdue/upcoming via a new shared helper, `utils.ComputeInstallmentStatuses` (`internal/utils/payment_schedule.go`) — a cumulative **waterfall** allocation against the Deal's actual Payment total (sorted by due date, earliest first), not an explicit link between one Payment and one installment (that reconciliation model was confirmed with the business owner over the more precise but more invasive alternative).

@@ -97,6 +97,21 @@ func TestLeadCreate_RejectsReferredByIDWithoutType(t *testing.T) {
 	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 }
 
+// TestLeadCreate_RejectsNonexistentReferredByID guards the new existence
+// check — a well-formed type with an id that doesn't exist in that table at
+// all was previously accepted unchecked.
+func TestLeadCreate_RejectsNonexistentReferredByID(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/leads", map[string]interface{}{
+		"name": "Bad Referrer Lead", "source": "Referral",
+		"referred_by_type": "company", "referred_by_id": 999999,
+	}, admin.ID, admin.Role)
+	resp := doJSON(t, app, req, nil)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
 // TestLeadCreate_AllowsNoReferrer confirms the new fields stay fully optional
 // — most Leads (any non-Referral source) will never set them.
 func TestLeadCreate_AllowsNoReferrer(t *testing.T) {

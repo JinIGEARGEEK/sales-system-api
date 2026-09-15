@@ -133,6 +133,76 @@ func (h *ReportHandler) LeadSourceConversion(c *fiber.Ctx) error {
 	return utils.OK(c, result)
 }
 
+type topReferrerRow struct {
+	ReferrerType  string  `json:"referrer_type"`
+	ReferrerID    uint    `json:"referrer_id"`
+	ReferrerName  string  `json:"referrer_name"`
+	LeadsReferred int64   `json:"leads_referred"`
+	DealsCreated  int64   `json:"deals_created"`
+	DealsWon      int64   `json:"deals_won"`
+	WonRevenue    float64 `json:"won_revenue"`
+}
+
+// fetchTopReferrers — shared by TopReferrers (JSON) and its CSV export.
+// FR-CRM-121. Groups Leads by their (referred_by_type, referred_by_id) pair
+// — a referrer is polymorphic (an existing Company or Contact, FR-CRM-119),
+// so this double-LEFT-JOINs both target tables keyed by referred_by_type
+// rather than one join, since no single FK column points at "whichever
+// table type says." deals.lead_id (set at conversion, leads.go) gives the
+// Lead -> Deal edge; won-ness/revenue then reads deals.status/value directly,
+// same DealStatusWon check every other Won-based report uses. Sorted by
+// leads_referred DESC — the referrer sending the most volume leads.
+func (h *ReportHandler) fetchTopReferrers(c *fiber.Ctx) ([]topReferrerRow, error) {
+	query := h.DB.Table("leads").
+		Select(`leads.referred_by_type as referrer_type, leads.referred_by_id as referrer_id,
+			COALESCE(companies.name, contacts.name) as referrer_name,
+			COUNT(DISTINCT leads.id) as leads_referred,
+			COUNT(DISTINCT deals.id) as deals_created,
+			COUNT(DISTINCT deals.id) FILTER (WHERE deals.status = ?) as deals_won,
+			COALESCE(SUM(deals.value) FILTER (WHERE deals.status = ?), 0) as won_revenue`,
+			models.DealStatusWon, models.DealStatusWon).
+		Joins("LEFT JOIN deals ON deals.lead_id = leads.id").
+		Joins("LEFT JOIN companies ON leads.referred_by_type = 'company' AND leads.referred_by_id = companies.id").
+		Joins("LEFT JOIN contacts ON leads.referred_by_type = 'contact' AND leads.referred_by_id = contacts.id").
+		Where("leads.referred_by_id IS NOT NULL").
+		Group("leads.referred_by_type, leads.referred_by_id, COALESCE(companies.name, contacts.name)").
+		Order("leads_referred DESC")
+
+	if v := c.Query("assigned_to"); v != "" {
+		query = query.Where("leads.assigned_to = ?", v)
+	}
+	if v := c.Query("date_from"); v != "" {
+		query = query.Where("leads.created_at >= ?", v)
+	}
+	if v := c.Query("date_to"); v != "" {
+		query = query.Where("leads.created_at <= ?", v)
+	}
+
+	rows := []topReferrerRow{}
+	err := query.Scan(&rows).Error
+	return rows, err
+}
+
+// TopReferrers godoc
+// @Summary Top referrers report (Admin/Sales Manager only)
+// @Description Per referring Company/Contact (FR-CRM-119's referred_by_type/referred_by_id), how many Leads they referred, how many became Deals, how many of those Deals were Won, and total Won revenue. FR-CRM-121. Admin/Sales Manager only.
+// @Tags reports
+// @Security BearerAuth
+// @Produce json
+// @Param assigned_to query string false "Filter by the referred Lead's assigned Sales Rep user ID"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on the Lead's created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on the Lead's created_at"
+// @Success 200 {object} map[string]interface{}
+// @Failure 500 {object} map[string]interface{} "Failed to compute top referrers"
+// @Router /reports/top-referrers [get]
+func (h *ReportHandler) TopReferrers(c *fiber.Ctx) error {
+	rows, err := h.fetchTopReferrers(c)
+	if err != nil {
+		return utils.Internal(c, "Failed to compute top referrers")
+	}
+	return utils.OK(c, rows)
+}
+
 type prospectSourceConversion struct {
 	Source         string  `json:"source"`
 	Total          int64   `json:"total"`

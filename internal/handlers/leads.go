@@ -112,8 +112,9 @@ type leadForm struct {
 // validateReferredBy enforces both-or-neither on ReferredByType/ReferredByID
 // — a Lead's referrer is always an existing Company or Contact, never a
 // Deal/Prospect, per models.IsValidReferrerType (activity.go, next to
-// ActivityRelatedType's own definition — the broader enum this borrows from).
-func validateReferredBy(c *fiber.Ctx, referredByType *models.ActivityRelatedType, referredByID *uint) bool {
+// ActivityRelatedType's own definition — the broader enum this borrows from)
+// — and, once type is known, that the referenced row actually exists.
+func validateReferredBy(c *fiber.Ctx, db *gorm.DB, referredByType *models.ActivityRelatedType, referredByID *uint) bool {
 	if referredByType == nil && referredByID == nil {
 		return true
 	}
@@ -123,6 +124,32 @@ func validateReferredBy(c *fiber.Ctx, referredByType *models.ActivityRelatedType
 	}
 	if !models.IsValidReferrerType(*referredByType) {
 		utils.ValidationError(c, "referred_by_type must be company or contact", map[string][]string{"referred_by_type": {"invalid"}})
+		return false
+	}
+	var existsErr error
+	if *referredByType == models.RelatedTypeCompany {
+		existsErr = db.First(&models.Company{}, *referredByID).Error
+	} else {
+		existsErr = db.First(&models.Contact{}, *referredByID).Error
+	}
+	if existsErr != nil {
+		utils.NotFound(c, "Referred-by company/contact not found")
+		return false
+	}
+	return true
+}
+
+// validateLeadCompanyID checks that an explicitly-set (optional) company_id
+// actually exists — unlike Deal/Contact's own company_id, which are
+// presence-checked (required) but never existence-checked against the DB,
+// this is the one real "does this FK exist" precedent in the codebase,
+// mirroring projects.go's own Company lookup.
+func validateLeadCompanyID(c *fiber.Ctx, db *gorm.DB, companyID *uint) bool {
+	if companyID == nil {
+		return true
+	}
+	if err := db.First(&models.Company{}, *companyID).Error; err != nil {
+		utils.NotFound(c, "Company not found")
 		return false
 	}
 	return true
@@ -160,7 +187,10 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 	if !models.IsValidBusinessUnit(form.BusinessUnit) {
 		return utils.ValidationError(c, "business_unit must be Project or Product", map[string][]string{"business_unit": {"invalid"}})
 	}
-	if !validateReferredBy(c, form.ReferredByType, form.ReferredByID) {
+	if !validateReferredBy(c, h.DB, form.ReferredByType, form.ReferredByID) {
+		return nil
+	}
+	if !validateLeadCompanyID(c, h.DB, form.CompanyID) {
 		return nil
 	}
 
@@ -437,7 +467,10 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	if !models.IsValidBusinessUnit(form.BusinessUnit) {
 		return utils.ValidationError(c, "business_unit must be Project or Product", map[string][]string{"business_unit": {"invalid"}})
 	}
-	if !validateReferredBy(c, form.ReferredByType, form.ReferredByID) {
+	if !validateReferredBy(c, h.DB, form.ReferredByType, form.ReferredByID) {
+		return nil
+	}
+	if !validateLeadCompanyID(c, h.DB, form.CompanyID) {
 		return nil
 	}
 

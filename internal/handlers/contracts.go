@@ -44,6 +44,30 @@ type contractForm struct {
 	QuoteID *uint                 `json:"quote_id"`
 }
 
+// validateContractForm checks status enum membership and, if quote_id is
+// set, that the Quote exists AND belongs to this same Deal — neither was
+// checked at all before (status not even for enum membership); mirrors
+// validateReferredBy's shape in leads.go (a shared pre-save gate called from
+// both Create and Update).
+func validateContractForm(c *fiber.Ctx, db *gorm.DB, dealID uint, form contractForm) bool {
+	if !models.IsValidContractStatus(form.Status) {
+		utils.ValidationError(c, "status is invalid", map[string][]string{"status": {"invalid"}})
+		return false
+	}
+	if form.QuoteID != nil {
+		var quote models.Quote
+		if err := db.First(&quote, *form.QuoteID).Error; err != nil {
+			utils.NotFound(c, "Quote not found")
+			return false
+		}
+		if quote.DealID != dealID {
+			utils.ValidationError(c, "quote does not belong to this deal", map[string][]string{"quote_id": {"invalid"}})
+			return false
+		}
+	}
+	return true
+}
+
 // Create godoc
 // @Summary Create a contract (Admin/Sales Rep/Sales Manager)
 // @Description Creates a Contract on a Deal, optionally linked to a Quote (quote_id) for PDF line items. status defaults to draft. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §8.1.
@@ -67,6 +91,9 @@ func (h *ContractHandler) Create(c *fiber.Ctx) error {
 	var form contractForm
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
+	}
+	if !validateContractForm(c, h.DB, deal.ID, form) {
+		return nil
 	}
 
 	contract := models.Contract{DealID: deal.ID, Status: form.Status, QuoteID: form.QuoteID}
@@ -105,6 +132,9 @@ func (h *ContractHandler) Update(c *fiber.Ctx) error {
 	var form contractForm
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
+	}
+	if !validateContractForm(c, h.DB, contract.DealID, form) {
+		return nil
 	}
 	if form.Status != "" {
 		contract.Status = form.Status

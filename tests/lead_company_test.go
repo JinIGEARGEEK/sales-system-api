@@ -68,6 +68,34 @@ func TestLeadUpdate_ChangesCompanyID(t *testing.T) {
 	assert.Equal(t, newCompany.ID, *out.Data.CompanyID)
 }
 
+// TestLeadCreate_RejectsNonexistentCompanyID guards the new existence check
+// on company_id — previously any id, including one that doesn't exist at
+// all, was accepted unchecked.
+func TestLeadCreate_RejectsNonexistentCompanyID(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/leads", map[string]interface{}{
+		"name": "Jordan Lee", "company_id": 999999, "source": "Website",
+	}, admin.ID, admin.Role)
+	resp := doJSON(t, app, req, nil)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// TestLeadUpdate_RejectsNonexistentCompanyID is Update's sibling of the
+// Create case above.
+func TestLeadUpdate_RejectsNonexistentCompanyID(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	lead := seedLead(t, db, nil)
+
+	req := testutil.AuthRequest(t, http.MethodPut, "/api/v1/leads/"+itoa(lead.ID), map[string]interface{}{
+		"name": lead.Name, "company_id": 999999, "source": "Website", "status": "Qualified",
+	}, admin.ID, admin.Role)
+	resp := doJSON(t, app, req, nil)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
 // TestLeadConvert_ReusesLeadsExistingCompany guards the dedupe fix noted in
 // biz_spec/feature-spec.md's FR-CRM-001 update: converting a Lead that's
 // already linked to a real Company (via CompanyID, set at create/edit time)
