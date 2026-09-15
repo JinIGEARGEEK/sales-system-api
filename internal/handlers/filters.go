@@ -227,5 +227,8 @@ func applyLeadLikeFilters(query *gorm.DB, c *fiber.Ctx, table, excludeConvertedC
 	if c.Query("exclude_converted") == "true" {
 		query = query.Where(table + "." + excludeConvertedColumn + " IS NULL")
 	}
+	if c.Query("only_converted") == "true" {
+		query = query.Where(table + "." + excludeConvertedColumn + " IS NOT NULL")
+	}
 	return query, needsCompanyJoin, sortField
 }

@@ -4,6 +4,10 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-09-15 — `GET /leads` gains `only_converted`
+
+Added `only_converted=true` to `applyLeadLikeFilters` (`internal/handlers/filters.go`), the mirror image of the existing `exclude_converted=true`: returns only Leads with `converted_deal_id IS NOT NULL`. Backs the frontend's new "Converted" scope tab on the Leads list (`pages/crm/leads/index.vue`), so reps can see already-converted Leads and the live stage of the Deal each one became, instead of only ever filtering them out. Shared with `GET /prospects` via the same helper, though no caller passes it there yet. Spec: `api-system-spec.md` §3.
+
 ## 2026-09-11 — Open API user manual
 
 Added `docs/OPEN_API_GUIDE.md` — an integrator-facing walkthrough of the Open API below (getting a key as an Admin, authenticating, per-endpoint request/response examples, the full error-code table, a curl quick start, and an FAQ), linked from `README.md`'s API overview and `biz_spec/api-system-spec.md` §8.9. Written up front the precise Update semantics an integrator would otherwise have to read the handler code to discover: `PUT` is a full replace field-by-field (an omitted field is cleared, not preserved) except `status` on both resources and `company_id` on Contact (kept if omitted) — and specifically flags `Contact.is_primary` as the sharpest edge, since omitting it on an update un-sets it with no "leave unchanged" default.
