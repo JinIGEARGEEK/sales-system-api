@@ -3551,6 +3551,108 @@
                 }
             }
         },
+        "/deals/{dealId}/payment-installments": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns each planned installment with its derived paid/partial/overdue/upcoming status (utils.ComputeInstallmentStatuses). Backs the Deal detail page's Payment Schedule section. api-system-spec.md §7.5a.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payment-installments"
+                ],
+                "summary": "List a deal's payment installment schedule (Admin/Sales Rep/Sales Manager)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Deal ID",
+                        "name": "dealId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_utils.InstallmentStatus"
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "amount must be \u003e 0, due_date is required. No validation against the Deal's value or existing installments — permissive, matching Payment's own lack of a \"can't exceed deal value\" check. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payment-installments"
+                ],
+                "summary": "Add a planned installment to a deal's payment schedule (Admin/Sales Rep/Sales Manager)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Deal ID",
+                        "name": "dealId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Installment fields",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.paymentInstallmentForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.PaymentInstallment"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request body, amount, or due_date",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Not authorized to modify this deal's records",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/deals/{dealId}/payments": {
             "get": {
                 "security": [
@@ -4198,6 +4300,12 @@
                         "in": "query"
                     },
                     {
+                        "type": "boolean",
+                        "description": "Only leads already converted to a Deal",
+                        "name": "only_converted",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "description": "Page number (default 1)",
                         "name": "page",
@@ -4816,6 +4924,106 @@
                     },
                     "422": {
                         "description": "Missing name or company_id",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/payment-installments/{id}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Same validation as Create. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may edit.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payment-installments"
+                ],
+                "summary": "Edit a planned installment (Admin/Sales Rep/Sales Manager)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Payment Installment ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Installment fields",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.paymentInstallmentForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.PaymentInstallment"
+                        }
+                    },
+                    "403": {
+                        "description": "Not authorized to modify this deal's records",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Payment installment not found, or deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Hard delete. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.",
+                "tags": [
+                    "payment-installments"
+                ],
+                "summary": "Delete a planned installment",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Payment Installment ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "403": {
+                        "description": "Not authorized to modify this deal's records",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Payment installment not found, or deal not found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -7626,6 +7834,23 @@
                 "StatusArchived"
             ]
         },
+        "github_com_igeargeek_sales-system-api_internal_models.ActivityRelatedType": {
+            "type": "string",
+            "enum": [
+                "contact",
+                "company",
+                "deal",
+                "prospect",
+                "lead"
+            ],
+            "x-enum-varnames": [
+                "RelatedTypeContact",
+                "RelatedTypeCompany",
+                "RelatedTypeDeal",
+                "RelatedTypeProspect",
+                "RelatedTypeLead"
+            ]
+        },
         "github_com_igeargeek_sales-system-api_internal_models.AppSettings": {
             "type": "object",
             "properties": {
@@ -7798,7 +8023,12 @@
                     "type": "string"
                 },
                 "status": {
-                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.ActiveArchivedStatus"
+                    "description": "index — mirrors Company.Status's own index: List/Export both filter on\nthis column (applyContactFilters), same as Company's, so it shouldn't\nbe the one AuditedModel resource among the two left doing a sequential\nscan for that filter as the table grows.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.ActiveArchivedStatus"
+                        }
+                    ]
                 },
                 "tags": {
                     "type": "array",
@@ -8174,6 +8404,17 @@
                     "description": "ProspectID is set when this Lead originated from a Marketing Prospect\nvia ProspectHandler.Convert (nil for a Lead created directly) — mirrors\nDeal.LeadID's back-reference to its own originating record.",
                     "type": "integer"
                 },
+                "referred_by_id": {
+                    "type": "integer"
+                },
+                "referred_by_type": {
+                    "description": "ReferredByType/ReferredByID capture which existing Company or Contact\nreferred this Lead in (relevant when Source is \"Referral\", but not\nenforced to only that source — a rep can still record it if the source\nchanges later). Both-or-neither: validated together in the handler\n(models.IsValidReferrerType, activity.go), not via a DB constraint.\nTyped as ActivityRelatedType itself (not a bare string) so it stays\ncompile-time-consistent with every other enum field on this struct\n(Source/Status/BusinessUnit below) — restricted to just company/contact\nof that broader enum's values, since Deal/Prospect aren't valid referrers.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.ActivityRelatedType"
+                        }
+                    ]
+                },
                 "score": {
                     "description": "Score/Classification — FR-CRM-006/007. Score is the sum of matching\nactive LeadScoringCriterion weights, recomputed on Create/Update.\nClassification is derived from Score vs AppSettings.LeadScoringMqlThreshold\n(\"mql\"), or set manually by a rep to \"sql\"; \"none\" below threshold.",
                     "type": "integer"
@@ -8314,6 +8555,32 @@
                     "type": "string"
                 },
                 "paid_at": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_igeargeek_sales-system-api_internal_models.PaymentInstallment": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "number"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "deal_id": {
+                    "type": "integer"
+                },
+                "due_date": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "note": {
                     "type": "string"
                 },
                 "updated_at": {
@@ -8494,7 +8761,12 @@
                     "type": "string"
                 },
                 "status": {
-                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProjectStatus"
+                    "description": "index — List/Export both filter on this column (applyProjectFilters);\npreviously the one status column among Company/Contact/Project left\nunindexed despite the identical filter shape.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProjectStatus"
+                        }
+                    ]
                 },
                 "target_end_date": {
                     "type": "string"
@@ -9036,6 +9308,22 @@
                 }
             }
         },
+        "github_com_igeargeek_sales-system-api_internal_utils.InstallmentStatus": {
+            "type": "object",
+            "properties": {
+                "covered": {
+                    "description": "Covered is how much of this installment's Amount has been paid,\ncumulatively — see ComputeInstallmentStatuses's own doc for the\nwaterfall allocation this comes from.",
+                    "type": "number"
+                },
+                "installment": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.PaymentInstallment"
+                },
+                "status": {
+                    "description": "\"paid\" | \"partial\" | \"overdue\" | \"upcoming\"",
+                    "type": "string"
+                }
+            }
+        },
         "gorm.DeletedAt": {
             "type": "object",
             "properties": {
@@ -9505,6 +9793,12 @@
                 "phone": {
                     "type": "string"
                 },
+                "referred_by_id": {
+                    "type": "integer"
+                },
+                "referred_by_type": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.ActivityRelatedType"
+                },
                 "source": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource"
                 },
@@ -9601,6 +9895,20 @@
                     "type": "string"
                 },
                 "paid_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.paymentInstallmentForm": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "number"
+                },
+                "due_date": {
+                    "type": "string"
+                },
+                "note": {
                     "type": "string"
                 }
             }

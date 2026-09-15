@@ -122,6 +122,55 @@ func TestOutstandingBalance_OnlyPartiallyPaidWonDeals(t *testing.T) {
 	assert.Equal(t, 600.0, byID[partiallyPaid.ID])
 }
 
+// TestOutstandingBalance_Aging guards applyOutstandingBalanceAging's three
+// outcomes: "none" for a Deal with no PaymentInstallment schedule at all
+// (this report's original, pre-aging behavior), "overdue" when the
+// schedule's waterfall status (against the Deal's actual Payment total)
+// shows any installment overdue, and "upcoming" otherwise.
+func TestOutstandingBalance_Aging(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	noSchedule := seedDeal(t, db, nil)
+	noSchedule.Status, noSchedule.Value = models.DealStatusWon, 1000
+	require.NoError(t, db.Save(noSchedule).Error)
+	require.NoError(t, db.Create(&models.Payment{DealID: noSchedule.ID, Amount: 400, PaidAt: time.Now()}).Error)
+
+	overdue := seedDeal(t, db, nil)
+	overdue.Status, overdue.Value = models.DealStatusWon, 1000
+	require.NoError(t, db.Save(overdue).Error)
+	require.NoError(t, db.Create(&models.Payment{DealID: overdue.ID, Amount: 400, PaidAt: time.Now()}).Error)
+	require.NoError(t, db.Create(&models.PaymentInstallment{
+		DealID: overdue.ID, Amount: 1000, DueDate: time.Now().AddDate(0, 0, -5),
+	}).Error)
+
+	upcoming := seedDeal(t, db, nil)
+	upcoming.Status, upcoming.Value = models.DealStatusWon, 1000
+	require.NoError(t, db.Save(upcoming).Error)
+	require.NoError(t, db.Create(&models.Payment{DealID: upcoming.ID, Amount: 400, PaidAt: time.Now()}).Error)
+	require.NoError(t, db.Create(&models.PaymentInstallment{
+		DealID: upcoming.ID, Amount: 1000, DueDate: time.Now().AddDate(0, 0, 30),
+	}).Error)
+
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/reports/outstanding-balance", nil, admin.ID, admin.Role)
+	var out struct {
+		Data []struct {
+			DealID uint   `json:"deal_id"`
+			Aging  string `json:"aging"`
+		} `json:"data"`
+	}
+	resp := doJSON(t, app, req, &out)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	agingByID := map[uint]string{}
+	for _, r := range out.Data {
+		agingByID[r.DealID] = r.Aging
+	}
+	assert.Equal(t, "none", agingByID[noSchedule.ID])
+	assert.Equal(t, "overdue", agingByID[overdue.ID])
+	assert.Equal(t, "upcoming", agingByID[upcoming.ID])
+}
+
 // TestQuotesExpiringSoon_OnlyWithinWindow guards GET
 // /reports/quotes-expiring-soon: a Sent quote expiring in 3 days is
 // included at within_days=7; one expiring in 30 days is not.

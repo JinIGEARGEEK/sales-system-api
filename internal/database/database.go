@@ -73,6 +73,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.Tag{},
 		&models.Quote{},
 		&models.Payment{},
+		&models.PaymentInstallment{},
 		&models.Task{},
 		&models.Campaign{},
 		&models.Contract{},

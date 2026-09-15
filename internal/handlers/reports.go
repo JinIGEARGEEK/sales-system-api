@@ -398,15 +398,23 @@ type outstandingBalanceRow struct {
 	DealValue         float64 `json:"deal_value"`
 	PaidAmount        float64 `json:"paid_amount"`
 	OutstandingAmount float64 `json:"outstanding_amount"`
+	// Aging — "overdue"/"upcoming" when the Deal has a PaymentInstallment
+	// schedule defined (utils.ComputeInstallmentStatuses against PaidAmount
+	// above), "none" otherwise — a Deal with no schedule behaves exactly as
+	// before this field existed. See applyOutstandingBalanceAging below.
+	Aging string `json:"aging"`
 }
+
+const (
+	OutstandingBalanceAgingOverdue  = "overdue"
+	OutstandingBalanceAgingUpcoming = "upcoming"
+	OutstandingBalanceAgingNone     = "none"
+)
 
 // fetchOutstandingBalance — shared by OutstandingBalance (JSON) and its CSV
 // export. FR-CRM-095. Won Deals whose recorded Payments sum to less than the
-// Deal's value — every row is money still owed. Payment has no due_date
-// field (only paid_at, when an installment was actually received —
-// api-system-spec.md §7.3), so this can't be bucketed into 30/60/90-day
-// aging; it's a flat "who still owes what" list until that field exists.
-// Sorted by outstanding_amount DESC so the largest amount owed leads.
+// Deal's value — every row is money still owed. Sorted by outstanding_amount
+// DESC so the largest amount owed leads.
 func (h *ReportHandler) fetchOutstandingBalance(c *fiber.Ctx) ([]outstandingBalanceRow, error) {
 	query := h.DB.Table("deals").
 		Select(`deals.id as deal_id, deals.title as deal_title, companies.name as company_name,
@@ -429,8 +437,57 @@ func (h *ReportHandler) fetchOutstandingBalance(c *fiber.Ctx) ([]outstandingBala
 	// Non-nil starting slice — see the comment on fetchCustomersByProductStatus's
 	// identical `rows := []T{}` above for why this matters.
 	rows := []outstandingBalanceRow{}
-	err := query.Scan(&rows).Error
-	return rows, err
+	if err := query.Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	if err := h.applyOutstandingBalanceAging(rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// applyOutstandingBalanceAging fills in each row's Aging field in place — a
+// Deal with no PaymentInstallment schedule defined gets "none" (identical to
+// this report's pre-aging behavior); otherwise "overdue" if any installment
+// is overdue per utils.ComputeInstallmentStatuses (using the row's own
+// PaidAmount as the waterfall's totalPaid — same total this query already
+// computed), else "upcoming". One query for every row's installments
+// (grouped in Go) rather than N+1 per-deal queries.
+func (h *ReportHandler) applyOutstandingBalanceAging(rows []outstandingBalanceRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	dealIDs := make([]uint, len(rows))
+	for i, r := range rows {
+		dealIDs[i] = r.DealID
+	}
+
+	var installments []models.PaymentInstallment
+	if err := h.DB.Where("deal_id IN ?", dealIDs).Find(&installments).Error; err != nil {
+		return err
+	}
+	byDeal := make(map[uint][]models.PaymentInstallment, len(rows))
+	for _, inst := range installments {
+		byDeal[inst.DealID] = append(byDeal[inst.DealID], inst)
+	}
+
+	now := time.Now()
+	for i := range rows {
+		dealInstallments, ok := byDeal[rows[i].DealID]
+		if !ok {
+			rows[i].Aging = OutstandingBalanceAgingNone
+			continue
+		}
+		statuses := utils.ComputeInstallmentStatuses(dealInstallments, rows[i].PaidAmount, now)
+		rows[i].Aging = OutstandingBalanceAgingUpcoming
+		for _, s := range statuses {
+			if s.Status == utils.InstallmentStatusOverdue {
+				rows[i].Aging = OutstandingBalanceAgingOverdue
+				break
+			}
+		}
+	}
+	return nil
 }
 
 // OutstandingBalance godoc

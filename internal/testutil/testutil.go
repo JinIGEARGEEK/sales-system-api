@@ -91,6 +91,7 @@ var tables = []string{
 	"tasks",
 	"campaigns",
 	"payments",
+	"payment_installments",
 	"quotes",
 	"tags",
 	"activities",

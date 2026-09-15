@@ -12,11 +12,15 @@ const (
 	// NotificationEntityCompany — added for the dormant-customer / upsell
 	// -targeting feature. See NotificationRule's doc comment below.
 	NotificationEntityCompany NotificationEntityType = "company"
+	// NotificationEntityPaymentInstallment — added alongside PaymentInstallment
+	// itself (the payment schedule feature). See NotificationRule's doc
+	// comment below.
+	NotificationEntityPaymentInstallment NotificationEntityType = "payment_installment"
 )
 
 var ValidNotificationEntityTypes = []NotificationEntityType{
 	NotificationEntityDeal, NotificationEntityQuote, NotificationEntityContract, NotificationEntityProspect,
-	NotificationEntityCompany,
+	NotificationEntityCompany, NotificationEntityPaymentInstallment,
 }
 
 func IsValidNotificationEntityType(v NotificationEntityType) bool {
@@ -72,10 +76,19 @@ func IsValidNotificationRecipientRole(v NotificationRecipientRole) bool {
 //     is), so UpdatedAt is the closest available "last touched" signal.
 //   - "company": an active Company with no Activity logged directly against
 //     it in at least ThresholdDays.
+//   - "payment_installment": a PaymentInstallment not yet fully paid (per
+//     utils.ComputeInstallmentStatuses' waterfall allocation) whose due date
+//     is within ThresholdDays from now (covers both "coming due soon" and
+//     "already overdue" in one condition, same single-direction-per-type
+//     shape every other rule above uses) — added alongside the payment
+//     schedule feature.
 type NotificationRule struct {
 	AuditedModel
-	Name          string                    `gorm:"not null;uniqueIndex" json:"name"`
-	EntityType    NotificationEntityType    `gorm:"type:varchar(16);not null;index" json:"entity_type"`
+	Name string `gorm:"not null;uniqueIndex" json:"name"`
+	// varchar(32), not (16) — "payment_installment" (20 chars) needs the
+	// extra room; widened rather than shortening the value once RecipientRole
+	// on this same struct already uses varchar(32).
+	EntityType    NotificationEntityType    `gorm:"type:varchar(32);not null;index" json:"entity_type"`
 	ThresholdDays int                       `gorm:"not null" json:"threshold_days"`
 	RecipientRole NotificationRecipientRole `gorm:"type:varchar(32);not null;default:'owner'" json:"recipient_role"`
 	IsActive      bool                      `gorm:"not null;default:true;index" json:"is_active"`

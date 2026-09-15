@@ -197,12 +197,13 @@ func (h *ReportHandler) OutstandingBalanceExport(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.Internal(c, "Failed to export outstanding balance")
 	}
-	header := []string{"Deal", "Company", "Deal Value", "Paid", "Outstanding"}
+	header := []string{"Deal", "Company", "Deal Value", "Paid", "Outstanding", "Aging"}
 	return streamCSV(c, "outstanding-balance.csv", header, func(w *csv.Writer) error {
 		for _, r := range rows {
 			if err := writeCSVRow(w, []string{
 				r.DealTitle, r.CompanyName, strconv.FormatFloat(r.DealValue, 'f', 2, 64),
 				strconv.FormatFloat(r.PaidAmount, 'f', 2, 64), strconv.FormatFloat(r.OutstandingAmount, 'f', 2, 64),
+				r.Aging,
 			}); err != nil {
 				return err
 			}

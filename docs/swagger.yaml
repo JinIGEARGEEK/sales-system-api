@@ -8,6 +8,20 @@ definitions:
     x-enum-varnames:
     - StatusActive
     - StatusArchived
+  github_com_igeargeek_sales-system-api_internal_models.ActivityRelatedType:
+    enum:
+    - contact
+    - company
+    - deal
+    - prospect
+    - lead
+    type: string
+    x-enum-varnames:
+    - RelatedTypeContact
+    - RelatedTypeCompany
+    - RelatedTypeDeal
+    - RelatedTypeProspect
+    - RelatedTypeLead
   github_com_igeargeek_sales-system-api_internal_models.AppSettings:
     properties:
       annual_revenue_goal:
@@ -144,7 +158,13 @@ definitions:
       role_title:
         type: string
       status:
-        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ActiveArchivedStatus'
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ActiveArchivedStatus'
+        description: |-
+          index — mirrors Company.Status's own index: List/Export both filter on
+          this column (applyContactFilters), same as Company's, so it shouldn't
+          be the one AuditedModel resource among the two left doing a sequential
+          scan for that filter as the table grows.
       tags:
         items:
           type: string
@@ -426,6 +446,21 @@ definitions:
           via ProspectHandler.Convert (nil for a Lead created directly) — mirrors
           Deal.LeadID's back-reference to its own originating record.
         type: integer
+      referred_by_id:
+        type: integer
+      referred_by_type:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ActivityRelatedType'
+        description: |-
+          ReferredByType/ReferredByID capture which existing Company or Contact
+          referred this Lead in (relevant when Source is "Referral", but not
+          enforced to only that source — a rep can still record it if the source
+          changes later). Both-or-neither: validated together in the handler
+          (models.IsValidReferrerType, activity.go), not via a DB constraint.
+          Typed as ActivityRelatedType itself (not a bare string) so it stays
+          compile-time-consistent with every other enum field on this struct
+          (Source/Status/BusinessUnit below) — restricted to just company/contact
+          of that broader enum's values, since Deal/Prospect aren't valid referrers.
       score:
         description: |-
           Score/Classification — FR-CRM-006/007. Score is the sum of matching
@@ -532,6 +567,23 @@ definitions:
       note:
         type: string
       paid_at:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.PaymentInstallment:
+    properties:
+      amount:
+        type: number
+      created_at:
+        type: string
+      deal_id:
+        type: integer
+      due_date:
+        type: string
+      id:
+        type: integer
+      note:
         type: string
       updated_at:
         type: string
@@ -658,7 +710,12 @@ definitions:
       start_date:
         type: string
       status:
-        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProjectStatus'
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProjectStatus'
+        description: |-
+          index — List/Export both filter on this column (applyProjectFilters);
+          previously the one status column among Company/Contact/Project left
+          unindexed despite the identical filter shape.
       target_end_date:
         type: string
       updated_at:
@@ -1093,6 +1150,20 @@ definitions:
       updated_by:
         type: integer
     type: object
+  github_com_igeargeek_sales-system-api_internal_utils.InstallmentStatus:
+    properties:
+      covered:
+        description: |-
+          Covered is how much of this installment's Amount has been paid,
+          cumulatively — see ComputeInstallmentStatuses's own doc for the
+          waterfall allocation this comes from.
+        type: number
+      installment:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.PaymentInstallment'
+      status:
+        description: '"paid" | "partial" | "overdue" | "upcoming"'
+        type: string
+    type: object
   gorm.DeletedAt:
     properties:
       time:
@@ -1405,6 +1476,10 @@ definitions:
         type: string
       phone:
         type: string
+      referred_by_id:
+        type: integer
+      referred_by_type:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ActivityRelatedType'
       source:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource'
       status:
@@ -1468,6 +1543,15 @@ definitions:
       note:
         type: string
       paid_at:
+        type: string
+    type: object
+  internal_handlers.paymentInstallmentForm:
+    properties:
+      amount:
+        type: number
+      due_date:
+        type: string
+      note:
         type: string
     type: object
   internal_handlers.pipelineStageForm:
@@ -3968,6 +4052,78 @@ paths:
       summary: Create a contract (Admin/Sales Rep/Sales Manager)
       tags:
       - contracts
+  /deals/{dealId}/payment-installments:
+    get:
+      description: Returns each planned installment with its derived paid/partial/overdue/upcoming
+        status (utils.ComputeInstallmentStatuses). Backs the Deal detail page's Payment
+        Schedule section. api-system-spec.md §7.5a.
+      parameters:
+      - description: Deal ID
+        in: path
+        name: dealId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_utils.InstallmentStatus'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List a deal's payment installment schedule (Admin/Sales Rep/Sales Manager)
+      tags:
+      - payment-installments
+    post:
+      consumes:
+      - application/json
+      description: amount must be > 0, due_date is required. No validation against
+        the Deal's value or existing installments — permissive, matching Payment's
+        own lack of a "can't exceed deal value" check. Only the Deal's assigned Sales
+        Rep (or Admin/Sales Manager) may create.
+      parameters:
+      - description: Deal ID
+        in: path
+        name: dealId
+        required: true
+        type: integer
+      - description: Installment fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.paymentInstallmentForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.PaymentInstallment'
+        "400":
+          description: Invalid request body, amount, or due_date
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not authorized to modify this deal's records
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Add a planned installment to a deal's payment schedule (Admin/Sales
+        Rep/Sales Manager)
+      tags:
+      - payment-installments
   /deals/{dealId}/payments:
     get:
       description: Returns installments for a Deal, plus a computed total_paid. Backs
@@ -4542,6 +4698,10 @@ paths:
         in: query
         name: exclude_converted
         type: boolean
+      - description: Only leads already converted to a Deal
+        in: query
+        name: only_converted
+        type: boolean
       - description: Page number (default 1)
         in: query
         name: page
@@ -4972,6 +5132,73 @@ paths:
       summary: Create a project (Open API)
       tags:
       - projects
+  /payment-installments/{id}:
+    delete:
+      description: Hard delete. Only the parent Deal's assigned Sales Rep (or Admin/Sales
+        Manager) may delete.
+      parameters:
+      - description: Payment Installment ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "403":
+          description: Not authorized to modify this deal's records
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Payment installment not found, or deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a planned installment
+      tags:
+      - payment-installments
+    put:
+      consumes:
+      - application/json
+      description: Same validation as Create. Only the parent Deal's assigned Sales
+        Rep (or Admin/Sales Manager) may edit.
+      parameters:
+      - description: Payment Installment ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Installment fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.paymentInstallmentForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.PaymentInstallment'
+        "403":
+          description: Not authorized to modify this deal's records
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Payment installment not found, or deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Edit a planned installment (Admin/Sales Rep/Sales Manager)
+      tags:
+      - payment-installments
   /payments/{id}:
     delete:
       description: Hard delete of a Payment. Only the parent Deal's assigned Sales
