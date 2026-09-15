@@ -10,11 +10,11 @@ import "time"
 // no explicit link to which Payment satisfies which installment), so
 // editing/reordering installments never leaves stale state. api-system-spec.md §7.5a.
 type PaymentInstallment struct {
-	HardDeleteModel // matches Payment's own delete semantics — planning data, not audit-critical
-	DealID  uint      `gorm:"not null;index" json:"deal_id"`
-	Amount  float64   `json:"amount"`
-	DueDate time.Time `json:"due_date"`
-	Note    string    `json:"note"`
+	HardDeleteModel           // matches Payment's own delete semantics — planning data, not audit-critical
+	DealID          uint      `gorm:"not null;index" json:"deal_id"`
+	Amount          float64   `json:"amount"`
+	DueDate         time.Time `json:"due_date"`
+	Note            string    `json:"note"`
 }
 
 func (PaymentInstallment) TableName() string { return "payment_installments" }

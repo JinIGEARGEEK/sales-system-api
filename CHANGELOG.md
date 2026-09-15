@@ -12,9 +12,11 @@ New CRUD: `GET`/`POST /deals/:dealId/payment-installments`, `PUT`/`DELETE /payme
 
 `GET /reports/outstanding-balance` (and its CSV export) now returns an `aging` field per row (`overdue`/`upcoming`/`none`) — `applyOutstandingBalanceAging` batches every relevant Deal's installments in one query and runs the waterfall helper in Go, not N+1 per-row lookups. A Deal with no schedule keeps this report's original flat behavior (`aging: "none"`).
 
-New `NotificationRule` entity type `payment_installment` (`checkPaymentInstallmentDueRule`, `internal/notifier/workflow_rules.go`) fires once per non-fully-paid installment due within `ThresholdDays` — covers both "coming due" and "overdue" in one condition, same shape every other rule already uses. `NotificationRule.entity_type`'s column was widened `varchar(16)` → `varchar(32)` since `"payment_installment"` (20 chars) didn't fit.
+New `NotificationRule` entity type `payment_installment` (`checkPaymentInstallmentDueRule`, `internal/notifier/workflow_rules.go`) fires once per non-fully-paid installment due within `ThresholdDays` — covers both "coming due" and "overdue" in one condition, same shape every other rule already uses. `NotificationRule.entity_type`'s column was widened `varchar(16)` → `varchar(32)` since `"payment_installment"` (20 chars) didn't fit. Batches every matching Deal's total-paid in one grouped query rather than one `SUM` per Deal inside the loop — same batching reasoning as `applyOutstandingBalanceAging` above, just for the reminder checker's own 15-minute ticker instead of a live request.
 
-Regression-guarded: `internal/utils/payment_schedule_test.go` (waterfall allocation), `tests/payment_installment_test.go` (CRUD/RBAC/validation), `internal/notifier/payment_installment_rule_test.go` (reminder firing/dedup). Spec: `api-system-spec.md` §7.5a, §8.4, §8.7c.
+Regression-guarded: `internal/utils/payment_schedule_test.go` (waterfall allocation), `tests/payment_installment_test.go` (CRUD/RBAC/validation), `internal/notifier/payment_installment_rule_test.go` (reminder firing/dedup). Spec: `api-system-spec.md` §7.5a (schedule CRUD), §8.4 (Outstanding Balance `aging`), §8.8 (`payment_installment` notification rule).
+
+While updating the spec doc above, also corrected an unrelated stale entry found alongside it: §7.7 Campaigns' `POST /campaigns/:id/tasks` row still documented the retired `company_ids`-only request body — `CampaignHandler.BulkCreateTasks` has taken a `targets: {related_type, related_id}[]` shape (Company/Lead/Contact, not just Company) since an earlier, undocumented change. No code changed here, doc only.
 
 ## 2026-09-15 — Lead gains `referred_by_type`/`referred_by_id`
 

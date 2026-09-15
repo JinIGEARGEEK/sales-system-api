@@ -279,19 +279,39 @@ func checkPaymentInstallmentDueRule(db *gorm.DB, cfg *config.Config, rule models
 	}
 
 	byDeal := make(map[uint][]models.PaymentInstallment)
+	dealIDs := make([]uint, 0, len(installments))
 	for _, inst := range installments {
+		if _, seen := byDeal[inst.DealID]; !seen {
+			dealIDs = append(dealIDs, inst.DealID)
+		}
 		byDeal[inst.DealID] = append(byDeal[inst.DealID], inst)
+	}
+
+	// One grouped query for every Deal's total paid at once, instead of a
+	// separate `SUM(amount) WHERE deal_id = ?` per Deal inside the loop
+	// below — same batching reasoning as reports.go's
+	// applyOutstandingBalanceAging, just for Payments instead of
+	// Installments. This runs on a 15-minute ticker rather than a live
+	// request, so the previous per-Deal query wasn't urgent, but there's no
+	// reason to pay for it once it's this easy to avoid.
+	type paidTotal struct {
+		DealID uint
+		Total  float64
+	}
+	var paidTotals []paidTotal
+	db.Model(&models.Payment{}).Select("deal_id, COALESCE(SUM(amount), 0) as total").
+		Where("deal_id IN ?", dealIDs).Group("deal_id").Scan(&paidTotals)
+	totalPaidByDeal := make(map[uint]float64, len(paidTotals))
+	for _, pt := range paidTotals {
+		totalPaidByDeal[pt.DealID] = pt.Total
 	}
 
 	now := time.Now()
 	cutoff := now.Add(time.Duration(rule.ThresholdDays) * 24 * time.Hour)
 
 	for dealID, dealInstallments := range byDeal {
-		var totalPaid float64
-		db.Model(&models.Payment{}).Where("deal_id = ?", dealID).Select("COALESCE(SUM(amount), 0)").Scan(&totalPaid)
-
 		var deal *models.Deal
-		for _, s := range utils.ComputeInstallmentStatuses(dealInstallments, totalPaid, now) {
+		for _, s := range utils.ComputeInstallmentStatuses(dealInstallments, totalPaidByDeal[dealID], now) {
 			if s.Status == utils.InstallmentStatusPaid {
 				continue
 			}

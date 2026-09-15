@@ -575,6 +575,35 @@ interface Payment {
 | `POST` | `/deals/:dealId/payments` | 🟢 | Create — backs `components/Crm/AddPaymentModal.vue`. |
 | `DELETE` | `/payments/:id` | 🟢 | Delete. |
 
+### 7.5a Payment Installments — added 2026-09-15
+
+A planned installment (amount + due date) a rep defines on a Won Deal's payment schedule *before* money actually arrives — distinct from `Payment` above, which only records money already received. No status is stored: every read derives it from a shared **waterfall** allocation (`utils.ComputeInstallmentStatuses`, `internal/utils/payment_schedule.go`) against the Deal's actual `Payment` total — installments sorted by `due_date` ascending, money applied to the earliest ones first. This reconciliation model (rather than an explicit link from one `Payment` to one installment) was confirmed with the business owner as the intended tradeoff: it needs no change to how Payments are logged today, at the cost of not being able to say *which* Payment satisfied *which* installment.
+
+```ts
+interface PaymentInstallment {
+  id: number
+  deal_id: number
+  amount: number
+  due_date: string
+  note: string
+}
+
+type InstallmentComputedStatus = 'paid' | 'partial' | 'overdue' | 'upcoming'
+
+interface InstallmentStatus {
+  installment: PaymentInstallment
+  covered: number               // how much of `amount` the waterfall has allocated to this installment
+  status: InstallmentComputedStatus
+}
+```
+
+| Method | Path | Status | Description |
+|---|---|---|---|
+| `GET` | `/deals/:dealId/payment-installments` | 🟢 | Returns `InstallmentStatus[]` — every installment on the Deal plus its derived status. Backs the Deal detail page's Payment Schedule section. |
+| `POST` | `/deals/:dealId/payment-installments` | 🟢 | Body: `{amount, due_date, note}`. `amount` must be `> 0`, `due_date` is required. No validation against the Deal's value or existing installments' total — permissive, matching `Payment`'s own lack of a "can't exceed deal value" check. Same `dealForSubResource`/`CanWrite` RBAC as Payments/Quotes/Contracts (only the Deal's assigned Sales Rep, or Admin/Sales Manager, may create). |
+| `PUT` | `/payment-installments/:id` | 🟢 | Same body/validation as Create. Same ownership check, resolved via the installment's own `deal_id`. |
+| `DELETE` | `/payment-installments/:id` | 🟢 | Hard delete (`HardDeleteModel`, matching `Payment`'s own delete semantics) — planning data, not audit-critical. Same ownership check as Update. |
+
 ### 7.6 Tasks
 
 ```ts
@@ -623,7 +652,7 @@ interface CampaignProgress {
   total: number      // Tasks under this campaign
   done: number
   pending: number      // total - done (TaskStatus only has two values, so this isn't a separate query)
-  converted: number    // distinct target companies with a Won Deal created on/after the campaign's created_at
+  converted: number    // distinct targets (Company/Lead/Contact) whose own Company has a Won Deal created on/after the campaign's created_at
 }
 ```
 
@@ -631,8 +660,8 @@ interface CampaignProgress {
 |---|---|---|---|
 | `GET` | `/campaigns` | 🟢 | List, newest first. |
 | `POST` | `/campaigns` | 🟢 | Body: `{name, type}`. `created_by` set from the authenticated user. |
-| `POST` | `/campaigns/:id/tasks` | 🟢 | Body: `{company_ids: number[], title, description, due_date, priority, assigned_to}`. Dedupes `company_ids` (`utils.DedupeUints`, same rule `BulkUpdate` applies), checks `CanWrite` against `assigned_to` once up front, then creates one Task per company (`related_type: 'company'`, `campaign_id` set) via a single batch insert inside one transaction, plus one summary audit-log entry (`bulk_created_campaign_tasks`). Not routed through `utils.BulkUpdate` — that helper loads/mutates existing rows, this creates new ones. |
-| `GET` | `/campaigns/:id/progress` | 🟢 | Returns `CampaignProgress`. `converted` reuses the same `has_won_deal` EXISTS-subquery shape `GET /companies`'s `has_won_deal` filter uses (`applyCompanyFilters`, see the Companies section above), scoped to `deals.created_at >= campaign.created_at`. |
+| `POST` | `/campaigns/:id/tasks` | 🟢 | Body: `{targets: {related_type: 'company' \| 'lead' \| 'contact', related_id: number}[], title, description, due_date, priority, assigned_to}` — updated from an earlier `company_ids`-only shape to let a campaign target Leads/Contacts too, not just Companies. Dedupes `targets` by the `(related_type, related_id)` pair (mirrors `utils.DedupeUints`'s rule, keyed on the composite instead of a bare id), checks `CanWrite` against `assigned_to` once up front, then creates one Task per target via a single batch insert inside one transaction, plus one summary audit-log entry (`bulk_created_campaign_tasks`). Not routed through `utils.BulkUpdate` — that helper loads/mutates existing rows, this creates new ones. |
+| `GET` | `/campaigns/:id/progress` | 🟢 | Returns `CampaignProgress`. `converted` reuses the same `has_won_deal` EXISTS-subquery shape `GET /companies`'s `has_won_deal` filter uses (`applyCompanyFilters`, see the Companies section above), scoped to `deals.created_at >= campaign.created_at` — one EXISTS clause per `related_type` (Company Tasks match `deals.company_id` directly; Lead/Contact Tasks match through their own `company_id`), counted as one `DISTINCT` over `related_type || ':' || related_id` since Postgres has no native multi-column `COUNT(DISTINCT a, b)`. |
 
 Not role-gated (`/campaigns` group), same as `/tasks` above and for the same reason — ownership is enforced per-assignee inside `BulkCreateTasks` rather than restricting who may launch a campaign, since this is meant to be self-serve for both Sales and Marketing.
 
@@ -756,7 +785,7 @@ Six more, going beyond the dashboard's aggregate stat cards into "which specific
 |---|---|---|
 | `GET` | `/reports/win-loss-reasons?date_from=&date_to=&assigned_to=&company_tag=` | `FR-CRM-093`. Every closed Deal (`won` or `lost`), grouped by `"won"` or its `lost_reason` code — `[{ reason, count, value }]`, sorted by `count` descending. Answers "why are we losing," not just the dashboard's win-rate number. A lost Deal missing `lost_reason` (shouldn't happen given `lost_reason`'s required-on-Lost validation, but tolerated defensively) groups under `"other"` rather than being dropped. |
 | `GET` | `/reports/stalled-deals?min_days=&assigned_to=&company_tag=` | `FR-CRM-094`. Open Deals with no logged Activity for at least `min_days` (default 14, falling back to the Deal's own `created_at` if it has never had one) — `[{ deal_id, title, company_name, stage, value, assigned_to, last_activity_at, days_stalled }]`, sorted by `days_stalled` descending (coldest first). Surfaces deals quietly going cold, not yet marked Lost. |
-| `GET` | `/reports/outstanding-balance?assigned_to=&company_tag=` | `FR-CRM-095`. Won Deals whose recorded Payments sum to less than the Deal's `value` — `[{ deal_id, deal_title, company_name, deal_value, paid_amount, outstanding_amount }]`, sorted by `outstanding_amount` descending, every row money still owed. A flat list, not 30/60/90-day aging — `Payment` has no due-date field, only `paid_at` (when actually received), so aging-by-due-date isn't possible until that field exists. |
+| `GET` | `/reports/outstanding-balance?assigned_to=&company_tag=` | `FR-CRM-095`. Won Deals whose recorded Payments sum to less than the Deal's `value` — `[{ deal_id, deal_title, company_name, deal_value, paid_amount, outstanding_amount, aging }]`, sorted by `outstanding_amount` descending, every row money still owed. `aging` is `'overdue' \| 'upcoming' \| 'none'` — added 2026-09-15 alongside §7.5a's Payment Installment schedule: `'none'` when the Deal has no installment schedule defined (this report's original, pre-`aging` behavior, unchanged), otherwise `'overdue'` if any of that Deal's installments is overdue per §7.5a's waterfall helper (`utils.ComputeInstallmentStatuses`, run against this row's own `paid_amount`), else `'upcoming'`. Batches every row's installments in one query (`applyOutstandingBalanceAging`), not N+1 per row. |
 | `GET` | `/reports/quotes-expiring-soon?within_days=&assigned_to=&company_tag=` | `FR-CRM-096`. Sent quotes (not yet Accepted/Rejected) whose `validity_date` falls within the next `within_days` (default 7) — `[{ quote_id, deal_id, deal_title, company_name, validity_date, total_value }]`, sorted by `validity_date` ascending (soonest-to-expire first). The forward-looking mirror of `Quote`'s `EffectiveStatus`-derived `expired` state (§7.4) — same permissive RFC3339-or-bare-date `validity_date` parsing, a value that fails to parse is silently skipped rather than erroring the whole report. `assigned_to`/`company_tag` match against each quote's parent Deal (there's no single SQL join spanning quotes/deals/companies here, so this is resolved in application code). |
 | `GET` | `/reports/contracts-stuck?min_days=&assigned_to=&company_tag=` | `FR-CRM-097`. Contracts sitting in `draft` or `sent` for at least `min_days` (default 14) without being signed — `[{ contract_id, deal_id, deal_title, company_name, status, assigned_to, days_in_status }]`, sorted by `days_in_status` descending (longest-stalled first). `assigned_to` here is the parent Deal's assignee, not a field on `Contract` itself. `Contract` has no start/end date to measure true expiration by (only `signed_date`, set once actually signed), so this tracks staleness before signature instead — the contract-side equivalent of `stalled-deals` above. |
 | `GET` | `/reports/projects-at-risk?company_tag=` | `FR-CRM-098`. Projects whose `target_end_date` has already passed but whose `status` isn't `Completed`/`Cancelled` — `[{ project_id, name, company_id, company_name, status, target_end_date, days_overdue }]`, sorted by `days_overdue` descending. The delivery-side equivalent of `stalled-deals`, for whoever owns customer-delivery visibility (§8.3). No `assigned_to` filter — `Project` has no owner/assignee field, only a Company FK. |
@@ -905,13 +934,14 @@ interface LeadScoringCriterion {
 **Workflow notification rules** (`FR-CRM-100`–`102`, `prospect` added `FR-CRM-107`, `company` added for the dormant-customer / upsell-targeting feature) — Admin-configurable thresholds for the in-app "this needs attention" notifications (a Deal idle in-stage, a Quote about to expire, a Contract stuck unsigned, a Prospect gone stale, a Company gone quiet):
 
 ```ts
-type NotificationEntityType = 'deal' | 'quote' | 'contract' | 'prospect' | 'company'
+type NotificationEntityType = 'deal' | 'quote' | 'contract' | 'prospect' | 'company' | 'payment_installment'
 type NotificationRecipientRole = 'owner' | 'owner_and_managers'
 
 interface NotificationRule {
   id: number
   name: string
-  entity_type: NotificationEntityType
+  entity_type: NotificationEntityType   // column widened varchar(16) → varchar(32) 2026-09-15 so
+                                          // 'payment_installment' (20 chars) fits
   threshold_days: number   // "deal": days idle in its current stage. "quote": days until validity_date.
                              // "contract": days sitting Draft/Sent without being signed.
                              // "prospect": days since updated_at with no change, while status is
@@ -921,6 +951,11 @@ interface NotificationRule {
                              // treated as always-eligible. Fires at most once per coarse stale
                              // tier (60/90/120 days, §9's upsell_opportunities tiers) so
                              // escalating into a worse tier can re-fire.
+                             // "payment_installment": added 2026-09-15 (§7.5a) — an unpaid
+                             // installment (per §7.5a's waterfall status) whose due_date falls
+                             // within threshold_days from now, covering both "coming due soon"
+                             // and "already overdue" in one condition, same single-direction
+                             // shape every other entity_type above uses.
   recipient_role: NotificationRecipientRole
   is_active: boolean
   created_at: string
