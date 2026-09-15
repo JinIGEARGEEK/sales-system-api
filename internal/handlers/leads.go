@@ -102,9 +102,30 @@ type leadForm struct {
 	// manual override (a rep marking a Lead "sales-ready"); any other value
 	// (including empty) falls back to the auto-computed mql/none result from
 	// computeAndClassify, so a client can't accidentally set "mql" directly.
-	Classification   models.LeadClassification `json:"classification"`
-	BusinessUnit     *models.BusinessUnit      `json:"business_unit"`
-	BusinessUnitItem *string                   `json:"business_unit_item"`
+	Classification   models.LeadClassification   `json:"classification"`
+	BusinessUnit     *models.BusinessUnit        `json:"business_unit"`
+	BusinessUnitItem *string                     `json:"business_unit_item"`
+	ReferredByType   *models.ActivityRelatedType `json:"referred_by_type"`
+	ReferredByID     *uint                       `json:"referred_by_id"`
+}
+
+// validateReferredBy enforces both-or-neither on ReferredByType/ReferredByID
+// — a Lead's referrer is always an existing Company or Contact, never a
+// Deal/Prospect, per models.IsValidReferrerType (activity.go, next to
+// ActivityRelatedType's own definition — the broader enum this borrows from).
+func validateReferredBy(c *fiber.Ctx, referredByType *models.ActivityRelatedType, referredByID *uint) bool {
+	if referredByType == nil && referredByID == nil {
+		return true
+	}
+	if referredByType == nil || referredByID == nil {
+		utils.ValidationError(c, "referred_by_type and referred_by_id must both be set or both omitted", map[string][]string{"referred_by_type": {"required_with_referred_by_id"}})
+		return false
+	}
+	if !models.IsValidReferrerType(*referredByType) {
+		utils.ValidationError(c, "referred_by_type must be company or contact", map[string][]string{"referred_by_type": {"invalid"}})
+		return false
+	}
+	return true
 }
 
 // Create godoc
@@ -139,6 +160,9 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 	if !models.IsValidBusinessUnit(form.BusinessUnit) {
 		return utils.ValidationError(c, "business_unit must be Project or Product", map[string][]string{"business_unit": {"invalid"}})
 	}
+	if !validateReferredBy(c, form.ReferredByType, form.ReferredByID) {
+		return nil
+	}
 
 	// Auto-assignment: only kicks in when the caller didn't specify an owner
 	// (e.g. a brand-new Lead created without picking someone explicitly).
@@ -158,6 +182,7 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 		Name: form.Name, CompanyID: form.CompanyID, Email: form.Email, Phone: form.Phone,
 		Source: form.Source, Status: form.Status, Notes: form.Notes, AssignedTo: form.AssignedTo,
 		BusinessUnit: form.BusinessUnit, BusinessUnitItem: form.BusinessUnitItem,
+		ReferredByType: form.ReferredByType, ReferredByID: form.ReferredByID,
 	}
 	if lead.Status == "" {
 		lead.Status = models.LeadStatusNew
@@ -412,6 +437,9 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	if !models.IsValidBusinessUnit(form.BusinessUnit) {
 		return utils.ValidationError(c, "business_unit must be Project or Product", map[string][]string{"business_unit": {"invalid"}})
 	}
+	if !validateReferredBy(c, form.ReferredByType, form.ReferredByID) {
+		return nil
+	}
 
 	// oldStatus/oldCompanyID captured ahead of the mutation below, mirroring
 	// Deal's oldStage pattern (deals.go Update) — the only reliable way to
@@ -423,6 +451,7 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	lead.Name, lead.CompanyID, lead.Email, lead.Phone = form.Name, form.CompanyID, form.Email, form.Phone
 	lead.Source, lead.Status, lead.Notes, lead.AssignedTo = form.Source, form.Status, form.Notes, form.AssignedTo
 	lead.BusinessUnit, lead.BusinessUnitItem = form.BusinessUnit, form.BusinessUnitItem
+	lead.ReferredByType, lead.ReferredByID = form.ReferredByType, form.ReferredByID
 
 	// A general-purpose Update PUT doesn't necessarily resend classification
 	// (most fields, like a status/notes edit, have nothing to do with it), so

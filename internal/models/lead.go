@@ -63,6 +63,17 @@ type Lead struct {
 	// here). Carried over automatically to the Deal on conversion.
 	BusinessUnit     *BusinessUnit `gorm:"type:varchar(16);index" json:"business_unit"`
 	BusinessUnitItem *string       `json:"business_unit_item"`
+	// ReferredByType/ReferredByID capture which existing Company or Contact
+	// referred this Lead in (relevant when Source is "Referral", but not
+	// enforced to only that source — a rep can still record it if the source
+	// changes later). Both-or-neither: validated together in the handler
+	// (models.IsValidReferrerType, activity.go), not via a DB constraint.
+	// Typed as ActivityRelatedType itself (not a bare string) so it stays
+	// compile-time-consistent with every other enum field on this struct
+	// (Source/Status/BusinessUnit below) — restricted to just company/contact
+	// of that broader enum's values, since Deal/Prospect aren't valid referrers.
+	ReferredByType *ActivityRelatedType `gorm:"type:varchar(16)" json:"referred_by_type,omitempty"`
+	ReferredByID   *uint                `gorm:"index" json:"referred_by_id,omitempty"`
 }
 
 const (
