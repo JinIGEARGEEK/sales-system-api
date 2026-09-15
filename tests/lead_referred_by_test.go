@@ -29,7 +29,7 @@ func TestLeadCreate_LinksReferredByCompany(t *testing.T) {
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	require.NotNil(t, out.Data.ReferredByType)
 	require.NotNil(t, out.Data.ReferredByID)
-	assert.Equal(t, "company", *out.Data.ReferredByType)
+	assert.Equal(t, models.RelatedTypeCompany, *out.Data.ReferredByType)
 	assert.Equal(t, company.ID, *out.Data.ReferredByID)
 }
 
@@ -51,7 +51,7 @@ func TestLeadCreate_LinksReferredByContact(t *testing.T) {
 	resp := doJSON(t, app, req, &out)
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	require.NotNil(t, out.Data.ReferredByType)
-	assert.Equal(t, "contact", *out.Data.ReferredByType)
+	assert.Equal(t, models.RelatedTypeContact, *out.Data.ReferredByType)
 	assert.Equal(t, contact.ID, *out.Data.ReferredByID)
 }
 

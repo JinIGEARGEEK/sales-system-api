@@ -102,18 +102,18 @@ type leadForm struct {
 	// manual override (a rep marking a Lead "sales-ready"); any other value
 	// (including empty) falls back to the auto-computed mql/none result from
 	// computeAndClassify, so a client can't accidentally set "mql" directly.
-	Classification   models.LeadClassification `json:"classification"`
-	BusinessUnit     *models.BusinessUnit      `json:"business_unit"`
-	BusinessUnitItem *string                   `json:"business_unit_item"`
-	ReferredByType   *string                   `json:"referred_by_type"`
-	ReferredByID     *uint                     `json:"referred_by_id"`
+	Classification   models.LeadClassification   `json:"classification"`
+	BusinessUnit     *models.BusinessUnit        `json:"business_unit"`
+	BusinessUnitItem *string                     `json:"business_unit_item"`
+	ReferredByType   *models.ActivityRelatedType `json:"referred_by_type"`
+	ReferredByID     *uint                       `json:"referred_by_id"`
 }
 
 // validateReferredBy enforces both-or-neither on ReferredByType/ReferredByID
-// and restricts the type to "company"/"contact" — a Lead's referrer is
-// always an existing Company or Contact, never a Deal/Prospect, unlike the
-// broader ActivityRelatedType set those two values are borrowed from.
-func validateReferredBy(c *fiber.Ctx, referredByType *string, referredByID *uint) bool {
+// — a Lead's referrer is always an existing Company or Contact, never a
+// Deal/Prospect, per models.IsValidReferrerType (activity.go, next to
+// ActivityRelatedType's own definition — the broader enum this borrows from).
+func validateReferredBy(c *fiber.Ctx, referredByType *models.ActivityRelatedType, referredByID *uint) bool {
 	if referredByType == nil && referredByID == nil {
 		return true
 	}
@@ -121,8 +121,7 @@ func validateReferredBy(c *fiber.Ctx, referredByType *string, referredByID *uint
 		utils.ValidationError(c, "referred_by_type and referred_by_id must both be set or both omitted", map[string][]string{"referred_by_type": {"required_with_referred_by_id"}})
 		return false
 	}
-	t := models.ActivityRelatedType(*referredByType)
-	if t != models.RelatedTypeCompany && t != models.RelatedTypeContact {
+	if !models.IsValidReferrerType(*referredByType) {
 		utils.ValidationError(c, "referred_by_type must be company or contact", map[string][]string{"referred_by_type": {"invalid"}})
 		return false
 	}

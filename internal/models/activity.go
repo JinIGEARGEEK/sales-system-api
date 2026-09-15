@@ -38,6 +38,21 @@ func IsValidCampaignTargetType(t ActivityRelatedType) bool {
 	return false
 }
 
+// ValidReferrerTypes lists every ActivityRelatedType valid as a Lead's
+// referred_by_type (Lead.ReferredByType) — a referral always traces back to
+// a contactable record (Company/Contact), never a pipeline object
+// (Deal/Prospect/Lead itself).
+var ValidReferrerTypes = []ActivityRelatedType{RelatedTypeCompany, RelatedTypeContact}
+
+func IsValidReferrerType(t ActivityRelatedType) bool {
+	for _, v := range ValidReferrerTypes {
+		if v == t {
+			return true
+		}
+	}
+	return false
+}
+
 // Activity — api-system-spec.md §7.2.
 type Activity struct {
 	HardDeleteModel
