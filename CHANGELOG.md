@@ -4,6 +4,10 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-09-15 — Lead gains `referred_by_type`/`referred_by_id`
+
+Added two optional, both-or-neither fields to `Lead` (`internal/models/lead.go`): `ReferredByType` (`"company"` or `"contact"`, reusing `ActivityRelatedType`'s values) and `ReferredByID`, capturing which existing Company or Contact referred a Lead in — previously the only place to note that was the free-text `Notes` field. Validated in both `Create` and `Update` (`internal/handlers/leads.go`'s new `validateReferredBy`): setting one without the other is `422`, and `referred_by_type` must be `company`/`contact` (Deal/Prospect rejected — not valid referrers). Neither field is checked for existence against its referenced table, matching `company_id`'s own unchecked convention on this same model. No reporting yet — the existing Lead Source Conversion report groups by `source` string only; drilling into a specific referrer needs a new endpoint, deliberately out of scope here. Regression-guarded: `tests/lead_referred_by_test.go`. Spec: `api-system-spec.md` §3.
+
 ## 2026-09-15 — `GET /leads` gains `only_converted`
 
 Added `only_converted=true` to `applyLeadLikeFilters` (`internal/handlers/filters.go`), the mirror image of the existing `exclude_converted=true`: returns only Leads with `converted_deal_id IS NOT NULL`. Backs the frontend's new "Converted" scope tab on the Leads list (`pages/crm/leads/index.vue`), so reps can see already-converted Leads and the live stage of the Deal each one became, instead of only ever filtering them out. Shared with `GET /prospects` via the same helper, though no caller passes it there yet. Spec: `api-system-spec.md` §3.
