@@ -21,26 +21,34 @@ func NewDashboardHandler(db *gorm.DB) *DashboardHandler {
 	return &DashboardHandler{DB: db}
 }
 
+// applyDateWindow applies the shared date_from/date_to-or-period resolution
+// (explicit bounds win outright; period is only a fallback when both are
+// omitted) against the given column. Shared by baseFilter (deals.created_at)
+// and teamPerformance's activity-count query (activities.created_at) so the
+// two aggregates always agree on what date window "this dashboard view"
+// means, rather than each re-deriving it.
+func applyDateWindow(query *gorm.DB, column, dateFrom, dateTo, period string) *gorm.DB {
+	if dateFrom == "" && dateTo == "" {
+		if from, ok := periodStart(period); ok {
+			query = query.Where(column+" >= ?", from)
+		}
+	} else {
+		if dateFrom != "" {
+			query = query.Where(column+" >= ?", dateFrom)
+		}
+		if dateTo != "" {
+			query = query.Where(column+" <= ?", dateTo)
+		}
+	}
+	return query
+}
+
 // baseFilter applies the shared date_from/date_to (or period), business_unit,
 // business_unit_item, channel, assigned_to (Sales Rep), and company_tag query
 // params — api-system-spec.md §9, FR-CRM-055.
 func (h *DashboardHandler) baseFilter(c *fiber.Ctx) *gorm.DB {
 	query := h.DB.Model(&models.Deal{})
-
-	dateFrom := c.Query("date_from")
-	dateTo := c.Query("date_to")
-	if dateFrom == "" && dateTo == "" {
-		if from, ok := periodStart(c.Query("period")); ok {
-			query = query.Where("deals.created_at >= ?", from)
-		}
-	} else {
-		if dateFrom != "" {
-			query = query.Where("deals.created_at >= ?", dateFrom)
-		}
-		if dateTo != "" {
-			query = query.Where("deals.created_at <= ?", dateTo)
-		}
-	}
+	query = applyDateWindow(query, "deals.created_at", c.Query("date_from"), c.Query("date_to"), c.Query("period"))
 
 	if v := c.Query("business_unit"); v != "" {
 		query = query.Where("deals.business_unit = ?", v)
@@ -686,19 +694,8 @@ func (h *DashboardHandler) teamPerformance(base *gorm.DB, dateFrom, dateTo, peri
 	// generically reusable filter).
 	activityCounts := make(map[uint]int64, len(userIDs))
 	if len(userIDs) > 0 {
-		activityQuery := h.DB.Model(&models.Activity{}).Where("created_by_id IN ?", userIDs)
-		if dateFrom == "" && dateTo == "" {
-			if from, ok := periodStart(period); ok {
-				activityQuery = activityQuery.Where("activities.created_at >= ?", from)
-			}
-		} else {
-			if dateFrom != "" {
-				activityQuery = activityQuery.Where("activities.created_at >= ?", dateFrom)
-			}
-			if dateTo != "" {
-				activityQuery = activityQuery.Where("activities.created_at <= ?", dateTo)
-			}
-		}
+		activityQuery := applyDateWindow(h.DB.Model(&models.Activity{}).Where("created_by_id IN ?", userIDs),
+			"activities.created_at", dateFrom, dateTo, period)
 		var activityRows []struct {
 			CreatedByID uint
 			Count       int64
