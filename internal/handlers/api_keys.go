@@ -117,8 +117,8 @@ func (h *APIKeyHandler) Create(c *fiber.Ctx) error {
 // @Router /admin/api-keys/{id}/revoke [post]
 func (h *APIKeyHandler) Revoke(c *fiber.Ctx) error {
 	var key models.APIKey
-	if err := h.DB.First(&key, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "API key not found")
+	if err := utils.FindByID(c, h.DB, &key, "API key not found"); err != nil {
+		return nil
 	}
 
 	actorID := middleware.CurrentUserID(c)
@@ -145,8 +145,8 @@ func (h *APIKeyHandler) Revoke(c *fiber.Ctx) error {
 // @Router /admin/api-keys/{id}/logs [get]
 func (h *APIKeyHandler) Logs(c *fiber.Ctx) error {
 	var key models.APIKey
-	if err := h.DB.First(&key, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "API key not found")
+	if err := utils.FindByID(c, h.DB, &key, "API key not found"); err != nil {
+		return nil
 	}
 
 	page, perPage, offset := utils.Pagination(c)

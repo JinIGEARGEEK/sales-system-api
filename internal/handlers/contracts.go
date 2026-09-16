@@ -51,17 +51,17 @@ type contractForm struct {
 // both Create and Update).
 func validateContractForm(c *fiber.Ctx, db *gorm.DB, dealID uint, form contractForm) bool {
 	if !models.IsValidContractStatus(form.Status) {
-		utils.ValidationError(c, "status is invalid", map[string][]string{"status": {"invalid"}})
+		_ = utils.ValidationError(c, "status is invalid", map[string][]string{"status": {"invalid"}})
 		return false
 	}
 	if form.QuoteID != nil {
 		var quote models.Quote
 		if err := db.First(&quote, *form.QuoteID).Error; err != nil {
-			utils.NotFound(c, "Quote not found")
+			_ = utils.NotFound(c, "Quote not found")
 			return false
 		}
 		if quote.DealID != dealID {
-			utils.ValidationError(c, "quote does not belong to this deal", map[string][]string{"quote_id": {"invalid"}})
+			_ = utils.ValidationError(c, "quote does not belong to this deal", map[string][]string{"quote_id": {"invalid"}})
 			return false
 		}
 	}
@@ -122,8 +122,8 @@ func (h *ContractHandler) Create(c *fiber.Ctx) error {
 // @Router /contracts/{id} [put]
 func (h *ContractHandler) Update(c *fiber.Ctx) error {
 	var contract models.Contract
-	if err := h.DB.First(&contract, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Contract not found")
+	if err := utils.FindByID(c, h.DB, &contract, "Contract not found"); err != nil {
+		return nil
 	}
 	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(contract.DealID)); err != nil {
 		return respondFindErr(c, err, "Deal not found")
@@ -166,8 +166,8 @@ func (h *ContractHandler) Update(c *fiber.Ctx) error {
 // @Router /contracts/{id}/upload [post]
 func (h *ContractHandler) Upload(c *fiber.Ctx) error {
 	var contract models.Contract
-	if err := h.DB.First(&contract, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Contract not found")
+	if err := utils.FindByID(c, h.DB, &contract, "Contract not found"); err != nil {
+		return nil
 	}
 	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(contract.DealID)); err != nil {
 		return respondFindErr(c, err, "Deal not found")
@@ -205,8 +205,8 @@ func (h *ContractHandler) Upload(c *fiber.Ctx) error {
 // @Router /contracts/{id}/export-pdf [get]
 func (h *ContractHandler) ExportPDF(c *fiber.Ctx) error {
 	var contract models.Contract
-	if err := h.DB.First(&contract, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Contract not found")
+	if err := utils.FindByID(c, h.DB, &contract, "Contract not found"); err != nil {
+		return nil
 	}
 	var deal models.Deal
 	if err := h.DB.First(&deal, contract.DealID).Error; err != nil {

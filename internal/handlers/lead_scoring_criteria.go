@@ -67,8 +67,8 @@ func (h *LeadScoringCriteriaHandler) Create(c *fiber.Ctx) error {
 // Update — PATCH /admin/lead-scoring-criteria/:id.
 func (h *LeadScoringCriteriaHandler) Update(c *fiber.Ctx) error {
 	var criterion models.LeadScoringCriterion
-	if err := h.DB.First(&criterion, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Lead scoring criterion not found")
+	if err := utils.FindByID(c, h.DB, &criterion, "Lead scoring criterion not found"); err != nil {
+		return nil
 	}
 
 	var form leadScoringCriterionForm
@@ -99,8 +99,8 @@ func (h *LeadScoringCriteriaHandler) Update(c *fiber.Ctx) error {
 // false) rather than a hard row delete, same convention as PipelineStage.
 func (h *LeadScoringCriteriaHandler) Delete(c *fiber.Ctx) error {
 	var criterion models.LeadScoringCriterion
-	if err := h.DB.First(&criterion, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Lead scoring criterion not found")
+	if err := utils.FindByID(c, h.DB, &criterion, "Lead scoring criterion not found"); err != nil {
+		return nil
 	}
 	criterion.IsActive = false
 	actorID := middleware.CurrentUserID(c)

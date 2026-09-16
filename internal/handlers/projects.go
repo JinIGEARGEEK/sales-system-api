@@ -49,8 +49,8 @@ func (h *ProjectHandler) ListForCompany(c *fiber.Ctx) error {
 // @Router /projects/{id} [get]
 func (h *ProjectHandler) Get(c *fiber.Ctx) error {
 	var project models.Project
-	if err := h.DB.First(&project, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Project not found")
+	if err := utils.FindByID(c, h.DB, &project, "Project not found"); err != nil {
+		return nil
 	}
 	return utils.OK(c, project)
 }
@@ -247,8 +247,8 @@ var productionAllowedKeys = map[string]bool{"status": true, "production_referenc
 // @Router /projects/{id} [patch]
 func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	var project models.Project
-	if err := h.DB.First(&project, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Project not found")
+	if err := utils.FindByID(c, h.DB, &project, "Project not found"); err != nil {
+		return nil
 	}
 	oldStatus := project.Status
 

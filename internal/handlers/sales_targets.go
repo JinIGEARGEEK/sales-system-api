@@ -144,8 +144,8 @@ func (h *SalesTargetHandler) Create(c *fiber.Ctx) error {
 // @Router /admin/sales-targets/{id} [patch]
 func (h *SalesTargetHandler) Update(c *fiber.Ctx) error {
 	var target models.SalesTarget
-	if err := h.DB.First(&target, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Sales target not found")
+	if err := utils.FindByID(c, h.DB, &target, "Sales target not found"); err != nil {
+		return nil
 	}
 
 	var form salesTargetForm
@@ -196,8 +196,8 @@ func (h *SalesTargetHandler) Update(c *fiber.Ctx) error {
 // @Router /admin/sales-targets/{id} [delete]
 func (h *SalesTargetHandler) Delete(c *fiber.Ctx) error {
 	var target models.SalesTarget
-	if err := h.DB.First(&target, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Sales target not found")
+	if err := utils.FindByID(c, h.DB, &target, "Sales target not found"); err != nil {
+		return nil
 	}
 
 	before := models.JSONMap{"year": target.Year, "quarter": target.Quarter, "target_value": target.TargetValue}

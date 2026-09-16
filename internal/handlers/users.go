@@ -153,8 +153,8 @@ func (h *UserHandler) Create(c *fiber.Ctx) error {
 // @Router /users/{id} [get]
 func (h *UserHandler) Get(c *fiber.Ctx) error {
 	var user models.User
-	if err := h.DB.First(&user, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "User not found")
+	if err := utils.FindByID(c, h.DB, &user, "User not found"); err != nil {
+		return nil
 	}
 	return utils.OK(c, user)
 }
@@ -174,8 +174,8 @@ func (h *UserHandler) Get(c *fiber.Ctx) error {
 // @Router /users/{id} [put]
 func (h *UserHandler) Update(c *fiber.Ctx) error {
 	var user models.User
-	if err := h.DB.First(&user, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "User not found")
+	if err := utils.FindByID(c, h.DB, &user, "User not found"); err != nil {
+		return nil
 	}
 
 	var form userForm
@@ -233,8 +233,8 @@ func (h *UserHandler) Update(c *fiber.Ctx) error {
 // @Router /users/{id} [delete]
 func (h *UserHandler) Delete(c *fiber.Ctx) error {
 	var user models.User
-	if err := h.DB.First(&user, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "User not found")
+	if err := utils.FindByID(c, h.DB, &user, "User not found"); err != nil {
+		return nil
 	}
 
 	actorID := middleware.CurrentUserID(c)

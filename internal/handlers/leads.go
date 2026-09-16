@@ -114,17 +114,17 @@ type leadForm struct {
 // Deal/Prospect, per models.IsValidReferrerType (activity.go, next to
 // ActivityRelatedType's own definition — the broader enum this borrows from)
 // — and, once type is known, that the referenced row actually exists.
-func validateReferredBy(c *fiber.Ctx, db *gorm.DB, referredByType *models.ActivityRelatedType, referredByID *uint) bool {
+func validateReferredBy(c *fiber.Ctx, db *gorm.DB, referredByType *models.ActivityRelatedType, referredByID *uint) error {
 	if referredByType == nil && referredByID == nil {
-		return true
+		return nil
 	}
 	if referredByType == nil || referredByID == nil {
-		utils.ValidationError(c, "referred_by_type and referred_by_id must both be set or both omitted", map[string][]string{"referred_by_type": {"required_with_referred_by_id"}})
-		return false
+		_ = utils.ValidationError(c, "referred_by_type and referred_by_id must both be set or both omitted", map[string][]string{"referred_by_type": {"required_with_referred_by_id"}})
+		return utils.ErrHandled
 	}
 	if !models.IsValidReferrerType(*referredByType) {
-		utils.ValidationError(c, "referred_by_type must be company or contact", map[string][]string{"referred_by_type": {"invalid"}})
-		return false
+		_ = utils.ValidationError(c, "referred_by_type must be company or contact", map[string][]string{"referred_by_type": {"invalid"}})
+		return utils.ErrHandled
 	}
 	var existsErr error
 	if *referredByType == models.RelatedTypeCompany {
@@ -133,10 +133,10 @@ func validateReferredBy(c *fiber.Ctx, db *gorm.DB, referredByType *models.Activi
 		existsErr = db.First(&models.Contact{}, *referredByID).Error
 	}
 	if existsErr != nil {
-		utils.NotFound(c, "Referred-by company/contact not found")
-		return false
+		_ = utils.NotFound(c, "Referred-by company/contact not found")
+		return utils.ErrHandled
 	}
-	return true
+	return nil
 }
 
 // validateLeadCompanyID checks that an explicitly-set (optional) company_id
@@ -144,15 +144,15 @@ func validateReferredBy(c *fiber.Ctx, db *gorm.DB, referredByType *models.Activi
 // presence-checked (required) but never existence-checked against the DB,
 // this is the one real "does this FK exist" precedent in the codebase,
 // mirroring projects.go's own Company lookup.
-func validateLeadCompanyID(c *fiber.Ctx, db *gorm.DB, companyID *uint) bool {
+func validateLeadCompanyID(c *fiber.Ctx, db *gorm.DB, companyID *uint) error {
 	if companyID == nil {
-		return true
+		return nil
 	}
 	if err := db.First(&models.Company{}, *companyID).Error; err != nil {
-		utils.NotFound(c, "Company not found")
-		return false
+		_ = utils.NotFound(c, "Company not found")
+		return utils.ErrHandled
 	}
-	return true
+	return nil
 }
 
 // Create godoc
@@ -187,10 +187,10 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 	if !models.IsValidBusinessUnit(form.BusinessUnit) {
 		return utils.ValidationError(c, "business_unit must be Project or Product", map[string][]string{"business_unit": {"invalid"}})
 	}
-	if !validateReferredBy(c, h.DB, form.ReferredByType, form.ReferredByID) {
+	if err := validateReferredBy(c, h.DB, form.ReferredByType, form.ReferredByID); err != nil {
 		return nil
 	}
-	if !validateLeadCompanyID(c, h.DB, form.CompanyID) {
+	if err := validateLeadCompanyID(c, h.DB, form.CompanyID); err != nil {
 		return nil
 	}
 
@@ -375,8 +375,8 @@ func (h *LeadHandler) pickAutoAssignee() (*uint, error) {
 // @Router /leads/{id} [get]
 func (h *LeadHandler) Get(c *fiber.Ctx) error {
 	var lead models.Lead
-	if err := h.DB.First(&lead, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Lead not found")
+	if err := utils.FindByID(c, h.DB, &lead, "Lead not found"); err != nil {
+		return nil
 	}
 	return utils.OK(c, lead)
 }
@@ -400,8 +400,8 @@ type scoreBreakdownCriterion struct {
 // @Router /leads/{id}/score-breakdown [get]
 func (h *LeadHandler) ScoreBreakdown(c *fiber.Ctx) error {
 	var lead models.Lead
-	if err := h.DB.First(&lead, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Lead not found")
+	if err := utils.FindByID(c, h.DB, &lead, "Lead not found"); err != nil {
+		return nil
 	}
 
 	score, matchedCriteria, err := h.computeLeadScoreDetailed(lead)
@@ -444,8 +444,8 @@ func (h *LeadHandler) ScoreBreakdown(c *fiber.Ctx) error {
 // @Router /leads/{id} [put]
 func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	var lead models.Lead
-	if err := h.DB.First(&lead, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Lead not found")
+	if err := utils.FindByID(c, h.DB, &lead, "Lead not found"); err != nil {
+		return nil
 	}
 	if !CanWrite(c, lead.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to update this lead")
@@ -467,10 +467,10 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	if !models.IsValidBusinessUnit(form.BusinessUnit) {
 		return utils.ValidationError(c, "business_unit must be Project or Product", map[string][]string{"business_unit": {"invalid"}})
 	}
-	if !validateReferredBy(c, h.DB, form.ReferredByType, form.ReferredByID) {
+	if err := validateReferredBy(c, h.DB, form.ReferredByType, form.ReferredByID); err != nil {
 		return nil
 	}
-	if !validateLeadCompanyID(c, h.DB, form.CompanyID) {
+	if err := validateLeadCompanyID(c, h.DB, form.CompanyID); err != nil {
 		return nil
 	}
 
@@ -527,8 +527,8 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 // @Router /leads/{id} [delete]
 func (h *LeadHandler) Delete(c *fiber.Ctx) error {
 	var lead models.Lead
-	if err := h.DB.First(&lead, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Lead not found")
+	if err := utils.FindByID(c, h.DB, &lead, "Lead not found"); err != nil {
+		return nil
 	}
 	if !CanWrite(c, lead.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to delete this lead")
@@ -649,8 +649,8 @@ type convertRequest struct {
 // @Router /leads/{id}/convert [post]
 func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 	var lead models.Lead
-	if err := h.DB.First(&lead, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Lead not found")
+	if err := utils.FindByID(c, h.DB, &lead, "Lead not found"); err != nil {
+		return nil
 	}
 	if !CanWrite(c, lead.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to convert this lead")

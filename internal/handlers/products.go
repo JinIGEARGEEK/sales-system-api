@@ -104,8 +104,8 @@ func (h *ProductHandler) Create(c *fiber.Ctx) error {
 // @Router /products/{id} [get]
 func (h *ProductHandler) Get(c *fiber.Ctx) error {
 	var product models.Product
-	if err := h.DB.First(&product, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Product not found")
+	if err := utils.FindByID(c, h.DB, &product, "Product not found"); err != nil {
+		return nil
 	}
 	return utils.OK(c, product)
 }
@@ -128,8 +128,8 @@ func (h *ProductHandler) Get(c *fiber.Ctx) error {
 // @Router /products/{id} [patch]
 func (h *ProductHandler) Update(c *fiber.Ctx) error {
 	var product models.Product
-	if err := h.DB.First(&product, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Product not found")
+	if err := utils.FindByID(c, h.DB, &product, "Product not found"); err != nil {
+		return nil
 	}
 
 	var form productForm
@@ -170,8 +170,8 @@ func (h *ProductHandler) Update(c *fiber.Ctx) error {
 // @Router /products/{id}/deactivate [patch]
 func (h *ProductHandler) Deactivate(c *fiber.Ctx) error {
 	var product models.Product
-	if err := h.DB.First(&product, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Product not found")
+	if err := utils.FindByID(c, h.DB, &product, "Product not found"); err != nil {
+		return nil
 	}
 	product.IsActive = false
 	actorID := middleware.CurrentUserID(c)
@@ -320,8 +320,8 @@ type customerProductUpdateForm struct {
 // @Router /customer-products/{id} [patch]
 func (h *ProductHandler) UpdateCustomerProduct(c *fiber.Ctx) error {
 	var record models.CustomerProduct
-	if err := h.DB.First(&record, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Customer product not found")
+	if err := utils.FindByID(c, h.DB, &record, "Customer product not found"); err != nil {
+		return nil
 	}
 	oldStatus := record.Status
 

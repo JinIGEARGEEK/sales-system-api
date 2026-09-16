@@ -109,8 +109,8 @@ func (h *TagHandler) Create(c *fiber.Ctx) error {
 // @Router /tags/{id} [put]
 func (h *TagHandler) Update(c *fiber.Ctx) error {
 	var tag models.Tag
-	if err := h.DB.First(&tag, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Tag not found")
+	if err := utils.FindByID(c, h.DB, &tag, "Tag not found"); err != nil {
+		return nil
 	}
 
 	var form tagForm
@@ -142,8 +142,8 @@ func (h *TagHandler) Update(c *fiber.Ctx) error {
 // @Router /tags/{id} [delete]
 func (h *TagHandler) Delete(c *fiber.Ctx) error {
 	var tag models.Tag
-	if err := h.DB.First(&tag, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Tag not found")
+	if err := utils.FindByID(c, h.DB, &tag, "Tag not found"); err != nil {
+		return nil
 	}
 	tag.Status = models.TagStatusInactive
 	actorID := middleware.CurrentUserID(c)

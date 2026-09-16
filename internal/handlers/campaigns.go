@@ -103,8 +103,8 @@ func dedupeCampaignTargets(targets []campaignTargetForm) []campaignTargetForm {
 // for a per-row before/after diff.
 func (h *CampaignHandler) BulkCreateTasks(c *fiber.Ctx) error {
 	var campaign models.Campaign
-	if err := h.DB.First(&campaign, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Campaign not found")
+	if err := utils.FindByID(c, h.DB, &campaign, "Campaign not found"); err != nil {
+		return nil
 	}
 
 	var form campaignBulkCreateTasksForm
@@ -181,8 +181,8 @@ func (h *CampaignHandler) BulkCreateTasks(c *fiber.Ctx) error {
 // per target type), unioned into one count.
 func (h *CampaignHandler) Progress(c *fiber.Ctx) error {
 	var campaign models.Campaign
-	if err := h.DB.First(&campaign, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Campaign not found")
+	if err := utils.FindByID(c, h.DB, &campaign, "Campaign not found"); err != nil {
+		return nil
 	}
 
 	var total, done int64

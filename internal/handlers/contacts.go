@@ -174,8 +174,8 @@ func (h *ContactHandler) Create(c *fiber.Ctx) error {
 // @Router /contacts/{id} [get]
 func (h *ContactHandler) Get(c *fiber.Ctx) error {
 	var contact models.Contact
-	if err := h.DB.First(&contact, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Contact not found")
+	if err := utils.FindByID(c, h.DB, &contact, "Contact not found"); err != nil {
+		return nil
 	}
 	return utils.OK(c, contact)
 }
@@ -195,8 +195,8 @@ func (h *ContactHandler) Get(c *fiber.Ctx) error {
 // @Router /contacts/{id} [put]
 func (h *ContactHandler) Update(c *fiber.Ctx) error {
 	var contact models.Contact
-	if err := h.DB.First(&contact, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Contact not found")
+	if err := utils.FindByID(c, h.DB, &contact, "Contact not found"); err != nil {
+		return nil
 	}
 
 	var form contactForm
@@ -246,8 +246,8 @@ func (h *ContactHandler) Update(c *fiber.Ctx) error {
 // @Router /contacts/{id} [delete]
 func (h *ContactHandler) Delete(c *fiber.Ctx) error {
 	var contact models.Contact
-	if err := h.DB.First(&contact, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Contact not found")
+	if err := utils.FindByID(c, h.DB, &contact, "Contact not found"); err != nil {
+		return nil
 	}
 	actorID := middleware.CurrentUserID(c)
 	if err := utils.GenericSoftDelete(h.DB, &contact, actorID); err != nil {

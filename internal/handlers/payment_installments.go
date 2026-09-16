@@ -72,11 +72,11 @@ type paymentInstallmentForm struct {
 
 func (f paymentInstallmentForm) validate(c *fiber.Ctx) bool {
 	if f.Amount <= 0 {
-		utils.ValidationError(c, "amount is required", map[string][]string{"amount": {"required"}})
+		_ = utils.ValidationError(c, "amount is required", map[string][]string{"amount": {"required"}})
 		return false
 	}
 	if f.DueDate == nil {
-		utils.ValidationError(c, "due_date is required", map[string][]string{"due_date": {"required"}})
+		_ = utils.ValidationError(c, "due_date is required", map[string][]string{"due_date": {"required"}})
 		return false
 	}
 	return true
@@ -190,8 +190,8 @@ func (h *PaymentInstallmentHandler) BulkCreate(c *fiber.Ctx) error {
 // @Router /payment-installments/{id} [put]
 func (h *PaymentInstallmentHandler) Update(c *fiber.Ctx) error {
 	var installment models.PaymentInstallment
-	if err := h.DB.First(&installment, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Payment installment not found")
+	if err := utils.FindByID(c, h.DB, &installment, "Payment installment not found"); err != nil {
+		return nil
 	}
 	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(installment.DealID)); err != nil {
 		return respondFindErr(c, err, "Deal not found")
@@ -224,8 +224,8 @@ func (h *PaymentInstallmentHandler) Update(c *fiber.Ctx) error {
 // @Router /payment-installments/{id} [delete]
 func (h *PaymentInstallmentHandler) Delete(c *fiber.Ctx) error {
 	var installment models.PaymentInstallment
-	if err := h.DB.First(&installment, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Payment installment not found")
+	if err := utils.FindByID(c, h.DB, &installment, "Payment installment not found"); err != nil {
+		return nil
 	}
 	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(installment.DealID)); err != nil {
 		return respondFindErr(c, err, "Deal not found")

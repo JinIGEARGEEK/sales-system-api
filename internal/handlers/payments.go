@@ -105,8 +105,8 @@ func (h *PaymentHandler) Create(c *fiber.Ctx) error {
 // @Router /payments/{id} [delete]
 func (h *PaymentHandler) Delete(c *fiber.Ctx) error {
 	var payment models.Payment
-	if err := h.DB.First(&payment, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Payment not found")
+	if err := utils.FindByID(c, h.DB, &payment, "Payment not found"); err != nil {
+		return nil
 	}
 	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(payment.DealID)); err != nil {
 		return respondFindErr(c, err, "Deal not found")

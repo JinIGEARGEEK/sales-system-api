@@ -279,8 +279,8 @@ func (h *CompanyHandler) Get(c *fiber.Ctx) error {
 	var company companyWithActivity
 	query := withLastActivityAt(h.DB.Model(&models.Company{})).
 		Select("companies.*, last_company_activity.last_activity_at as last_activity_at")
-	if err := query.First(&company, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Company not found")
+	if err := utils.FindByID(c, query, &company, "Company not found"); err != nil {
+		return nil
 	}
 	return utils.OK(c, company)
 }
@@ -300,8 +300,8 @@ func (h *CompanyHandler) Get(c *fiber.Ctx) error {
 // @Router /companies/{id} [put]
 func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 	var company models.Company
-	if err := h.DB.First(&company, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Company not found")
+	if err := utils.FindByID(c, h.DB, &company, "Company not found"); err != nil {
+		return nil
 	}
 
 	var form companyForm
@@ -345,8 +345,8 @@ func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 // @Router /companies/{id} [delete]
 func (h *CompanyHandler) Delete(c *fiber.Ctx) error {
 	var company models.Company
-	if err := h.DB.First(&company, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Company not found")
+	if err := utils.FindByID(c, h.DB, &company, "Company not found"); err != nil {
+		return nil
 	}
 	actorID := middleware.CurrentUserID(c)
 	if err := utils.GenericSoftDelete(h.DB, &company, actorID); err != nil {

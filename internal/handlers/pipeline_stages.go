@@ -133,8 +133,8 @@ func (h *PipelineStageHandler) Create(c *fiber.Ctx) error {
 // @Router /admin/pipeline-stages/{id} [patch]
 func (h *PipelineStageHandler) Update(c *fiber.Ctx) error {
 	var stage models.PipelineStage
-	if err := h.DB.First(&stage, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Pipeline stage not found")
+	if err := utils.FindByID(c, h.DB, &stage, "Pipeline stage not found"); err != nil {
+		return nil
 	}
 
 	var form pipelineStageForm
@@ -176,8 +176,8 @@ func (h *PipelineStageHandler) Update(c *fiber.Ctx) error {
 // @Router /admin/pipeline-stages/{id} [delete]
 func (h *PipelineStageHandler) Delete(c *fiber.Ctx) error {
 	var stage models.PipelineStage
-	if err := h.DB.First(&stage, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Pipeline stage not found")
+	if err := utils.FindByID(c, h.DB, &stage, "Pipeline stage not found"); err != nil {
+		return nil
 	}
 	stage.IsActive = false
 	actorID := middleware.CurrentUserID(c)

@@ -96,8 +96,8 @@ type taskUpdateForm struct {
 // CustomerProduct.product_id), and status changes go through Toggle instead.
 func (h *TaskHandler) Update(c *fiber.Ctx) error {
 	var task models.Task
-	if err := h.DB.First(&task, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Task not found")
+	if err := utils.FindByID(c, h.DB, &task, "Task not found"); err != nil {
+		return nil
 	}
 	if !CanWrite(c, task.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to update this task")
@@ -137,8 +137,8 @@ func (h *TaskHandler) Update(c *fiber.Ctx) error {
 // Toggle — PATCH /tasks/:id/toggle. Flips pending<->done.
 func (h *TaskHandler) Toggle(c *fiber.Ctx) error {
 	var task models.Task
-	if err := h.DB.First(&task, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Task not found")
+	if err := utils.FindByID(c, h.DB, &task, "Task not found"); err != nil {
+		return nil
 	}
 	if !CanWrite(c, task.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to update this task")
@@ -252,8 +252,8 @@ func (h *TaskHandler) BulkReassign(c *fiber.Ctx) error {
 // with those — this is the intended shape, not an oversight.
 func (h *TaskHandler) Delete(c *fiber.Ctx) error {
 	var task models.Task
-	if err := h.DB.First(&task, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Task not found")
+	if err := utils.FindByID(c, h.DB, &task, "Task not found"); err != nil {
+		return nil
 	}
 	if !CanWrite(c, task.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to delete this task")

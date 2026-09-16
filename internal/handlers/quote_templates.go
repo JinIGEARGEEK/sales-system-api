@@ -100,8 +100,8 @@ func (h *QuoteTemplateHandler) Create(c *fiber.Ctx) error {
 // @Router /quote-templates/{id} [delete]
 func (h *QuoteTemplateHandler) Delete(c *fiber.Ctx) error {
 	var template models.QuoteTemplate
-	if err := h.DB.First(&template, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Quote template not found")
+	if err := utils.FindByID(c, h.DB, &template, "Quote template not found"); err != nil {
+		return nil
 	}
 	if err := h.DB.Delete(&template).Error; err != nil {
 		return utils.Internal(c, "Failed to delete quote template")
