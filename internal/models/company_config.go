@@ -14,6 +14,17 @@ type IndustryOption struct {
 
 func (IndustryOption) TableName() string { return "industry_options" }
 
+// IndustryOption accessor methods — implement handlers.namedOptionModel so
+// OptionHandler[T, PT] (internal/handlers/option_crud.go) can generically
+// Create/Update/Delete it without a per-type struct literal.
+func (o *IndustryOption) GetName() string      { return o.Name }
+func (o *IndustryOption) SetName(v string)     { o.Name = v }
+func (o *IndustryOption) GetIsActive() bool    { return o.IsActive }
+func (o *IndustryOption) SetIsActive(v bool)   { o.IsActive = v }
+func (o *IndustryOption) SetCreatedBy(v *uint) { o.CreatedBy = v }
+func (o *IndustryOption) SetUpdatedBy(v *uint) { o.UpdatedBy = v }
+func (o *IndustryOption) SetDeletedBy(v *uint) { o.DeletedBy = v }
+
 // DefaultIndustryOptions is seeded verbatim from the retired frontend-only
 // INDUSTRY_OPTIONS constant (constants/mockData/companies.ts) so existing
 // Company rows keep validating unchanged post-migration.
@@ -39,6 +50,17 @@ type CompanySizeOption struct {
 
 func (CompanySizeOption) TableName() string { return "company_size_options" }
 
+// CompanySizeOption accessor methods — implement handlers.namedOptionModel so
+// OptionHandler[T, PT] (internal/handlers/option_crud.go) can generically
+// Create/Update/Delete it without a per-type struct literal.
+func (o *CompanySizeOption) GetName() string      { return o.Name }
+func (o *CompanySizeOption) SetName(v string)     { o.Name = v }
+func (o *CompanySizeOption) GetIsActive() bool    { return o.IsActive }
+func (o *CompanySizeOption) SetIsActive(v bool)   { o.IsActive = v }
+func (o *CompanySizeOption) SetCreatedBy(v *uint) { o.CreatedBy = v }
+func (o *CompanySizeOption) SetUpdatedBy(v *uint) { o.UpdatedBy = v }
+func (o *CompanySizeOption) SetDeletedBy(v *uint) { o.DeletedBy = v }
+
 var DefaultCompanySizeOptions = []CompanySizeOption{
 	{Name: "1-10", IsActive: true},
 	{Name: "11-50", IsActive: true},
@@ -60,6 +82,17 @@ type RevenueSizeOption struct {
 }
 
 func (RevenueSizeOption) TableName() string { return "revenue_size_options" }
+
+// RevenueSizeOption accessor methods — implement handlers.namedOptionModel so
+// OptionHandler[T, PT] (internal/handlers/option_crud.go) can generically
+// Create/Update/Delete it without a per-type struct literal.
+func (o *RevenueSizeOption) GetName() string      { return o.Name }
+func (o *RevenueSizeOption) SetName(v string)     { o.Name = v }
+func (o *RevenueSizeOption) GetIsActive() bool    { return o.IsActive }
+func (o *RevenueSizeOption) SetIsActive(v bool)   { o.IsActive = v }
+func (o *RevenueSizeOption) SetCreatedBy(v *uint) { o.CreatedBy = v }
+func (o *RevenueSizeOption) SetUpdatedBy(v *uint) { o.UpdatedBy = v }
+func (o *RevenueSizeOption) SetDeletedBy(v *uint) { o.DeletedBy = v }
 
 var DefaultRevenueSizeOptions = []RevenueSizeOption{
 	{Name: "< 1M THB", IsActive: true},

@@ -344,8 +344,8 @@ func (h *DealHandler) Create(c *fiber.Ctx) error {
 // @Router /deals/{id} [get]
 func (h *DealHandler) Get(c *fiber.Ctx) error {
 	var deal models.Deal
-	if err := h.DB.First(&deal, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Deal not found")
+	if err := utils.FindByID(c, h.DB, &deal, "Deal not found"); err != nil {
+		return nil
 	}
 	return utils.OK(c, deal)
 }
@@ -366,8 +366,8 @@ func (h *DealHandler) Get(c *fiber.Ctx) error {
 // @Router /deals/{id} [put]
 func (h *DealHandler) Update(c *fiber.Ctx) error {
 	var deal models.Deal
-	if err := h.DB.First(&deal, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Deal not found")
+	if err := utils.FindByID(c, h.DB, &deal, "Deal not found"); err != nil {
+		return nil
 	}
 	if !CanWrite(c, deal.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to update this deal")
@@ -474,8 +474,8 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 // @Router /deals/{id} [delete]
 func (h *DealHandler) Delete(c *fiber.Ctx) error {
 	var deal models.Deal
-	if err := h.DB.First(&deal, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Deal not found")
+	if err := utils.FindByID(c, h.DB, &deal, "Deal not found"); err != nil {
+		return nil
 	}
 	if !CanWrite(c, deal.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to delete this deal")
@@ -615,8 +615,8 @@ type dealStageForm struct {
 // @Router /deals/{id}/stage [patch]
 func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	var deal models.Deal
-	if err := h.DB.First(&deal, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Deal not found")
+	if err := utils.FindByID(c, h.DB, &deal, "Deal not found"); err != nil {
+		return nil
 	}
 	if !CanWrite(c, deal.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to update this deal")
@@ -715,8 +715,8 @@ type dealReassignForm struct {
 // @Router /deals/{id}/reassign [patch]
 func (h *DealHandler) Reassign(c *fiber.Ctx) error {
 	var deal models.Deal
-	if err := h.DB.First(&deal, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Deal not found")
+	if err := utils.FindByID(c, h.DB, &deal, "Deal not found"); err != nil {
+		return nil
 	}
 
 	var form dealReassignForm

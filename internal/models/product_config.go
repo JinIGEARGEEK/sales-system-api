@@ -11,6 +11,17 @@ type ProductCategoryOption struct {
 
 func (ProductCategoryOption) TableName() string { return "product_category_options" }
 
+// ProductCategoryOption accessor methods — implement handlers.namedOptionModel so
+// OptionHandler[T, PT] (internal/handlers/option_crud.go) can generically
+// Create/Update/Delete it without a per-type struct literal.
+func (o *ProductCategoryOption) GetName() string      { return o.Name }
+func (o *ProductCategoryOption) SetName(v string)     { o.Name = v }
+func (o *ProductCategoryOption) GetIsActive() bool    { return o.IsActive }
+func (o *ProductCategoryOption) SetIsActive(v bool)   { o.IsActive = v }
+func (o *ProductCategoryOption) SetCreatedBy(v *uint) { o.CreatedBy = v }
+func (o *ProductCategoryOption) SetUpdatedBy(v *uint) { o.UpdatedBy = v }
+func (o *ProductCategoryOption) SetDeletedBy(v *uint) { o.DeletedBy = v }
+
 // DefaultProductCategoryOptions is seeded on first run — a starting point an
 // Admin is expected to tune, not a fixed business rule (no prior hardcoded
 // list to preserve).

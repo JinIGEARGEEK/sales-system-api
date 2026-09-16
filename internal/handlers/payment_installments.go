@@ -190,8 +190,8 @@ func (h *PaymentInstallmentHandler) BulkCreate(c *fiber.Ctx) error {
 // @Router /payment-installments/{id} [put]
 func (h *PaymentInstallmentHandler) Update(c *fiber.Ctx) error {
 	var installment models.PaymentInstallment
-	if err := h.DB.First(&installment, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Payment installment not found")
+	if err := utils.FindByID(c, h.DB, &installment, "Payment installment not found"); err != nil {
+		return nil
 	}
 	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(installment.DealID)); err != nil {
 		return respondFindErr(c, err, "Deal not found")
@@ -224,8 +224,8 @@ func (h *PaymentInstallmentHandler) Update(c *fiber.Ctx) error {
 // @Router /payment-installments/{id} [delete]
 func (h *PaymentInstallmentHandler) Delete(c *fiber.Ctx) error {
 	var installment models.PaymentInstallment
-	if err := h.DB.First(&installment, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Payment installment not found")
+	if err := utils.FindByID(c, h.DB, &installment, "Payment installment not found"); err != nil {
+		return nil
 	}
 	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(installment.DealID)); err != nil {
 		return respondFindErr(c, err, "Deal not found")

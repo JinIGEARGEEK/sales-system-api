@@ -159,8 +159,8 @@ func (h *ProspectHandler) Create(c *fiber.Ctx) error {
 // @Router /prospects/{id} [get]
 func (h *ProspectHandler) Get(c *fiber.Ctx) error {
 	var prospect models.Prospect
-	if err := h.DB.First(&prospect, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Prospect not found")
+	if err := utils.FindByID(c, h.DB, &prospect, "Prospect not found"); err != nil {
+		return nil
 	}
 	return utils.OK(c, prospect)
 }
@@ -181,8 +181,8 @@ func (h *ProspectHandler) Get(c *fiber.Ctx) error {
 // @Router /prospects/{id} [put]
 func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 	var prospect models.Prospect
-	if err := h.DB.First(&prospect, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Prospect not found")
+	if err := utils.FindByID(c, h.DB, &prospect, "Prospect not found"); err != nil {
+		return nil
 	}
 	if !CanWrite(c, prospect.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to update this prospect")
@@ -250,8 +250,8 @@ func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 // @Router /prospects/{id} [delete]
 func (h *ProspectHandler) Delete(c *fiber.Ctx) error {
 	var prospect models.Prospect
-	if err := h.DB.First(&prospect, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Prospect not found")
+	if err := utils.FindByID(c, h.DB, &prospect, "Prospect not found"); err != nil {
+		return nil
 	}
 	if !CanWrite(c, prospect.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to delete this prospect")
@@ -364,8 +364,8 @@ type prospectConvertRequest struct {
 // @Router /prospects/{id}/convert [post]
 func (h *ProspectHandler) Convert(c *fiber.Ctx) error {
 	var prospect models.Prospect
-	if err := h.DB.First(&prospect, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Prospect not found")
+	if err := utils.FindByID(c, h.DB, &prospect, "Prospect not found"); err != nil {
+		return nil
 	}
 	if !CanWrite(c, prospect.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to convert this prospect")

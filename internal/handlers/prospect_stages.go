@@ -128,8 +128,8 @@ func (h *ProspectStageHandler) Create(c *fiber.Ctx) error {
 // @Router /admin/prospect-stages/{id} [patch]
 func (h *ProspectStageHandler) Update(c *fiber.Ctx) error {
 	var stage models.ProspectStage
-	if err := h.DB.First(&stage, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Prospect stage not found")
+	if err := utils.FindByID(c, h.DB, &stage, "Prospect stage not found"); err != nil {
+		return nil
 	}
 
 	var form prospectStageForm
@@ -173,8 +173,8 @@ func (h *ProspectStageHandler) Update(c *fiber.Ctx) error {
 // @Router /admin/prospect-stages/{id} [delete]
 func (h *ProspectStageHandler) Delete(c *fiber.Ctx) error {
 	var stage models.ProspectStage
-	if err := h.DB.First(&stage, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Prospect stage not found")
+	if err := utils.FindByID(c, h.DB, &stage, "Prospect stage not found"); err != nil {
+		return nil
 	}
 	stage.IsActive = false
 	actorID := middleware.CurrentUserID(c)

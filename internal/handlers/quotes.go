@@ -368,8 +368,8 @@ func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 // @Router /quotes/{id} [put]
 func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	var quote models.Quote
-	if err := h.DB.First(&quote, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Quote not found")
+	if err := utils.FindByID(c, h.DB, &quote, "Quote not found"); err != nil {
+		return nil
 	}
 	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(quote.DealID)); err != nil {
 		return respondFindErr(c, err, "Deal not found")
@@ -442,8 +442,8 @@ func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 // @Router /quotes/{id} [delete]
 func (h *QuoteHandler) Delete(c *fiber.Ctx) error {
 	var quote models.Quote
-	if err := h.DB.First(&quote, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Quote not found")
+	if err := utils.FindByID(c, h.DB, &quote, "Quote not found"); err != nil {
+		return nil
 	}
 	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(quote.DealID)); err != nil {
 		return respondFindErr(c, err, "Deal not found")
@@ -466,8 +466,8 @@ func (h *QuoteHandler) Delete(c *fiber.Ctx) error {
 // @Router /quotes/{id}/export-pdf [get]
 func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 	var quote models.Quote
-	if err := h.DB.First(&quote, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Quote not found")
+	if err := utils.FindByID(c, h.DB, &quote, "Quote not found"); err != nil {
+		return nil
 	}
 	var deal models.Deal
 	if err := h.DB.First(&deal, quote.DealID).Error; err != nil {

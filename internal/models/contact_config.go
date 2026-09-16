@@ -12,6 +12,17 @@ type JobTitleOption struct {
 
 func (JobTitleOption) TableName() string { return "job_title_options" }
 
+// JobTitleOption accessor methods — implement handlers.namedOptionModel so
+// OptionHandler[T, PT] (internal/handlers/option_crud.go) can generically
+// Create/Update/Delete it without a per-type struct literal.
+func (o *JobTitleOption) GetName() string      { return o.Name }
+func (o *JobTitleOption) SetName(v string)     { o.Name = v }
+func (o *JobTitleOption) GetIsActive() bool    { return o.IsActive }
+func (o *JobTitleOption) SetIsActive(v bool)   { o.IsActive = v }
+func (o *JobTitleOption) SetCreatedBy(v *uint) { o.CreatedBy = v }
+func (o *JobTitleOption) SetUpdatedBy(v *uint) { o.UpdatedBy = v }
+func (o *JobTitleOption) SetDeletedBy(v *uint) { o.DeletedBy = v }
+
 // DefaultJobTitleOptions is seeded on first run — a starting point an Admin
 // is expected to tune, not a fixed business rule (there was no prior
 // hardcoded list to preserve, same framing as DefaultCompanySizeOptions).

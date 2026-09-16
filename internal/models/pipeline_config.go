@@ -32,6 +32,17 @@ type LeadSourceOption struct {
 
 func (LeadSourceOption) TableName() string { return "lead_source_options" }
 
+// LeadSourceOption accessor methods — implement handlers.namedOptionModel so
+// OptionHandler[T, PT] (internal/handlers/option_crud.go) can generically
+// Create/Update/Delete it without a per-type struct literal.
+func (o *LeadSourceOption) GetName() string      { return o.Name }
+func (o *LeadSourceOption) SetName(v string)     { o.Name = v }
+func (o *LeadSourceOption) GetIsActive() bool    { return o.IsActive }
+func (o *LeadSourceOption) SetIsActive(v bool)   { o.IsActive = v }
+func (o *LeadSourceOption) SetCreatedBy(v *uint) { o.CreatedBy = v }
+func (o *LeadSourceOption) SetUpdatedBy(v *uint) { o.UpdatedBy = v }
+func (o *LeadSourceOption) SetDeletedBy(v *uint) { o.DeletedBy = v }
+
 // ProspectSourceOption is an Admin-configurable Prospect acquisition source
 // — Marketing's own funnel-source list (added 2026-09-01), deliberately
 // separate from LeadSourceOption above: Marketing's actual channels (Social
@@ -46,6 +57,17 @@ type ProspectSourceOption struct {
 }
 
 func (ProspectSourceOption) TableName() string { return "prospect_source_options" }
+
+// ProspectSourceOption accessor methods — implement handlers.namedOptionModel so
+// OptionHandler[T, PT] (internal/handlers/option_crud.go) can generically
+// Create/Update/Delete it without a per-type struct literal.
+func (o *ProspectSourceOption) GetName() string      { return o.Name }
+func (o *ProspectSourceOption) SetName(v string)     { o.Name = v }
+func (o *ProspectSourceOption) GetIsActive() bool    { return o.IsActive }
+func (o *ProspectSourceOption) SetIsActive(v bool)   { o.IsActive = v }
+func (o *ProspectSourceOption) SetCreatedBy(v *uint) { o.CreatedBy = v }
+func (o *ProspectSourceOption) SetUpdatedBy(v *uint) { o.UpdatedBy = v }
+func (o *ProspectSourceOption) SetDeletedBy(v *uint) { o.DeletedBy = v }
 
 // ProspectStage is an Admin-configurable Prospect funnel stage — replaces
 // the previously hardcoded ProspectStatus enum as the source of truth for

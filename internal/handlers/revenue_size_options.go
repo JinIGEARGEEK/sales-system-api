@@ -4,21 +4,30 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
-	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
-	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
 // RevenueSizeOptionHandler — Admin CRUD for the configurable Company revenue
 // bucket list (RevenueSize had no controlled list at all before this). Mirrors
 // LeadSourceHandler's shape: List/Create/Update/Delete, Delete being a soft
-// "is_active: false" flip rather than a hard row delete.
+// "is_active: false" flip rather than a hard row delete. CRUD logic itself
+// is OptionHandler (option_crud.go) — this just supplies the model type,
+// messages, and Swagger docs.
 type RevenueSizeOptionHandler struct {
-	DB *gorm.DB
+	inner *OptionHandler[models.RevenueSizeOption, *models.RevenueSizeOption]
 }
 
 func NewRevenueSizeOptionHandler(db *gorm.DB) *RevenueSizeOptionHandler {
-	return &RevenueSizeOptionHandler{DB: db}
+	return &RevenueSizeOptionHandler{inner: &OptionHandler[models.RevenueSizeOption, *models.RevenueSizeOption]{
+		DB: db,
+		Msg: OptionMessages{
+			ListFail:       "Failed to list revenue sizes",
+			NotFound:       "Revenue size not found",
+			NameConflict:   "Revenue size name already in use",
+			UpdateFail:     "Failed to update revenue size",
+			DeactivateFail: "Failed to deactivate revenue size",
+		},
+	}}
 }
 
 // List godoc
@@ -29,18 +38,7 @@ func NewRevenueSizeOptionHandler(db *gorm.DB) *RevenueSizeOptionHandler {
 // @Produce json
 // @Success 200 {array} models.RevenueSizeOption
 // @Router /admin/revenue-sizes [get]
-func (h *RevenueSizeOptionHandler) List(c *fiber.Ctx) error {
-	var sizes []models.RevenueSizeOption
-	if err := h.DB.Order("name ASC").Find(&sizes).Error; err != nil {
-		return utils.Internal(c, "Failed to list revenue sizes")
-	}
-	return utils.OK(c, sizes)
-}
-
-type revenueSizeOptionForm struct {
-	Name     string `json:"name"`
-	IsActive *bool  `json:"is_active"`
-}
+func (h *RevenueSizeOptionHandler) List(c *fiber.Ctx) error { return h.inner.List(c) }
 
 // Create godoc
 // @Summary Create a revenue size
@@ -49,28 +47,11 @@ type revenueSizeOptionForm struct {
 // @Security BearerAuth
 // @Accept json
 // @Produce json
-// @Param body body revenueSizeOptionForm true "Revenue size fields"
+// @Param body body OptionForm true "Revenue size fields"
 // @Success 201 {object} models.RevenueSizeOption
 // @Failure 400 {object} map[string]interface{}
 // @Router /admin/revenue-sizes [post]
-func (h *RevenueSizeOptionHandler) Create(c *fiber.Ctx) error {
-	var form revenueSizeOptionForm
-	if err := c.BodyParser(&form); err != nil {
-		return utils.BadRequest(c, "Invalid request body")
-	}
-	if form.Name == "" {
-		return utils.ValidationError(c, "name is required", map[string][]string{"name": {"required"}})
-	}
-
-	actorID := middleware.CurrentUserID(c)
-	revenueSize := models.RevenueSizeOption{Name: form.Name, IsActive: form.IsActive == nil || *form.IsActive}
-	revenueSize.CreatedBy = &actorID
-	revenueSize.UpdatedBy = &actorID
-	if err := h.DB.Create(&revenueSize).Error; err != nil {
-		return utils.ValidationError(c, "Revenue size name already in use", map[string][]string{"name": {"Name is already in use"}})
-	}
-	return utils.Created(c, revenueSize)
-}
+func (h *RevenueSizeOptionHandler) Create(c *fiber.Ctx) error { return h.inner.Create(c) }
 
 // Update godoc
 // @Summary Update a revenue size
@@ -80,36 +61,11 @@ func (h *RevenueSizeOptionHandler) Create(c *fiber.Ctx) error {
 // @Accept json
 // @Produce json
 // @Param id path int true "Revenue size ID"
-// @Param body body revenueSizeOptionForm true "Revenue size fields"
+// @Param body body OptionForm true "Revenue size fields"
 // @Success 200 {object} models.RevenueSizeOption
 // @Failure 404 {object} map[string]interface{}
 // @Router /admin/revenue-sizes/{id} [patch]
-func (h *RevenueSizeOptionHandler) Update(c *fiber.Ctx) error {
-	var revenueSize models.RevenueSizeOption
-	if err := h.DB.First(&revenueSize, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Revenue size not found")
-	}
-
-	var form revenueSizeOptionForm
-	if err := c.BodyParser(&form); err != nil {
-		return utils.BadRequest(c, "Invalid request body")
-	}
-	if form.Name == "" {
-		return utils.ValidationError(c, "name is required", map[string][]string{"name": {"required"}})
-	}
-
-	revenueSize.Name = form.Name
-	if form.IsActive != nil {
-		revenueSize.IsActive = *form.IsActive
-	}
-	actorID := middleware.CurrentUserID(c)
-	revenueSize.UpdatedBy = &actorID
-
-	if err := h.DB.Save(&revenueSize).Error; err != nil {
-		return utils.Internal(c, "Failed to update revenue size")
-	}
-	return utils.OK(c, revenueSize)
-}
+func (h *RevenueSizeOptionHandler) Update(c *fiber.Ctx) error { return h.inner.Update(c) }
 
 // Delete godoc
 // @Summary Deactivate a revenue size
@@ -120,16 +76,4 @@ func (h *RevenueSizeOptionHandler) Update(c *fiber.Ctx) error {
 // @Success 204 "No Content"
 // @Failure 404 {object} map[string]interface{}
 // @Router /admin/revenue-sizes/{id} [delete]
-func (h *RevenueSizeOptionHandler) Delete(c *fiber.Ctx) error {
-	var revenueSize models.RevenueSizeOption
-	if err := h.DB.First(&revenueSize, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Revenue size not found")
-	}
-	revenueSize.IsActive = false
-	actorID := middleware.CurrentUserID(c)
-	revenueSize.DeletedBy = &actorID
-	if err := h.DB.Save(&revenueSize).Error; err != nil {
-		return utils.Internal(c, "Failed to deactivate revenue size")
-	}
-	return utils.NoContent(c)
-}
+func (h *RevenueSizeOptionHandler) Delete(c *fiber.Ctx) error { return h.inner.Delete(c) }

@@ -122,8 +122,8 @@ func (h *ActivityHandler) Create(c *fiber.Ctx) error {
 // Delete — DELETE /activities/:id (hard delete).
 func (h *ActivityHandler) Delete(c *fiber.Ctx) error {
 	var activity models.Activity
-	if err := h.DB.First(&activity, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Activity not found")
+	if err := utils.FindByID(c, h.DB, &activity, "Activity not found"); err != nil {
+		return nil
 	}
 	if !CanWrite(c, &activity.CreatedByID) {
 		return utils.Forbidden(c, "Not authorized to delete this activity")

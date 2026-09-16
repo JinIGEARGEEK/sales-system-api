@@ -4,21 +4,30 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
-	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
-	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
 // ProductCategoryOptionHandler — Admin CRUD for the configurable Product
 // category list (Product.Category had no controlled list at all before
 // this). Mirrors LeadSourceHandler's shape: List/Create/Update/Delete,
 // Delete being a soft "is_active: false" flip rather than a hard row delete.
+// CRUD logic itself is OptionHandler (option_crud.go) — this just supplies
+// the model type, messages, and Swagger docs.
 type ProductCategoryOptionHandler struct {
-	DB *gorm.DB
+	inner *OptionHandler[models.ProductCategoryOption, *models.ProductCategoryOption]
 }
 
 func NewProductCategoryOptionHandler(db *gorm.DB) *ProductCategoryOptionHandler {
-	return &ProductCategoryOptionHandler{DB: db}
+	return &ProductCategoryOptionHandler{inner: &OptionHandler[models.ProductCategoryOption, *models.ProductCategoryOption]{
+		DB: db,
+		Msg: OptionMessages{
+			ListFail:       "Failed to list product categories",
+			NotFound:       "Product category not found",
+			NameConflict:   "Category name already in use",
+			UpdateFail:     "Failed to update product category",
+			DeactivateFail: "Failed to deactivate product category",
+		},
+	}}
 }
 
 // List godoc
@@ -29,18 +38,7 @@ func NewProductCategoryOptionHandler(db *gorm.DB) *ProductCategoryOptionHandler 
 // @Produce json
 // @Success 200 {array} models.ProductCategoryOption
 // @Router /admin/product-categories [get]
-func (h *ProductCategoryOptionHandler) List(c *fiber.Ctx) error {
-	var categories []models.ProductCategoryOption
-	if err := h.DB.Order("name ASC").Find(&categories).Error; err != nil {
-		return utils.Internal(c, "Failed to list product categories")
-	}
-	return utils.OK(c, categories)
-}
-
-type productCategoryOptionForm struct {
-	Name     string `json:"name"`
-	IsActive *bool  `json:"is_active"`
-}
+func (h *ProductCategoryOptionHandler) List(c *fiber.Ctx) error { return h.inner.List(c) }
 
 // Create godoc
 // @Summary Create a product category
@@ -49,28 +47,11 @@ type productCategoryOptionForm struct {
 // @Security BearerAuth
 // @Accept json
 // @Produce json
-// @Param body body productCategoryOptionForm true "Product category fields"
+// @Param body body OptionForm true "Product category fields"
 // @Success 201 {object} models.ProductCategoryOption
 // @Failure 400 {object} map[string]interface{}
 // @Router /admin/product-categories [post]
-func (h *ProductCategoryOptionHandler) Create(c *fiber.Ctx) error {
-	var form productCategoryOptionForm
-	if err := c.BodyParser(&form); err != nil {
-		return utils.BadRequest(c, "Invalid request body")
-	}
-	if form.Name == "" {
-		return utils.ValidationError(c, "name is required", map[string][]string{"name": {"required"}})
-	}
-
-	actorID := middleware.CurrentUserID(c)
-	category := models.ProductCategoryOption{Name: form.Name, IsActive: form.IsActive == nil || *form.IsActive}
-	category.CreatedBy = &actorID
-	category.UpdatedBy = &actorID
-	if err := h.DB.Create(&category).Error; err != nil {
-		return utils.ValidationError(c, "Category name already in use", map[string][]string{"name": {"Name is already in use"}})
-	}
-	return utils.Created(c, category)
-}
+func (h *ProductCategoryOptionHandler) Create(c *fiber.Ctx) error { return h.inner.Create(c) }
 
 // Update godoc
 // @Summary Update a product category
@@ -80,36 +61,11 @@ func (h *ProductCategoryOptionHandler) Create(c *fiber.Ctx) error {
 // @Accept json
 // @Produce json
 // @Param id path int true "Product category ID"
-// @Param body body productCategoryOptionForm true "Product category fields"
+// @Param body body OptionForm true "Product category fields"
 // @Success 200 {object} models.ProductCategoryOption
 // @Failure 404 {object} map[string]interface{}
 // @Router /admin/product-categories/{id} [patch]
-func (h *ProductCategoryOptionHandler) Update(c *fiber.Ctx) error {
-	var category models.ProductCategoryOption
-	if err := h.DB.First(&category, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Product category not found")
-	}
-
-	var form productCategoryOptionForm
-	if err := c.BodyParser(&form); err != nil {
-		return utils.BadRequest(c, "Invalid request body")
-	}
-	if form.Name == "" {
-		return utils.ValidationError(c, "name is required", map[string][]string{"name": {"required"}})
-	}
-
-	category.Name = form.Name
-	if form.IsActive != nil {
-		category.IsActive = *form.IsActive
-	}
-	actorID := middleware.CurrentUserID(c)
-	category.UpdatedBy = &actorID
-
-	if err := h.DB.Save(&category).Error; err != nil {
-		return utils.Internal(c, "Failed to update product category")
-	}
-	return utils.OK(c, category)
-}
+func (h *ProductCategoryOptionHandler) Update(c *fiber.Ctx) error { return h.inner.Update(c) }
 
 // Delete godoc
 // @Summary Deactivate a product category
@@ -120,16 +76,4 @@ func (h *ProductCategoryOptionHandler) Update(c *fiber.Ctx) error {
 // @Success 204 "No Content"
 // @Failure 404 {object} map[string]interface{}
 // @Router /admin/product-categories/{id} [delete]
-func (h *ProductCategoryOptionHandler) Delete(c *fiber.Ctx) error {
-	var category models.ProductCategoryOption
-	if err := h.DB.First(&category, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Product category not found")
-	}
-	category.IsActive = false
-	actorID := middleware.CurrentUserID(c)
-	category.DeletedBy = &actorID
-	if err := h.DB.Save(&category).Error; err != nil {
-		return utils.Internal(c, "Failed to deactivate product category")
-	}
-	return utils.NoContent(c)
-}
+func (h *ProductCategoryOptionHandler) Delete(c *fiber.Ctx) error { return h.inner.Delete(c) }

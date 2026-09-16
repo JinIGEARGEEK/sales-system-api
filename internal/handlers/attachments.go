@@ -119,8 +119,8 @@ func (h *AttachmentHandler) Create(c *fiber.Ctx) error {
 // the file itself is left in object storage, no orphan-cleanup job in v1).
 func (h *AttachmentHandler) Delete(c *fiber.Ctx) error {
 	var attachment models.Attachment
-	if err := h.DB.First(&attachment, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Attachment not found")
+	if err := utils.FindByID(c, h.DB, &attachment, "Attachment not found"); err != nil {
+		return nil
 	}
 	if !CanWrite(c, &attachment.UploadedByID) {
 		return utils.Forbidden(c, "Not authorized to delete this attachment")

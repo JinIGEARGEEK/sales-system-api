@@ -122,8 +122,8 @@ func (h *ContractHandler) Create(c *fiber.Ctx) error {
 // @Router /contracts/{id} [put]
 func (h *ContractHandler) Update(c *fiber.Ctx) error {
 	var contract models.Contract
-	if err := h.DB.First(&contract, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Contract not found")
+	if err := utils.FindByID(c, h.DB, &contract, "Contract not found"); err != nil {
+		return nil
 	}
 	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(contract.DealID)); err != nil {
 		return respondFindErr(c, err, "Deal not found")
@@ -166,8 +166,8 @@ func (h *ContractHandler) Update(c *fiber.Ctx) error {
 // @Router /contracts/{id}/upload [post]
 func (h *ContractHandler) Upload(c *fiber.Ctx) error {
 	var contract models.Contract
-	if err := h.DB.First(&contract, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Contract not found")
+	if err := utils.FindByID(c, h.DB, &contract, "Contract not found"); err != nil {
+		return nil
 	}
 	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(contract.DealID)); err != nil {
 		return respondFindErr(c, err, "Deal not found")
@@ -205,8 +205,8 @@ func (h *ContractHandler) Upload(c *fiber.Ctx) error {
 // @Router /contracts/{id}/export-pdf [get]
 func (h *ContractHandler) ExportPDF(c *fiber.Ctx) error {
 	var contract models.Contract
-	if err := h.DB.First(&contract, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Contract not found")
+	if err := utils.FindByID(c, h.DB, &contract, "Contract not found"); err != nil {
+		return nil
 	}
 	var deal models.Deal
 	if err := h.DB.First(&deal, contract.DealID).Error; err != nil {

@@ -85,8 +85,8 @@ func (h *NotificationRuleHandler) Create(c *fiber.Ctx) error {
 // Update — PATCH /admin/notification-rules/:id.
 func (h *NotificationRuleHandler) Update(c *fiber.Ctx) error {
 	var rule models.NotificationRule
-	if err := h.DB.First(&rule, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Notification rule not found")
+	if err := utils.FindByID(c, h.DB, &rule, "Notification rule not found"); err != nil {
+		return nil
 	}
 
 	var form notificationRuleForm
@@ -114,8 +114,8 @@ func (h *NotificationRuleHandler) Update(c *fiber.Ctx) error {
 // false) rather than a hard row delete, same convention as PipelineStage.
 func (h *NotificationRuleHandler) Delete(c *fiber.Ctx) error {
 	var rule models.NotificationRule
-	if err := h.DB.First(&rule, c.Params("id")).Error; err != nil {
-		return utils.NotFound(c, "Notification rule not found")
+	if err := utils.FindByID(c, h.DB, &rule, "Notification rule not found"); err != nil {
+		return nil
 	}
 	rule.IsActive = false
 	actorID := middleware.CurrentUserID(c)
