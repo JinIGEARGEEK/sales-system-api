@@ -51,17 +51,17 @@ type contractForm struct {
 // both Create and Update).
 func validateContractForm(c *fiber.Ctx, db *gorm.DB, dealID uint, form contractForm) bool {
 	if !models.IsValidContractStatus(form.Status) {
-		utils.ValidationError(c, "status is invalid", map[string][]string{"status": {"invalid"}})
+		_ = utils.ValidationError(c, "status is invalid", map[string][]string{"status": {"invalid"}})
 		return false
 	}
 	if form.QuoteID != nil {
 		var quote models.Quote
 		if err := db.First(&quote, *form.QuoteID).Error; err != nil {
-			utils.NotFound(c, "Quote not found")
+			_ = utils.NotFound(c, "Quote not found")
 			return false
 		}
 		if quote.DealID != dealID {
-			utils.ValidationError(c, "quote does not belong to this deal", map[string][]string{"quote_id": {"invalid"}})
+			_ = utils.ValidationError(c, "quote does not belong to this deal", map[string][]string{"quote_id": {"invalid"}})
 			return false
 		}
 	}

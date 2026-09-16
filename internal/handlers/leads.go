@@ -119,11 +119,11 @@ func validateReferredBy(c *fiber.Ctx, db *gorm.DB, referredByType *models.Activi
 		return nil
 	}
 	if referredByType == nil || referredByID == nil {
-		utils.ValidationError(c, "referred_by_type and referred_by_id must both be set or both omitted", map[string][]string{"referred_by_type": {"required_with_referred_by_id"}})
+		_ = utils.ValidationError(c, "referred_by_type and referred_by_id must both be set or both omitted", map[string][]string{"referred_by_type": {"required_with_referred_by_id"}})
 		return utils.ErrHandled
 	}
 	if !models.IsValidReferrerType(*referredByType) {
-		utils.ValidationError(c, "referred_by_type must be company or contact", map[string][]string{"referred_by_type": {"invalid"}})
+		_ = utils.ValidationError(c, "referred_by_type must be company or contact", map[string][]string{"referred_by_type": {"invalid"}})
 		return utils.ErrHandled
 	}
 	var existsErr error
@@ -133,7 +133,7 @@ func validateReferredBy(c *fiber.Ctx, db *gorm.DB, referredByType *models.Activi
 		existsErr = db.First(&models.Contact{}, *referredByID).Error
 	}
 	if existsErr != nil {
-		utils.NotFound(c, "Referred-by company/contact not found")
+		_ = utils.NotFound(c, "Referred-by company/contact not found")
 		return utils.ErrHandled
 	}
 	return nil
@@ -149,7 +149,7 @@ func validateLeadCompanyID(c *fiber.Ctx, db *gorm.DB, companyID *uint) error {
 		return nil
 	}
 	if err := db.First(&models.Company{}, *companyID).Error; err != nil {
-		utils.NotFound(c, "Company not found")
+		_ = utils.NotFound(c, "Company not found")
 		return utils.ErrHandled
 	}
 	return nil

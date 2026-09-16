@@ -72,11 +72,11 @@ type paymentInstallmentForm struct {
 
 func (f paymentInstallmentForm) validate(c *fiber.Ctx) bool {
 	if f.Amount <= 0 {
-		utils.ValidationError(c, "amount is required", map[string][]string{"amount": {"required"}})
+		_ = utils.ValidationError(c, "amount is required", map[string][]string{"amount": {"required"}})
 		return false
 	}
 	if f.DueDate == nil {
-		utils.ValidationError(c, "due_date is required", map[string][]string{"due_date": {"required"}})
+		_ = utils.ValidationError(c, "due_date is required", map[string][]string{"due_date": {"required"}})
 		return false
 	}
 	return true
