@@ -200,11 +200,12 @@ type industryBreakdownItem struct {
 }
 
 type teamPerformanceItem struct {
-	UserID   uint    `json:"user_id"`
-	Name     string  `json:"name"`
-	WonCount int64   `json:"won_count"`
-	WonValue float64 `json:"won_value"`
-	WinRate  float64 `json:"win_rate"`
+	UserID        uint    `json:"user_id"`
+	Name          string  `json:"name"`
+	WonCount      int64   `json:"won_count"`
+	WonValue      float64 `json:"won_value"`
+	WinRate       float64 `json:"win_rate"`
+	ActivityCount int64   `json:"activity_count"`
 }
 
 // summaryCacheTTL bounds how stale a cached Summary response can be. The
@@ -298,7 +299,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	// Same up-front-synchronous-read rule as companyTagSet above — fetchSalesCycle
 	// (called from a goroutine below) only takes plain strings, not `c`, for
 	// exactly this reason.
-	assignedTo, dateFrom, dateTo := c.Query("assigned_to"), c.Query("date_from"), c.Query("date_to")
+	assignedTo, dateFrom, dateTo, period := c.Query("assigned_to"), c.Query("date_from"), c.Query("date_to"), c.Query("period")
 	// upsell_min_stale_days — the Upsell Opportunities widget's own staleness
 	// filter (FR-CRM-108/109), read up front for the same data-race reason as
 	// companyTagSet/assignedTo above. Defaults to 60 (the old fixed tier1
@@ -400,7 +401,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	run("stage_breakdown", func() { stageBreakdown = h.stageBreakdown(base) })
 	run("forecast_by_category", func() { forecastByCategory = h.forecastByCategory(base) })
 	run("industry_breakdown", func() { industryBreakdown = h.industryBreakdown(base, companyTagSet) })
-	run("team_performance", func() { teamPerformance = h.teamPerformance(base) })
+	run("team_performance", func() { teamPerformance = h.teamPerformance(base, dateFrom, dateTo, period) })
 	run("annual_revenue_trend", func() { annualRevenueTrend = h.annualRevenueTrend(settings.AnnualRevenueGoal) })
 	// upsellOpportunities is Company-centric (not Deal-scoped), so it's
 	// deliberately independent of `base`/baseFilter's Deal-side query params —
@@ -653,7 +654,7 @@ func (h *DashboardHandler) industryBreakdown(base *gorm.DB, companyTagSet bool) 
 	return result
 }
 
-func (h *DashboardHandler) teamPerformance(base *gorm.DB) []teamPerformanceItem {
+func (h *DashboardHandler) teamPerformance(base *gorm.DB, dateFrom, dateTo, period string) []teamPerformanceItem {
 	var rows []struct {
 		UserID    uint
 		WonCount  int64
@@ -678,11 +679,41 @@ func (h *DashboardHandler) teamPerformance(base *gorm.DB) []teamPerformanceItem 
 		names[u.ID] = u.FirstName + " " + u.LastName
 	}
 
+	// Activity count per rep, over the same date window as the deal-count
+	// aggregates above (FR-CRM-053) — a separate query since Activity isn't
+	// joined to Deal, mirroring baseFilter's own date_from/date_to/period
+	// resolution rather than sharing it (base is scoped to deals.*, not a
+	// generically reusable filter).
+	activityCounts := make(map[uint]int64, len(userIDs))
+	if len(userIDs) > 0 {
+		activityQuery := h.DB.Model(&models.Activity{}).Where("created_by_id IN ?", userIDs)
+		if dateFrom == "" && dateTo == "" {
+			if from, ok := periodStart(period); ok {
+				activityQuery = activityQuery.Where("activities.created_at >= ?", from)
+			}
+		} else {
+			if dateFrom != "" {
+				activityQuery = activityQuery.Where("activities.created_at >= ?", dateFrom)
+			}
+			if dateTo != "" {
+				activityQuery = activityQuery.Where("activities.created_at <= ?", dateTo)
+			}
+		}
+		var activityRows []struct {
+			CreatedByID uint
+			Count       int64
+		}
+		activityQuery.Select("created_by_id, count(*) as count").Group("created_by_id").Scan(&activityRows)
+		for _, r := range activityRows {
+			activityCounts[r.CreatedByID] = r.Count
+		}
+	}
+
 	result := make([]teamPerformanceItem, 0, len(rows))
 	for _, r := range rows {
 		result = append(result, teamPerformanceItem{
 			UserID: r.UserID, Name: names[r.UserID], WonCount: r.WonCount, WonValue: r.WonValue,
-			WinRate: winRate(r.WonCount, r.LostCount),
+			WinRate: winRate(r.WonCount, r.LostCount), ActivityCount: activityCounts[r.UserID],
 		})
 	}
 	return result
