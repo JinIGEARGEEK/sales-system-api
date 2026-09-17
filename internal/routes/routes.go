@@ -286,6 +286,8 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	users.Post("/", userH.Create)
 	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
 	users.Get("/trash", userH.Trash)
+	users.Patch("/bulk-activate", userH.BulkActivate)
+	users.Patch("/bulk-deactivate", userH.BulkDeactivate)
 	users.Get("/:id", userH.Get)
 	users.Put("/:id", userH.Update)
 	users.Delete("/:id", userH.Delete)

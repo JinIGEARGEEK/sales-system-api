@@ -253,6 +253,77 @@ func (h *UserHandler) Delete(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
+type bulkUserIDsForm struct {
+	IDs []uint `json:"ids"`
+}
+
+// bulkSetActive is the shared implementation behind BulkActivate/
+// BulkDeactivate — same "loop over ids, mutate, save, audit" shape as
+// bulk_ops.go's bulkArchiveEntity, but without a per-row CanWrite check:
+// User has no AssignedTo/owner field to check against, and the whole /users
+// route group is already Admin-only (routes.go's adminOnly), unlike
+// Deal/Lead/Prospect's bulk endpoints which sit behind the broader
+// Admin-or-Sales-Manager bulkRoles.
+func (h *UserHandler) bulkSetActive(c *fiber.Ctx, active bool, action string, failMsg string) error {
+	var form bulkUserIDsForm
+	if err := c.BodyParser(&form); err != nil {
+		return utils.BadRequest(c, "Invalid request body")
+	}
+	if !utils.ValidateBulkIDCount(c, form.IDs) {
+		return nil
+	}
+
+	actorID := middleware.CurrentUserID(c)
+	ids := utils.DedupeUints(form.IDs)
+	err := utils.BulkUpdate(h.DB, ids, "user", action, actorID,
+		func(tx *gorm.DB, item *models.User) (models.JSONMap, models.JSONMap, error) {
+			before := models.JSONMap{"is_active": item.IsActive}
+			item.IsActive = active
+			after := models.JSONMap{"is_active": item.IsActive}
+			return before, after, tx.Save(item).Error
+		})
+	if err != nil {
+		return utils.Internal(c, failMsg)
+	}
+	// Same reason as Update/Delete above — is_active (or a still-cached
+	// stale value of it) gates RequireAuth, so drop the cache for every
+	// affected user rather than waiting up to authCacheTTL.
+	for _, id := range ids {
+		middleware.InvalidateAuthCache(id)
+	}
+	return utils.NoContent(c)
+}
+
+// BulkActivate godoc
+// @Summary Bulk activate users (Admin only)
+// @Description Sets is_active true for every listed user in one transaction, writing a bulk_activated audit entry per row.
+// @Tags users
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body bulkUserIDsForm true "User IDs"
+// @Success 204 "No Content"
+// @Failure 400 {object} map[string]interface{} "Invalid request body, or ids is required"
+// @Router /users/bulk-activate [patch]
+func (h *UserHandler) BulkActivate(c *fiber.Ctx) error {
+	return h.bulkSetActive(c, true, "bulk_activated", "Failed to bulk activate users")
+}
+
+// BulkDeactivate godoc
+// @Summary Bulk deactivate users (Admin only)
+// @Description Sets is_active false for every listed user in one transaction (same effect as Delete's is_active flip, without the soft-delete), writing a bulk_deactivated audit entry per row.
+// @Tags users
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body bulkUserIDsForm true "User IDs"
+// @Success 204 "No Content"
+// @Failure 400 {object} map[string]interface{} "Invalid request body, or ids is required"
+// @Router /users/bulk-deactivate [patch]
+func (h *UserHandler) BulkDeactivate(c *fiber.Ctx) error {
+	return h.bulkSetActive(c, false, "bulk_deactivated", "Failed to bulk deactivate users")
+}
+
 // Trash godoc
 // @Summary List deleted users (Admin only)
 // @Description Admin only. Returns soft-deleted users.
