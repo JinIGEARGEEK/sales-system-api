@@ -322,6 +322,10 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// this is read-only detail about a Lead a caller can already view.
 	leads.Get("/:id/score-breakdown", leadH.ScoreBreakdown)
 	leads.Put("/:id", salesPipelineRoles, leadH.Update)
+	// Kanban drag-and-drop's own narrow-PATCH move endpoint (status+position
+	// only) — see leadH.UpdateStatus's doc comment for why this exists
+	// alongside the full-record PUT above.
+	leads.Patch("/:id/status", salesPipelineRoles, leadH.UpdateStatus)
 	leads.Delete("/:id", salesPipelineRoles, leadH.Delete)
 	leads.Post("/:id/convert", salesPipelineRoles, leadH.Convert)
 	leads.Post("/:id/restore", bulkRoles, leadH.Restore)
@@ -342,6 +346,10 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	prospects.Patch("/bulk-archive", bulkRoles, prospectH.BulkArchive)
 	prospects.Get("/:id", prospectH.Get)
 	prospects.Put("/:id", prospectH.Update)
+	// Kanban drag-and-drop's own narrow-PATCH move endpoint (status+position
+	// only) — see prospectH.UpdateStatus's doc comment for why this exists
+	// alongside the full-record PUT above.
+	prospects.Patch("/:id/status", prospectH.UpdateStatus)
 	prospects.Delete("/:id", prospectH.Delete)
 	prospects.Post("/:id/convert", prospectH.Convert)
 	prospects.Post("/:id/restore", bulkRoles, prospectH.Restore)

@@ -47,12 +47,21 @@ func (h *DealHandler) List(c *fiber.Ctx) error {
 	if joined, ok := utils.ApplyCompanyNameSort(query, "deals", c.Query("sort")); ok {
 		query = joined
 	} else {
-		query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "title": true, "value": true}, "-created_at")
+		query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "title": true, "value": true, "position": true}, "-created_at")
 	}
 	if err := query.Limit(perPage).Offset(offset).Find(&deals).Error; err != nil {
 		return utils.Internal(c, "Failed to list deals")
 	}
 	return utils.List(c, deals, page, perPage, total)
+}
+
+// nextDealPosition returns the Position to append a card to the end of the
+// given Stage lane — MAX(position) in that lane, plus 1, or 1 for an empty
+// lane. See Deal.Position's doc comment (models/deal.go) for the full scheme.
+func nextDealPosition(db *gorm.DB, stage models.DealStage) float64 {
+	var max float64
+	db.Model(&models.Deal{}).Where("stage = ?", stage).Select("COALESCE(MAX(position), 0)").Scan(&max)
+	return max + 1
 }
 
 type dealForm struct {
@@ -326,6 +335,7 @@ func (h *DealHandler) Create(c *fiber.Ctx) error {
 		def := h.defaultForecastCategoryFor(deal.Stage)
 		deal.ForecastCategory = &def
 	}
+	deal.Position = nextDealPosition(h.DB, deal.Stage)
 	if err := h.DB.Create(&deal).Error; err != nil {
 		return utils.Internal(c, "Failed to create deal")
 	}
@@ -597,6 +607,11 @@ func mergeTags(existing []string, add []string) []string {
 
 type dealStageForm struct {
 	Stage models.DealStage `json:"stage"`
+	// Position is the Kanban drag-drop's computed insertion point within the
+	// destination Stage lane (a pointer so an omitted field, e.g. the mobile
+	// dropdown-move, is distinguishable from an explicit 0) — see
+	// Deal.Position's doc comment (models/deal.go).
+	Position *float64 `json:"position"`
 }
 
 // UpdateStage godoc
@@ -677,6 +692,18 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 		deal.Probability = &def
 		catDef := h.defaultForecastCategoryFor(deal.Stage)
 		deal.ForecastCategory = &catDef
+	}
+
+	// The client always sends its own computed Position when this is a real
+	// drag (in-lane reorder or cross-lane move dropped at a specific spot);
+	// when it's omitted (the mobile dropdown-move, which has no drag
+	// geometry to compute from) and the stage actually changed, append to
+	// the end of the destination lane instead of leaving the old lane's
+	// Position value stale/meaningless in the new one.
+	if form.Position != nil {
+		deal.Position = *form.Position
+	} else if oldStage != deal.Stage {
+		deal.Position = nextDealPosition(h.DB, deal.Stage)
 	}
 
 	after := models.JSONMap{"stage": deal.Stage, "status": deal.Status}

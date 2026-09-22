@@ -49,7 +49,7 @@ func (h *ProspectHandler) List(c *fiber.Ctx) error {
 	if needsCompanyJoin {
 		query = utils.ApplyNullableCompanySort(query, "prospects", c.Query("sort"), sortField)
 	} else {
-		query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true}, "-created_at")
+		query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true, "position": true}, "-created_at")
 	}
 	if err := query.Limit(perPage).Offset(offset).Find(&prospects).Error; err != nil {
 		return utils.Internal(c, "Failed to list prospects")
@@ -73,6 +73,15 @@ func rejectManualConvertedStatus(c *fiber.Ctx, newStatus, current models.Prospec
 	msg := `status "Converted" can only be set via POST /prospects/:id/convert`
 	_ = utils.ValidationError(c, msg, map[string][]string{"status": {msg}})
 	return utils.ErrHandled
+}
+
+// nextProspectPosition returns the Position to append a card to the end of
+// the given Status lane — mirrors nextDealPosition (deals.go). See
+// Prospect.Position's doc comment (models/prospect.go) for the full scheme.
+func nextProspectPosition(db *gorm.DB, status models.ProspectStatus) float64 {
+	var max float64
+	db.Model(&models.Prospect{}).Where("status = ?", status).Select("COALESCE(MAX(position), 0)").Scan(&max)
+	return max + 1
 }
 
 type prospectForm struct {
@@ -141,6 +150,7 @@ func (h *ProspectHandler) Create(c *fiber.Ctx) error {
 	if prospect.Status == "" {
 		prospect.Status = models.ProspectStatusNew
 	}
+	prospect.Position = nextProspectPosition(h.DB, prospect.Status)
 	if err := h.DB.Create(&prospect).Error; err != nil {
 		return utils.Internal(c, "Failed to create prospect")
 	}
@@ -234,6 +244,72 @@ func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 	})
 	if err != nil {
 		return utils.Internal(c, "Failed to update prospect")
+	}
+	return utils.OK(c, prospect)
+}
+
+type prospectStatusForm struct {
+	Status models.ProspectStatus `json:"status"`
+	// Position is the Kanban drag-drop's computed insertion point within the
+	// destination Status lane (a pointer so an omitted field, e.g. the mobile
+	// dropdown-move, is distinguishable from an explicit 0) — see
+	// Prospect.Position's doc comment (models/prospect.go).
+	Position *float64 `json:"position"`
+}
+
+// UpdateStatus godoc
+// @Summary Move a prospect to a new status (Kanban drag-and-drop) (Admin/Marketing/Sales Manager/Sales Rep)
+// @Description Dedicated narrow-PATCH endpoint for the Kanban drag-and-drop quick-move — unlike the full-record `PUT /prospects/:id`, this only ever touches status/position, so a drag-move never risks blanking out the rest of the record. status "Converted" still cannot be set directly (only via POST /prospects/:id/convert). Mirrors DealHandler.UpdateStage/LeadHandler.UpdateStatus.
+// @Tags prospects
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Prospect ID"
+// @Param body body prospectStatusForm true "New status/position"
+// @Success 200 {object} models.Prospect
+// @Failure 400 {object} map[string]interface{} "status is required, or an attempted manual transition into Converted"
+// @Failure 403 {object} map[string]interface{} "Not authorized to update this prospect"
+// @Failure 404 {object} map[string]interface{} "Prospect not found"
+// @Router /prospects/{id}/status [patch]
+func (h *ProspectHandler) UpdateStatus(c *fiber.Ctx) error {
+	var prospect models.Prospect
+	if err := utils.FindByID(c, h.DB, &prospect, "Prospect not found"); err != nil {
+		return nil
+	}
+	if !CanWrite(c, prospect.AssignedTo) {
+		return utils.Forbidden(c, "Not authorized to update this prospect")
+	}
+
+	var form prospectStatusForm
+	if err := c.BodyParser(&form); err != nil {
+		return utils.BadRequest(c, "Invalid request body")
+	}
+	if form.Status == "" {
+		return utils.ValidationError(c, "status is required", map[string][]string{"status": {"required"}})
+	}
+	if err := rejectManualConvertedStatus(c, form.Status, prospect.Status); err != nil {
+		return nil
+	}
+	if !utils.IsActiveProspectStage(h.DB, string(form.Status)) {
+		return utils.ValidationError(c, "status is not a valid active prospect stage", map[string][]string{"status": {"invalid"}})
+	}
+
+	oldStatus := prospect.Status
+	prospect.Status = form.Status
+	if form.Position != nil {
+		prospect.Position = *form.Position
+	} else if oldStatus != prospect.Status {
+		prospect.Position = nextProspectPosition(h.DB, prospect.Status)
+	}
+
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&prospect).Error; err != nil {
+			return err
+		}
+		return utils.LogStatusChangeActivity(tx, "Prospect", oldStatus, prospect.Status, prospect.CompanyID, prospect.CompanyID, middleware.CurrentUserID(c))
+	})
+	if err != nil {
+		return utils.Internal(c, "Failed to update prospect status")
 	}
 	return utils.OK(c, prospect)
 }

@@ -131,13 +131,19 @@ func buildConfig() *config.Config {
 	}
 }
 
+// adminDSN returns a DSN connected to the "postgres" administrative database
+// (rather than the test database itself), used for operations that must run
+// before the test database is known to exist, such as CREATE DATABASE.
+func adminDSN(cfg *config.Config) string {
+	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=postgres sslmode=%s",
+		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBSSLMode)
+}
+
 // ensureDatabase creates the sales_system_test database if it doesn't already
 // exist. Postgres has no CREATE DATABASE IF NOT EXISTS, so check pg_database
 // first (and tolerate a benign "already exists" race on top of that).
 func ensureDatabase(cfg *config.Config) error {
-	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=postgres sslmode=%s",
-		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBSSLMode)
-	sqlDB, err := sql.Open("postgres", dsn)
+	sqlDB, err := sql.Open("postgres", adminDSN(cfg))
 	if err != nil {
 		return fmt.Errorf("open postgres admin conn: %w", err)
 	}
@@ -158,8 +164,36 @@ func ensureDatabase(cfg *config.Config) error {
 	return nil
 }
 
+// setup runs once per test binary (per sync.Once), but `go test ./...` runs
+// each package's test binary as its own OS process against the same shared
+// database — so on a fresh database (e.g. CI's ephemeral Postgres container,
+// every run) multiple packages' setup() calls can run concurrently and race
+// on ensureDatabase/AutoMigrate's CREATE DATABASE/CREATE TABLE/CREATE TYPE,
+// surfacing as "duplicate key value violates unique constraint
+// pg_type_typname_nsp_index". Guard the whole sequence with the same
+// cross-process advisory lock acquireDBLock uses for tests themselves, held
+// on a dedicated connection for just this setup, so only one process's
+// setup() runs at a time.
 func setup() {
 	testCfg = buildConfig()
+
+	lockConn, err := sql.Open("postgres", adminDSN(testCfg))
+	if err != nil {
+		panic(fmt.Sprintf("testutil: open setup lock conn: %v", err))
+	}
+	defer lockConn.Close()
+
+	ctx := context.Background()
+	conn, err := lockConn.Conn(ctx)
+	if err != nil {
+		panic(fmt.Sprintf("testutil: reserve setup lock conn: %v", err))
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", testDBLockKey); err != nil {
+		panic(fmt.Sprintf("testutil: acquire setup lock: %v", err))
+	}
+	defer func() { _, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", testDBLockKey) }()
 
 	if err := ensureDatabase(testCfg); err != nil {
 		panic(fmt.Sprintf("testutil: ensure test database: %v", err))

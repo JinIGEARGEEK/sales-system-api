@@ -207,7 +207,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.companySizeOptionForm"
+                            "$ref": "#/definitions/internal_handlers.OptionForm"
                         }
                     }
                 ],
@@ -293,7 +293,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.companySizeOptionForm"
+                            "$ref": "#/definitions/internal_handlers.OptionForm"
                         }
                     }
                 ],
@@ -365,7 +365,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.industryOptionForm"
+                            "$ref": "#/definitions/internal_handlers.OptionForm"
                         }
                     }
                 ],
@@ -451,7 +451,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.industryOptionForm"
+                            "$ref": "#/definitions/internal_handlers.OptionForm"
                         }
                     }
                 ],
@@ -523,7 +523,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.jobTitleOptionForm"
+                            "$ref": "#/definitions/internal_handlers.OptionForm"
                         }
                     }
                 ],
@@ -609,7 +609,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.jobTitleOptionForm"
+                            "$ref": "#/definitions/internal_handlers.OptionForm"
                         }
                     }
                 ],
@@ -681,7 +681,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.leadSourceForm"
+                            "$ref": "#/definitions/internal_handlers.OptionForm"
                         }
                     }
                 ],
@@ -767,7 +767,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.leadSourceForm"
+                            "$ref": "#/definitions/internal_handlers.OptionForm"
                         }
                     }
                 ],
@@ -997,7 +997,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.productCategoryOptionForm"
+                            "$ref": "#/definitions/internal_handlers.OptionForm"
                         }
                     }
                 ],
@@ -1083,7 +1083,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.productCategoryOptionForm"
+                            "$ref": "#/definitions/internal_handlers.OptionForm"
                         }
                     }
                 ],
@@ -1313,7 +1313,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.revenueSizeOptionForm"
+                            "$ref": "#/definitions/internal_handlers.OptionForm"
                         }
                     }
                 ],
@@ -1399,7 +1399,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.revenueSizeOptionForm"
+                            "$ref": "#/definitions/internal_handlers.OptionForm"
                         }
                     }
                 ],
@@ -3653,6 +3653,76 @@
                 }
             }
         },
+        "/deals/{dealId}/payment-installments/bulk": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Creates every installment in one batch insert + one summary audit-log entry, instead of the caller looping N calls to Create — mirrors CampaignHandler.BulkCreateTasks's shape. The frontend computes the actual split (equal amounts, spaced dates); this endpoint only validates and inserts, same permissive per-row rules as the single-row Create. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payment-installments"
+                ],
+                "summary": "Generate a payment schedule in one action (Admin/Sales Rep/Sales Manager)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Deal ID",
+                        "name": "dealId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Installments to create",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.paymentInstallmentBulkForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.PaymentInstallment"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request body",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Not authorized to modify this deal's records",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/deals/{dealId}/payments": {
             "get": {
                 "security": [
@@ -4832,6 +4902,73 @@
                 "responses": {
                     "200": {
                         "description": "{score, threshold, classification, matched: scoreBreakdownCriterion[]}",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Lead not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/leads/{id}/status": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Dedicated narrow-PATCH endpoint for the Kanban drag-and-drop quick-move — unlike the full-record `PUT /leads/:id`, this only ever touches status/position, so a drag-move never risks blanking out the rest of the record. Mirrors DealHandler.UpdateStage.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "leads"
+                ],
+                "summary": "Move a lead to a new status (Kanban drag-and-drop) (Sales pipeline roles)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Lead ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New status/position",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.leadStatusForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Lead"
+                        }
+                    },
+                    "400": {
+                        "description": "status is required",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Not authorized to update this lead",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -6082,6 +6219,73 @@
                 }
             }
         },
+        "/prospects/{id}/status": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Dedicated narrow-PATCH endpoint for the Kanban drag-and-drop quick-move — unlike the full-record `PUT /prospects/:id`, this only ever touches status/position, so a drag-move never risks blanking out the rest of the record. status \"Converted\" still cannot be set directly (only via POST /prospects/:id/convert). Mirrors DealHandler.UpdateStage/LeadHandler.UpdateStatus.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "prospects"
+                ],
+                "summary": "Move a prospect to a new status (Kanban drag-and-drop) (Admin/Marketing/Sales Manager/Sales Rep)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Prospect ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New status/position",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.prospectStatusForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Prospect"
+                        }
+                    },
+                    "400": {
+                        "description": "status is required, or an attempted manual transition into Converted",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Not authorized to update this prospect",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Prospect not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/quote-templates": {
             "get": {
                 "security": [
@@ -7192,6 +7396,111 @@
                 }
             }
         },
+        "/reports/top-referrers": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Per referring Company/Contact (FR-CRM-119's referred_by_type/referred_by_id), how many Leads they referred, how many became Deals, how many of those Deals were Won, and total Won revenue. FR-CRM-121. Admin/Sales Manager only.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "reports"
+                ],
+                "summary": "Top referrers report (Admin/Sales Manager only)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by the referred Lead's assigned Sales Rep user ID",
+                        "name": "assigned_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "ISO date lower bound (YYYY-MM-DD), filters on the Lead's created_at",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "ISO date upper bound (YYYY-MM-DD), filters on the Lead's created_at",
+                        "name": "date_to",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to compute top referrers",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/reports/top-referrers/export": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "CSV download of the top referrers report (see GET /reports/top-referrers). FR-CRM-121. Admin/Sales Manager only.",
+                "produces": [
+                    "text/csv"
+                ],
+                "tags": [
+                    "reports"
+                ],
+                "summary": "Export top referrers report as CSV (Admin/Sales Manager only)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by the referred Lead's assigned Sales Rep user ID",
+                        "name": "assigned_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "ISO date lower bound (YYYY-MM-DD)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "ISO date upper bound (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "CSV export",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to export top referrers",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/reports/win-loss-reasons": {
             "get": {
                 "security": [
@@ -7614,6 +7923,92 @@
                     },
                     "400": {
                         "description": "Invalid body or missing required fields",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/users/bulk-activate": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Sets is_active true for every listed user in one transaction, writing a bulk_activated audit entry per row.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Bulk activate users (Admin only)",
+                "parameters": [
+                    {
+                        "description": "User IDs",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.bulkUserIDsForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Invalid request body, or ids is required",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/users/bulk-deactivate": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Sets is_active false for every listed user in one transaction (same effect as Delete's is_active flip, without the soft-delete), writing a bulk_deactivated audit entry per row.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Bulk deactivate users (Admin only)",
+                "parameters": [
+                    {
+                        "description": "User IDs",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.bulkUserIDsForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Invalid request body, or ids is required",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -8206,6 +8601,10 @@
                         }
                     ]
                 },
+                "position": {
+                    "description": "Position orders this Deal's Kanban card within its own Stage lane only —\nnever compared across stages. Set to MAX(position)+1 in its lane on\nCreate, and recomputed as the midpoint of its new neighbors' Position on\nevery drag-move (DealHandler.UpdateStage) so no sibling row ever needs\nrewriting. See database.AutoMigrate's backfill for pre-existing rows.",
+                    "type": "number"
+                },
                 "probability": {
                     "description": "Probability is the 0-100 win-probability, defaulted per-stage\n(StageDefaultProbability) but always manually overridable.",
                     "type": "integer"
@@ -8399,6 +8798,10 @@
                 },
                 "phone": {
                     "type": "string"
+                },
+                "position": {
+                    "description": "Position orders this Lead's Kanban card within its own Status lane only —\nsee Deal.Position's doc comment (deal.go) for the full scheme; mirrored\nhere identically, driven by LeadHandler.UpdateStatus.",
+                    "type": "number"
                 },
                 "prospect_id": {
                     "description": "ProspectID is set when this Lead originated from a Marketing Prospect\nvia ProspectHandler.Convert (nil for a Lead created directly) — mirrors\nDeal.LeadID's back-reference to its own originating record.",
@@ -8846,6 +9249,10 @@
                 },
                 "phone": {
                     "type": "string"
+                },
+                "position": {
+                    "description": "Position orders this Prospect's Kanban card within its own Status lane\nonly — see Deal.Position's doc comment (deal.go) for the full scheme;\nmirrored here identically, driven by ProspectHandler.UpdateStatus.",
+                    "type": "number"
                 },
                 "source": {
                     "type": "string"
@@ -9336,6 +9743,17 @@
                 }
             }
         },
+        "internal_handlers.OptionForm": {
+            "type": "object",
+            "properties": {
+                "is_active": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_handlers.apiKeyForm": {
             "type": "object",
             "properties": {
@@ -9393,6 +9811,17 @@
                 }
             }
         },
+        "internal_handlers.bulkUserIDsForm": {
+            "type": "object",
+            "properties": {
+                "ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                }
+            }
+        },
         "internal_handlers.companyForm": {
             "type": "object",
             "properties": {
@@ -9430,17 +9859,6 @@
                     "type": "string"
                 },
                 "website": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_handlers.companySizeOptionForm": {
-            "type": "object",
-            "properties": {
-                "is_active": {
-                    "type": "boolean"
-                },
-                "name": {
                     "type": "string"
                 }
             }
@@ -9664,6 +10082,10 @@
         "internal_handlers.dealStageForm": {
             "type": "object",
             "properties": {
+                "position": {
+                    "description": "Position is the Kanban drag-drop's computed insertion point within the\ndestination Stage lane (a pointer so an omitted field, e.g. the mobile\ndropdown-move, is distinguishable from an explicit 0) — see\nDeal.Position's doc comment (models/deal.go).",
+                    "type": "number"
+                },
                 "stage": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage"
                 }
@@ -9736,28 +10158,6 @@
                 }
             }
         },
-        "internal_handlers.industryOptionForm": {
-            "type": "object",
-            "properties": {
-                "is_active": {
-                    "type": "boolean"
-                },
-                "name": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_handlers.jobTitleOptionForm": {
-            "type": "object",
-            "properties": {
-                "is_active": {
-                    "type": "boolean"
-                },
-                "name": {
-                    "type": "string"
-                }
-            }
-        },
         "internal_handlers.leadForm": {
             "type": "object",
             "properties": {
@@ -9807,14 +10207,15 @@
                 }
             }
         },
-        "internal_handlers.leadSourceForm": {
+        "internal_handlers.leadStatusForm": {
             "type": "object",
             "properties": {
-                "is_active": {
-                    "type": "boolean"
+                "position": {
+                    "description": "Position is the Kanban drag-drop's computed insertion point within the\ndestination Status lane (a pointer so an omitted field, e.g. the mobile\ndropdown-move, is distinguishable from an explicit 0) — see\nLead.Position's doc comment (models/lead.go).",
+                    "type": "number"
                 },
-                "name": {
-                    "type": "string"
+                "status": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadStatus"
                 }
             }
         },
@@ -9899,6 +10300,17 @@
                 }
             }
         },
+        "internal_handlers.paymentInstallmentBulkForm": {
+            "type": "object",
+            "properties": {
+                "installments": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_handlers.paymentInstallmentForm"
+                    }
+                }
+            }
+        },
         "internal_handlers.paymentInstallmentForm": {
             "type": "object",
             "properties": {
@@ -9930,17 +10342,6 @@
                 },
                 "sort_order": {
                     "type": "integer"
-                }
-            }
-        },
-        "internal_handlers.productCategoryOptionForm": {
-            "type": "object",
-            "properties": {
-                "is_active": {
-                    "type": "boolean"
-                },
-                "name": {
-                    "type": "string"
                 }
             }
         },
@@ -10074,6 +10475,18 @@
                 }
             }
         },
+        "internal_handlers.prospectStatusForm": {
+            "type": "object",
+            "properties": {
+                "position": {
+                    "description": "Position is the Kanban drag-drop's computed insertion point within the\ndestination Status lane (a pointer so an omitted field, e.g. the mobile\ndropdown-move, is distinguishable from an explicit 0) — see\nProspect.Position's doc comment (models/prospect.go).",
+                    "type": "number"
+                },
+                "status": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProspectStatus"
+                }
+            }
+        },
         "internal_handlers.quoteForm": {
             "type": "object",
             "properties": {
@@ -10157,17 +10570,6 @@
                 },
                 "wht_rate": {
                     "type": "number"
-                }
-            }
-        },
-        "internal_handlers.revenueSizeOptionForm": {
-            "type": "object",
-            "properties": {
-                "is_active": {
-                    "type": "boolean"
-                },
-                "name": {
-                    "type": "string"
                 }
             }
         },
