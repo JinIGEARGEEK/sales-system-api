@@ -68,6 +68,12 @@ var DefaultCompanySizeOptions = []CompanySizeOption{
 	{Name: "201-500 คน", IsActive: true},
 	{Name: "501-1000 คน", IsActive: true},
 	{Name: "1000+ คน", IsActive: true},
+	// Deliberately overlaps the numeric buckets above rather than replacing
+	// them — added 2026-09-22 as a coarser catch-all bucket alongside the
+	// existing fine-grained ranges, not a reordering of them. An Admin who
+	// wants a strictly non-overlapping list can deactivate/rename the ones
+	// they don't want from /admin/company-sizes; this seed only sets the
+	// starting point (see the type's own doc comment above).
 	{Name: "> 100 คน", IsActive: true},
 }
 
