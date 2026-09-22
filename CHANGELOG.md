@@ -4,6 +4,12 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-09-22 — Company Size default seed: added "คน" unit, new "> 100 คน" bucket
+
+`DefaultCompanySizeOptions` (`internal/models/company_config.go`) now carries a "คน" (people) unit suffix on every bucket (`1-10` → `1-10 คน`, etc.) and gained a new `> 100 คน` bucket. `cmd/api/main.go`'s demo Company seed rows were updated to reference the renamed buckets so a fresh dev DB stays internally consistent.
+
+This only changes what a **fresh** database seeds on first run — `CompanySizeOption` is Admin-owned, live-edited data (`/admin/company-sizes`), so an already-seeded environment's rows aren't renamed or backfilled by this change; an Admin edits them the same way as any other option list, from `pages/admin/pipeline-config.vue`'s Company tab.
+
 ## 2026-09-16 — Top Referrers report, Contract status validation, bulk payment schedule, FK existence checks
 
 Four follow-ups from the last two features:

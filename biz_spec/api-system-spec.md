@@ -899,7 +899,7 @@ interface OptionRow {              // LeadSourceOption / IndustryOption / Compan
 | `PATCH` / `DELETE` | `/admin/lead-sources/:id` | Update / delete. |
 | `GET` / `POST` | `/admin/industries` | List / create an `IndustryOption`. Seeded from the frontend's retired `INDUSTRY_OPTIONS` constant. Curation-only, not a validation gate: `Company` Create/Update auto-register any typed `industry` value as an active row here rather than rejecting it (see §4's note), so this list is best read as "industries seen so far, tunable by an Admin" rather than an enforced whitelist. |
 | `PATCH` / `DELETE` | `/admin/industries/:id` | Update / delete. Deactivating a value here doesn't stop a Company from being re-saved with it — that reactivates the row (§4) rather than being rejected. |
-| `GET` / `POST` | `/admin/company-sizes` | List / create a `CompanySizeOption` for `Company.size`. No prior hardcoded list — the seeded rows (`1-10` … `1000+`) are a tunable starting point, not a fixed business rule. |
+| `GET` / `POST` | `/admin/company-sizes` | List / create a `CompanySizeOption` for `Company.size`. No prior hardcoded list — the seeded rows (`1-10 คน` … `1000+ คน`, plus `> 100 คน`, updated 2026-09-22 to carry a "คน"/people unit) are a tunable starting point, not a fixed business rule. |
 | `PATCH` / `DELETE` | `/admin/company-sizes/:id` | Update / delete. |
 | `GET` / `POST` | `/admin/revenue-sizes` | List / create a `RevenueSizeOption` for `Company.revenue_size`. Same "tunable starting point" framing as company-sizes. |
 | `PATCH` / `DELETE` | `/admin/revenue-sizes/:id` | Update / delete. |

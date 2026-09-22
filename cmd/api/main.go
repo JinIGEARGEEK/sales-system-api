@@ -381,9 +381,9 @@ func seedDemoData(db *gorm.DB) {
 	log.Printf("Seeded %d demo staff users (password: %s)", len(staff), demoPassword)
 
 	companies := []models.Company{
-		{Name: "Siam Tech Solutions", Industry: "Technology", Size: "51-200", RevenueSize: "5M - 20M THB", Website: "https://siamtech.co.th", Status: models.StatusActive},
-		{Name: "Blue Ocean Retail", Industry: "Retail", Size: "11-50", RevenueSize: "1M - 5M THB", Website: "https://blueocean.co.th", Status: models.StatusActive},
-		{Name: "Golden Grain Manufacturing", Industry: "Manufacturing", Size: "201-500", RevenueSize: "20M - 100M THB", Website: "https://goldengrain.co.th", Status: models.StatusActive},
+		{Name: "Siam Tech Solutions", Industry: "Technology", Size: "51-200 คน", RevenueSize: "5M - 20M THB", Website: "https://siamtech.co.th", Status: models.StatusActive},
+		{Name: "Blue Ocean Retail", Industry: "Retail", Size: "11-50 คน", RevenueSize: "1M - 5M THB", Website: "https://blueocean.co.th", Status: models.StatusActive},
+		{Name: "Golden Grain Manufacturing", Industry: "Manufacturing", Size: "201-500 คน", RevenueSize: "20M - 100M THB", Website: "https://goldengrain.co.th", Status: models.StatusActive},
 	}
 	for i := range companies {
 		if err := db.Create(&companies[i]).Error; err != nil {
