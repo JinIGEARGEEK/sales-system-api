@@ -62,12 +62,13 @@ func (o *CompanySizeOption) SetUpdatedBy(v *uint) { o.UpdatedBy = v }
 func (o *CompanySizeOption) SetDeletedBy(v *uint) { o.DeletedBy = v }
 
 var DefaultCompanySizeOptions = []CompanySizeOption{
-	{Name: "1-10", IsActive: true},
-	{Name: "11-50", IsActive: true},
-	{Name: "51-200", IsActive: true},
-	{Name: "201-500", IsActive: true},
-	{Name: "501-1000", IsActive: true},
-	{Name: "1000+", IsActive: true},
+	{Name: "1-10 คน", IsActive: true},
+	{Name: "11-50 คน", IsActive: true},
+	{Name: "51-200 คน", IsActive: true},
+	{Name: "201-500 คน", IsActive: true},
+	{Name: "501-1000 คน", IsActive: true},
+	{Name: "1000+ คน", IsActive: true},
+	{Name: "> 100 คน", IsActive: true},
 }
 
 // RevenueSizeOption is an Admin-configurable Company revenue bracket. Unlike
