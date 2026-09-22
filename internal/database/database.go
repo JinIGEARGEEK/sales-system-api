@@ -133,6 +133,40 @@ func AutoMigrate(db *gorm.DB) error {
 			return fmt.Errorf("drop legacy company_name column: %w", err)
 		}
 	}
+	if err := backfillCardPositions(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+// backfillCardPositions populates the new Deal/Lead/Prospect Position column
+// (Kanban card ordering within a lane — see Deal.Position's doc comment) for
+// any pre-existing row still sitting at the AutoMigrate-added default of 0.
+// Safe to re-run on every boot: it only ever touches rows still at 0, so a
+// card already given a real Position by a drag-move is never renumbered.
+// ROW_NUMBER() is partitioned per-lane (Stage for deals, Status for
+// leads/prospects) since Position is only ever compared within its own lane.
+func backfillCardPositions(db *gorm.DB) error {
+	backfills := []struct {
+		table     string
+		laneField string
+	}{
+		{"deals", "stage"},
+		{"leads", "status"},
+		{"prospects", "status"},
+	}
+	for _, b := range backfills {
+		sql := fmt.Sprintf(`
+			UPDATE %s SET position = sub.rn
+			FROM (
+				SELECT id, ROW_NUMBER() OVER (PARTITION BY %s ORDER BY created_at, id) AS rn
+				FROM %s WHERE position = 0
+			) sub
+			WHERE %s.id = sub.id`, b.table, b.laneField, b.table, b.table)
+		if err := db.Exec(sql).Error; err != nil {
+			return fmt.Errorf("backfill %s position: %w", b.table, err)
+		}
+	}
 	return nil
 }
 

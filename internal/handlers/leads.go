@@ -81,12 +81,21 @@ func (h *LeadHandler) List(c *fiber.Ctx) error {
 	if needsCompanyJoin {
 		query = utils.ApplyNullableCompanySort(query, "leads", c.Query("sort"), sortField)
 	} else {
-		query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true}, "-created_at")
+		query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true, "position": true}, "-created_at")
 	}
 	if err := query.Limit(perPage).Offset(offset).Find(&leads).Error; err != nil {
 		return utils.Internal(c, "Failed to list leads")
 	}
 	return utils.List(c, leads, page, perPage, total)
+}
+
+// nextLeadPosition returns the Position to append a card to the end of the
+// given Status lane — mirrors nextDealPosition (deals.go). See Lead.Position's
+// doc comment (models/lead.go) for the full scheme.
+func nextLeadPosition(db *gorm.DB, status models.LeadStatus) float64 {
+	var max float64
+	db.Model(&models.Lead{}).Where("status = ?", status).Select("COALESCE(MAX(position), 0)").Scan(&max)
+	return max + 1
 }
 
 type leadForm struct {
@@ -220,6 +229,7 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 	if err := h.computeAndClassify(&lead, form.Classification); err != nil {
 		return utils.Internal(c, "Failed to score lead")
 	}
+	lead.Position = nextLeadPosition(h.DB, lead.Status)
 	if err := h.DB.Create(&lead).Error; err != nil {
 		return utils.Internal(c, "Failed to create lead")
 	}
@@ -511,6 +521,66 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	})
 	if err != nil {
 		return utils.Internal(c, "Failed to update lead")
+	}
+	return utils.OK(c, lead)
+}
+
+type leadStatusForm struct {
+	Status models.LeadStatus `json:"status"`
+	// Position is the Kanban drag-drop's computed insertion point within the
+	// destination Status lane (a pointer so an omitted field, e.g. the mobile
+	// dropdown-move, is distinguishable from an explicit 0) — see
+	// Lead.Position's doc comment (models/lead.go).
+	Position *float64 `json:"position"`
+}
+
+// UpdateStatus godoc
+// @Summary Move a lead to a new status (Kanban drag-and-drop) (Sales pipeline roles)
+// @Description Dedicated narrow-PATCH endpoint for the Kanban drag-and-drop quick-move — unlike the full-record `PUT /leads/:id`, this only ever touches status/position, so a drag-move never risks blanking out the rest of the record. Mirrors DealHandler.UpdateStage.
+// @Tags leads
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Lead ID"
+// @Param body body leadStatusForm true "New status/position"
+// @Success 200 {object} models.Lead
+// @Failure 400 {object} map[string]interface{} "status is required"
+// @Failure 403 {object} map[string]interface{} "Not authorized to update this lead"
+// @Failure 404 {object} map[string]interface{} "Lead not found"
+// @Router /leads/{id}/status [patch]
+func (h *LeadHandler) UpdateStatus(c *fiber.Ctx) error {
+	var lead models.Lead
+	if err := utils.FindByID(c, h.DB, &lead, "Lead not found"); err != nil {
+		return nil
+	}
+	if !CanWrite(c, lead.AssignedTo) {
+		return utils.Forbidden(c, "Not authorized to update this lead")
+	}
+
+	var form leadStatusForm
+	if err := c.BodyParser(&form); err != nil {
+		return utils.BadRequest(c, "Invalid request body")
+	}
+	if form.Status == "" {
+		return utils.ValidationError(c, "status is required", map[string][]string{"status": {"required"}})
+	}
+
+	oldStatus := lead.Status
+	lead.Status = form.Status
+	if form.Position != nil {
+		lead.Position = *form.Position
+	} else if oldStatus != lead.Status {
+		lead.Position = nextLeadPosition(h.DB, lead.Status)
+	}
+
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&lead).Error; err != nil {
+			return err
+		}
+		return utils.LogStatusChangeActivity(tx, "Lead", oldStatus, lead.Status, lead.CompanyID, lead.CompanyID, middleware.CurrentUserID(c))
+	})
+	if err != nil {
+		return utils.Internal(c, "Failed to update lead status")
 	}
 	return utils.OK(c, lead)
 }

@@ -74,6 +74,10 @@ type Lead struct {
 	// of that broader enum's values, since Deal/Prospect aren't valid referrers.
 	ReferredByType *ActivityRelatedType `gorm:"type:varchar(16)" json:"referred_by_type,omitempty"`
 	ReferredByID   *uint                `gorm:"index" json:"referred_by_id,omitempty"`
+	// Position orders this Lead's Kanban card within its own Status lane only —
+	// see Deal.Position's doc comment (deal.go) for the full scheme; mirrored
+	// here identically, driven by LeadHandler.UpdateStatus.
+	Position float64 `gorm:"not null;default:0;index" json:"position"`
 }
 
 const (

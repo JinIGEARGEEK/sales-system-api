@@ -48,6 +48,10 @@ type Prospect struct {
 	// in, not a real FK. Carried over automatically to the Lead on conversion.
 	BusinessUnit     *BusinessUnit `gorm:"type:varchar(16);index" json:"business_unit"`
 	BusinessUnitItem *string       `json:"business_unit_item"`
+	// Position orders this Prospect's Kanban card within its own Status lane
+	// only — see Deal.Position's doc comment (deal.go) for the full scheme;
+	// mirrored here identically, driven by ProspectHandler.UpdateStatus.
+	Position float64 `gorm:"not null;default:0;index" json:"position"`
 }
 
 func (Prospect) TableName() string { return "prospects" }

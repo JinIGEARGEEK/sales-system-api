@@ -160,6 +160,12 @@ type Deal struct {
 	// defaulted per-stage (StageDefaultForecastCategory) but always manually
 	// overridable, mirroring Probability's own default/override pattern.
 	ForecastCategory *ForecastCategory `gorm:"type:varchar(16)" json:"forecast_category"`
+	// Position orders this Deal's Kanban card within its own Stage lane only —
+	// never compared across stages. Set to MAX(position)+1 in its lane on
+	// Create, and recomputed as the midpoint of its new neighbors' Position on
+	// every drag-move (DealHandler.UpdateStage) so no sibling row ever needs
+	// rewriting. See database.AutoMigrate's backfill for pre-existing rows.
+	Position float64 `gorm:"not null;default:0;index" json:"position"`
 }
 
 func (Deal) TableName() string { return "deals" }
