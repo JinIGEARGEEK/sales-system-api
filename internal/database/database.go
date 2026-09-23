@@ -139,7 +139,88 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := backfillStageEnteredAt(db); err != nil {
 		return err
 	}
+	if err := MigrateCompanySizeDefaults(db); err != nil {
+		return err
+	}
 	return nil
+}
+
+// companySizeLegacyNames maps each current default Company Size name
+// (models.DefaultCompanySizeOptions) to the unit-less name it was seeded
+// under before 2026-09-22.
+var companySizeLegacyNames = map[string]string{
+	"1-10 คน":     "1-10",
+	"11-50 คน":    "11-50",
+	"51-200 คน":   "51-200",
+	"201-500 คน":  "201-500",
+	"501-1000 คน": "501-1000",
+	"1000+ คน":    "1000+",
+}
+
+// companySizeCatchAll is the bucket added to the defaults on 2026-09-22. Its
+// presence also marks this migration as done (see below).
+const companySizeCatchAll = "> 100 คน"
+
+// MigrateCompanySizeDefaults (called from AutoMigrate; exported for its
+// test) brings a database seeded before 2026-09-22 up to the current
+// Company Size defaults. The defaults are only inserted into an
+// empty table (cmd/api/main.go), so existing databases kept the old
+// unit-less names and never got the "> 100 คน" bucket.
+//
+// It renames each old default to its "… คน" name and repoints every Company
+// using it (Company.size stores the option's name, and Create/Update reject a
+// size that isn't an active option, so a rename without this would break
+// saving those Companies), then adds "> 100 คน". All in one transaction,
+// via UpdateColumn so no Company's updated_at moves (it's not a user edit).
+//
+// Runs once: it does nothing if "> 100 คน" already exists in any state
+// (including deactivated), so an Admin's later renames are never undone on a
+// restart. It also does nothing on an empty table, which the seed handles.
+func MigrateCompanySizeDefaults(db *gorm.DB) error {
+	var total, catchAll int64
+	if err := db.Model(&models.CompanySizeOption{}).Unscoped().Count(&total).Error; err != nil {
+		return fmt.Errorf("count company sizes: %w", err)
+	}
+	if err := db.Model(&models.CompanySizeOption{}).Unscoped().Where("name = ?", companySizeCatchAll).Count(&catchAll).Error; err != nil {
+		return fmt.Errorf("check company size catch-all: %w", err)
+	}
+	if total == 0 || catchAll > 0 {
+		return nil
+	}
+
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, def := range models.DefaultCompanySizeOptions {
+			legacy, ok := companySizeLegacyNames[def.Name]
+			if !ok {
+				continue
+			}
+			var current, old int64
+			if err := tx.Model(&models.CompanySizeOption{}).Unscoped().Where("name = ?", def.Name).Count(&current).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&models.CompanySizeOption{}).Unscoped().Where("name = ?", legacy).Count(&old).Error; err != nil {
+				return err
+			}
+			if old == 0 {
+				continue
+			}
+			// Only rename when the new name is free; either way Companies
+			// move to the new name so they stay valid.
+			if current == 0 {
+				if err := tx.Model(&models.CompanySizeOption{}).Unscoped().Where("name = ?", legacy).UpdateColumn("name", def.Name).Error; err != nil {
+					return fmt.Errorf("rename company size %q: %w", legacy, err)
+				}
+			}
+			if err := tx.Model(&models.Company{}).Unscoped().Where("size = ?", legacy).UpdateColumn("size", def.Name).Error; err != nil {
+				return fmt.Errorf("repoint companies from size %q: %w", legacy, err)
+			}
+		}
+		if err := tx.Create(&models.CompanySizeOption{Name: companySizeCatchAll, IsActive: true}).Error; err != nil {
+			return fmt.Errorf("add company size %q: %w", companySizeCatchAll, err)
+		}
+		log.Printf("Migrated company sizes to the current defaults (added %q)", companySizeCatchAll)
+		return nil
+	})
 }
 
 // backfillStageEnteredAt populates the new Deal/Lead/Prospect
