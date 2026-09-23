@@ -119,8 +119,11 @@ type PipelineOverview struct {
 // window is a half-open [from, to) time range.
 type window struct{ from, to time.Time }
 
+// laneDef is one lane of a zone, in display order.
+type laneDef struct{ name, kind string }
+
 // overviewEntity describes how one of the three tables maps onto a card, so
-// the lane/summary queries below are written once for all three.
+// the zone/summary queries below are written once for all three.
 type overviewEntity struct {
 	table        string
 	laneColumn   string // status (prospects/leads) or stage (deals)
@@ -130,6 +133,9 @@ type overviewEntity struct {
 	probExpr     string
 	lostExpr     string
 	fromProspect string
+	// laneFilter narrows which rows appear in lanes (not in the summary's
+	// "new" counts): a converted Lead is on the board as its Deal instead.
+	laneFilter string
 }
 
 var (
@@ -142,6 +148,7 @@ var (
 		table: "leads", laneColumn: "status", nameColumn: "name", sourceColumn: "source",
 		valueExpr: "0", probExpr: "NULL::int", lostExpr: "NULL::text",
 		fromProspect: "leads.prospect_id IS NOT NULL",
+		laneFilter:   "leads.converted_deal_id IS NULL",
 	}
 	dealEntity = overviewEntity{
 		table: "deals", laneColumn: "stage", nameColumn: "title", sourceColumn: "channel",
@@ -150,89 +157,130 @@ var (
 	}
 )
 
-// base returns a fresh, filtered query on e's table. Every aggregate starts
-// from its own base() call so one query's Where clauses never leak into the
-// next. The filters mirror the page's filter bar: owner, source (Deal's
-// channel), business unit, tag, and a name/company search.
+func (e overviewEntity) col(name string) string { return e.table + "." + name }
+
+// base returns a fresh, filtered query on e's table. Every query starts from
+// its own base() call so one query's Where clauses never leak into the next.
+// The filters mirror the page's filter bar: owner, source (Deal's channel),
+// business unit, tag, and a name/company search.
 func (e overviewEntity) base(db *gorm.DB, c *fiber.Ctx) *gorm.DB {
-	q := db.Table(e.table).Where(e.table + ".deleted_at IS NULL")
+	q := db.Table(e.table).Where(e.col("deleted_at") + " IS NULL")
 	if v := c.Query("assigned_to"); v != "" {
 		if v == "unassigned" {
-			q = q.Where(e.table + ".assigned_to IS NULL")
+			q = q.Where(e.col("assigned_to") + " IS NULL")
 		} else {
-			q = q.Where(e.table+".assigned_to = ?", v)
+			q = q.Where(e.col("assigned_to")+" = ?", v)
 		}
 	}
 	if v := c.Query("source"); v != "" {
-		q = q.Where(e.table+"."+e.sourceColumn+" = ?", v)
+		q = q.Where(e.col(e.sourceColumn)+" = ?", v)
 	}
 	if v := c.Query("business_unit"); v != "" {
-		q = q.Where(e.table+".business_unit = ?", v)
+		q = q.Where(e.col("business_unit")+" = ?", v)
 	}
 	if v := c.Query("tag"); v != "" {
-		q = q.Where("? = ANY("+e.table+".tags)", strings.ToLower(v))
+		q = q.Where("? = ANY("+e.col("tags")+")", strings.ToLower(v))
 	}
 	if v := strings.TrimSpace(c.Query("search")); v != "" {
 		like := "%" + v + "%"
-		q = q.Where("("+e.table+"."+e.nameColumn+" ILIKE ? OR EXISTS (SELECT 1 FROM companies sc WHERE sc.id = "+
-			e.table+".company_id AND sc.name ILIKE ?))", like, like)
+		q = q.Where("("+e.col(e.nameColumn)+" ILIKE ? OR EXISTS (SELECT 1 FROM companies sc WHERE sc.id = "+
+			e.col("company_id")+" AND sc.name ILIKE ?))", like, like)
 	}
 	return q
 }
 
-func (e overviewEntity) inLane(q *gorm.DB, lane string) *gorm.DB {
-	return q.Where(e.table+"."+e.laneColumn+" = ?", lane)
-}
-
-func (e overviewEntity) enteredIn(q *gorm.DB, w window) *gorm.DB {
-	return q.Where(e.table+".stage_entered_at >= ? AND "+e.table+".stage_entered_at < ?", w.from, w.to)
-}
-
-func (e overviewEntity) createdIn(q *gorm.DB, w window) *gorm.DB {
-	return q.Where(e.table+".created_at >= ? AND "+e.table+".created_at < ?", w.from, w.to)
-}
-
-func (e overviewEntity) lane(db *gorm.DB, c *fiber.Ctx, name, kind string, w window, limit int, extra func(*gorm.DB) *gorm.DB) (overviewLane, error) {
-	terminal := kind != laneOpen
+// zone loads every lane of one zone in two queries: a grouped count/value per
+// lane, and the top `limit` cards per lane via ROW_NUMBER(). Rows count
+// toward a lane when they sit in an open lane (any time) or entered a
+// terminal lane inside w.
+func (e overviewEntity) zone(db *gorm.DB, c *fiber.Ctx, key string, defs []laneDef, w window, limit int) (overviewZone, error) {
+	var open, terminal []string
+	for _, d := range defs {
+		if d.kind == laneOpen {
+			open = append(open, d.name)
+		} else {
+			terminal = append(terminal, d.name)
+		}
+	}
+	lane := e.col(e.laneColumn)
+	entered := e.col("stage_entered_at")
 	scope := func() *gorm.DB {
-		q := e.inLane(e.base(db, c), name)
-		if terminal {
-			q = e.enteredIn(q, w)
+		q := e.base(db, c)
+		if e.laneFilter != "" {
+			q = q.Where(e.laneFilter)
 		}
-		if extra != nil {
-			q = extra(q)
-		}
-		return q
+		// GORM renders an empty IN list as IN (NULL), which matches nothing.
+		return q.Where(db.Where(lane+" IN ?", open).
+			Or(lane+" IN ? AND "+entered+" >= ? AND "+entered+" < ?", terminal, w.from, w.to))
 	}
 
-	var agg struct {
+	var aggRows []struct {
+		Lane  string
 		Count int64
 		Value float64
 	}
-	if err := scope().Select("COUNT(*) AS count, COALESCE(SUM(" + e.valueExpr + "), 0) AS value").Scan(&agg).Error; err != nil {
-		return overviewLane{}, err
+	if err := scope().
+		Select(lane + " AS lane, COUNT(*) AS count, COALESCE(SUM(" + e.valueExpr + "), 0) AS value").
+		Group(lane).Scan(&aggRows).Error; err != nil {
+		return overviewZone{}, err
 	}
 
-	// Open lanes list the longest-waiting cards first (what a reviewer asks
-	// about); terminal lanes list the most recent closes first.
-	order := e.table + ".stage_entered_at ASC NULLS FIRST, " + e.table + ".id"
-	if terminal {
-		order = e.table + ".stage_entered_at DESC, " + e.table + ".id DESC"
-	}
-	cards := []overviewCard{}
-	if agg.Count > 0 {
-		if err := scope().
-			Select(e.table + ".id, " + e.table + "." + e.nameColumn + " AS name, " + e.table + ".company_id, " +
-				"COALESCE(companies.name, '') AS company_name, " + e.table + ".assigned_to, " +
-				e.table + "." + e.sourceColumn + " AS source, " + e.valueExpr + " AS value, " +
-				e.probExpr + " AS probability, " + e.lostExpr + " AS lost_reason, " +
-				"(" + e.fromProspect + ") AS from_prospect, " + e.table + ".stage_entered_at, " + e.table + ".created_at").
-			Joins("LEFT JOIN companies ON companies.id = " + e.table + ".company_id").
-			Order(order).Limit(limit).Scan(&cards).Error; err != nil {
-			return overviewLane{}, err
+	cardsByLane := map[string][]overviewCard{}
+	if limit > 0 && len(aggRows) > 0 {
+		// Open lanes list the longest-waiting cards first (what a reviewer
+		// asks about); terminal lanes the most recent closes first.
+		ranked := scope().
+			Select(lane+" AS lane, "+e.col("id")+", "+e.col(e.nameColumn)+" AS name, "+e.col("company_id")+", "+
+				"COALESCE(companies.name, '') AS company_name, "+e.col("assigned_to")+", "+
+				e.col(e.sourceColumn)+" AS source, "+e.valueExpr+" AS value, "+
+				e.probExpr+" AS probability, "+e.lostExpr+" AS lost_reason, "+
+				"("+e.fromProspect+") AS from_prospect, "+entered+", "+e.col("created_at")+", "+
+				"ROW_NUMBER() OVER (PARTITION BY "+lane+" ORDER BY "+
+				"CASE WHEN "+lane+" IN ? THEN -EXTRACT(EPOCH FROM "+entered+") ELSE EXTRACT(EPOCH FROM "+entered+") END "+
+				"NULLS FIRST, "+e.col("id")+") AS rn", terminal).
+			Joins("LEFT JOIN companies ON companies.id = " + e.col("company_id"))
+		// Card must be a named, exported field: GORM can't populate an
+		// embedded unexported type, and would silently leave it zeroed.
+		var rows []struct {
+			Lane string
+			Card overviewCard `gorm:"embedded"`
+		}
+		if err := db.Table("(?) AS ranked", ranked).Where("rn <= ?", limit).Order("rn").Scan(&rows).Error; err != nil {
+			return overviewZone{}, err
+		}
+		for _, r := range rows {
+			cardsByLane[r.Lane] = append(cardsByLane[r.Lane], r.Card)
 		}
 	}
-	return overviewLane{Name: name, Kind: kind, Terminal: terminal, Count: agg.Count, Value: agg.Value, Cards: cards}, nil
+
+	aggByLane := map[string]int{}
+	for i, r := range aggRows {
+		aggByLane[r.Lane] = i
+	}
+	z := overviewZone{Key: key, Lanes: make([]overviewLane, 0, len(defs))}
+	for _, d := range defs {
+		l := overviewLane{Name: d.name, Kind: d.kind, Terminal: d.kind != laneOpen, Cards: []overviewCard{}}
+		if i, ok := aggByLane[d.name]; ok {
+			l.Count, l.Value = aggRows[i].Count, aggRows[i].Value
+		}
+		if cards := cardsByLane[d.name]; cards != nil {
+			l.Cards = cards
+		}
+		z.Lanes = append(z.Lanes, l)
+	}
+	return z, nil
+}
+
+// compareCounts counts rows whose `column` falls in cur and in prev, in one pass.
+func (e overviewEntity) compareCounts(q *gorm.DB, column string, cur, prev window) (overviewCompare, error) {
+	col := e.col(column)
+	var out overviewCompare
+	err := q.Where(col+" >= ? AND "+col+" < ?", prev.from, cur.to).
+		Select("COUNT(*) FILTER (WHERE "+col+" >= ? AND "+col+" < ?) AS current, "+
+			"COUNT(*) FILTER (WHERE "+col+" >= ? AND "+col+" < ?) AS previous",
+			cur.from, cur.to, prev.from, prev.to).
+		Scan(&out).Error
+	return out, err
 }
 
 // resolveOverviewWindow reads date_from/date_to (YYYY-MM-DD, both inclusive)
@@ -300,15 +348,13 @@ func (h *PipelineOverviewHandler) Overview(c *fiber.Ctx) error {
 }
 
 func (h *PipelineOverviewHandler) zones(c *fiber.Ctx, w window, limit int) ([]overviewZone, error) {
-	type laneDef struct{ name, kind string }
-
 	// Prospect lanes follow the Admin-configured ProspectStage list, plus the
 	// reserved system-set "Converted" status (never a ProspectStage row).
 	var pStages []models.ProspectStage
 	if err := h.DB.Where("is_active = ?", true).Order("sort_order, id").Find(&pStages).Error; err != nil {
 		return nil, err
 	}
-	var pDefs []laneDef
+	pDefs := make([]laneDef, 0, len(pStages)+1)
 	for _, s := range pStages {
 		kind := laneOpen
 		if s.IsDisqualifiedStage {
@@ -318,22 +364,19 @@ func (h *PipelineOverviewHandler) zones(c *fiber.Ctx, w window, limit int) ([]ov
 	}
 	pDefs = append(pDefs, laneDef{string(models.ProspectStatusConverted), laneConverted})
 
-	// Lead statuses are a fixed enum. A converted Lead (converted_deal_id set)
-	// is shown as its Deal instead, so it's left out of the Lead lanes rather
-	// than counted twice.
+	// Lead statuses are a fixed enum.
 	lDefs := []laneDef{
 		{string(models.LeadStatusNew), laneOpen},
 		{string(models.LeadStatusContacted), laneOpen},
 		{string(models.LeadStatusQualified), laneOpen},
 		{string(models.LeadStatusDisqualified), laneLost},
 	}
-	notConverted := func(q *gorm.DB) *gorm.DB { return q.Where("leads.converted_deal_id IS NULL") }
 
 	var dStages []models.PipelineStage
 	if err := h.DB.Where("is_active = ?", true).Order("sort_order, id").Find(&dStages).Error; err != nil {
 		return nil, err
 	}
-	var dDefs []laneDef
+	dDefs := make([]laneDef, 0, len(dStages))
 	for _, s := range dStages {
 		kind := laneOpen
 		switch {
@@ -345,74 +388,52 @@ func (h *PipelineOverviewHandler) zones(c *fiber.Ctx, w window, limit int) ([]ov
 		dDefs = append(dDefs, laneDef{s.Name, kind})
 	}
 
-	build := func(key string, e overviewEntity, defs []laneDef, extra func(*gorm.DB) *gorm.DB) (overviewZone, error) {
-		z := overviewZone{Key: key, Lanes: []overviewLane{}}
-		for _, d := range defs {
-			l, err := e.lane(h.DB, c, d.name, d.kind, w, limit, extra)
-			if err != nil {
-				return z, err
-			}
-			z.Lanes = append(z.Lanes, l)
+	zones := make([]overviewZone, 0, 3)
+	for _, z := range []struct {
+		key    string
+		entity overviewEntity
+		defs   []laneDef
+	}{
+		{"prospect", prospectEntity, pDefs},
+		{"lead", leadEntity, lDefs},
+		{"deal", dealEntity, dDefs},
+	} {
+		zone, err := z.entity.zone(h.DB, c, z.key, z.defs, w, limit)
+		if err != nil {
+			return nil, err
 		}
-		return z, nil
+		zones = append(zones, zone)
 	}
-
-	pz, err := build("prospect", prospectEntity, pDefs, nil)
-	if err != nil {
-		return nil, err
-	}
-	lz, err := build("lead", leadEntity, lDefs, notConverted)
-	if err != nil {
-		return nil, err
-	}
-	dz, err := build("deal", dealEntity, dDefs, nil)
-	if err != nil {
-		return nil, err
-	}
-	return []overviewZone{pz, lz, dz}, nil
+	return zones, nil
 }
 
 func (h *PipelineOverviewHandler) summary(c *fiber.Ctx, cur, prev window) (overviewSummary, error) {
 	var s overviewSummary
-	created := func(e overviewEntity, dst *overviewCompare) error {
-		if err := e.createdIn(e.base(h.DB, c), cur).Count(&dst.Current).Error; err != nil {
-			return err
-		}
-		return e.createdIn(e.base(h.DB, c), prev).Count(&dst.Previous).Error
-	}
-	if err := created(prospectEntity, &s.NewProspects); err != nil {
+	var err error
+	if s.NewProspects, err = prospectEntity.compareCounts(prospectEntity.base(h.DB, c), "created_at", cur, prev); err != nil {
 		return s, err
 	}
-	if err := created(leadEntity, &s.NewLeads); err != nil {
+	if s.NewLeads, err = leadEntity.compareCounts(leadEntity.base(h.DB, c), "created_at", cur, prev); err != nil {
 		return s, err
 	}
-	if err := created(dealEntity, &s.NewDeals); err != nil {
+	if s.NewDeals, err = dealEntity.compareCounts(dealEntity.base(h.DB, c), "created_at", cur, prev); err != nil {
 		return s, err
 	}
 
 	// Won uses deals.status rather than a stage name, so a renamed or custom
 	// Won stage still counts (status is kept in sync with the stage's
 	// is_won_stage flag on every write — DealHandler.syncStatusWithStageFlags).
-	type agg struct {
-		Count int64
-		Value float64
-	}
-	won := func(w window) (agg, error) {
-		var a agg
-		err := dealEntity.enteredIn(dealEntity.base(h.DB, c), w).
-			Where("deals.status = ?", models.DealStatusWon).
-			Select("COUNT(*) AS count, COALESCE(SUM(deals.value), 0) AS value").Scan(&a).Error
-		return a, err
-	}
-	wc, err := won(cur)
-	if err != nil {
+	const inCur = "deals.stage_entered_at >= ? AND deals.stage_entered_at < ?"
+	if err := dealEntity.base(h.DB, c).
+		Where("deals.status = ? AND deals.stage_entered_at >= ? AND deals.stage_entered_at < ?", models.DealStatusWon, prev.from, cur.to).
+		Select("COUNT(*) FILTER (WHERE "+inCur+") AS current, "+
+			"COUNT(*) FILTER (WHERE "+inCur+") AS previous, "+
+			"COALESCE(SUM(deals.value) FILTER (WHERE "+inCur+"), 0) AS value, "+
+			"COALESCE(SUM(deals.value) FILTER (WHERE "+inCur+"), 0) AS previous_value",
+			cur.from, cur.to, prev.from, prev.to, cur.from, cur.to, prev.from, prev.to).
+		Scan(&s.Won).Error; err != nil {
 		return s, err
 	}
-	wp, err := won(prev)
-	if err != nil {
-		return s, err
-	}
-	s.Won = overviewWon{Current: wc.Count, Previous: wp.Count, Value: wc.Value, PreviousValue: wp.Value}
 
 	if err := dealEntity.base(h.DB, c).Where("deals.status = ?", models.DealStatusOpen).
 		Select("COUNT(*) AS count, COALESCE(SUM(deals.value), 0) AS value, " +

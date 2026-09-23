@@ -143,18 +143,23 @@ func TestPipelineOverview_LanesAndTerminalWindow(t *testing.T) {
 	assert.Equal(t, int64(2), out.Data.Summary.NewLeads.Current)
 	assert.Equal(t, int64(2), out.Data.Summary.NewDeals.Current)
 
+	var sawLead, sawDeal bool
 	for _, z := range out.Data.Zones {
 		for _, l := range z.Lanes {
 			for _, c := range l.Cards {
 				if c.ID == fromProspect.ID && z.Key == "lead" {
+					sawLead = true
 					assert.True(t, c.FromProspect)
+					assert.Equal(t, "From Prospect", c.Name)
 				}
 				if c.ID == openDeal.ID && z.Key == "deal" {
+					sawDeal = true
 					assert.Equal(t, company.Name, c.CompanyName)
 				}
 			}
 		}
 	}
+	assert.True(t, sawLead && sawDeal, "both cards must be returned with their fields populated")
 }
 
 // TestPipelineOverview_PeriodAndPreviousWindow guards the date window: an
@@ -222,6 +227,60 @@ func TestPipelineOverview_StageEnteredAtStamps(t *testing.T) {
 
 	deal := seedDeal(t, db, nil)
 	require.NotNil(t, deal.StageEnteredAt, "BeforeCreate stamps new rows")
+}
+
+// TestPipelineOverview_CardOrderLimitAndPrevious guards the per-lane card
+// query (open lanes longest-waiting first, terminal lanes most recent first,
+// capped by card_limit while count stays exact) and the summary's
+// previous-window counts.
+func TestPipelineOverview_CardOrderLimitAndPrevious(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	daysAgo := func(n int) time.Time { return time.Now().AddDate(0, 0, -n) }
+
+	for _, lead := range []struct {
+		name   string
+		status models.LeadStatus
+		ago    int
+	}{
+		{"Waiting 3d", models.LeadStatusNew, 3},
+		{"Waiting 20d", models.LeadStatusNew, 20},
+		{"Waiting 9d", models.LeadStatusNew, 9},
+		{"Disq 1d", models.LeadStatusDisqualified, 1},
+		{"Disq 5d", models.LeadStatusDisqualified, 5},
+	} {
+		entered := daysAgo(lead.ago)
+		row := &models.Lead{Name: lead.name, Source: models.LeadSourceWebsite, Status: lead.status, StageEnteredAt: &entered}
+		require.NoError(t, db.Create(row).Error)
+		// Created in the previous 7-day window, so they count as "previous".
+		require.NoError(t, db.Model(row).UpdateColumn("created_at", daysAgo(10)).Error)
+	}
+
+	var out overviewResp
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/pipeline/overview?card_limit=2", nil, admin.ID, admin.Role)
+	require.Equal(t, fiber.StatusOK, doJSON(t, app, req, &out).StatusCode)
+
+	names := func(lane string) []string {
+		for _, z := range out.Data.Zones {
+			for _, l := range z.Lanes {
+				if z.Key == "lead" && l.Name == lane {
+					var n []string
+					for _, c := range l.Cards {
+						n = append(n, c.Name)
+					}
+					return n
+				}
+			}
+		}
+		return nil
+	}
+	count, _, _, _ := out.lane("lead", "New")
+	assert.Equal(t, int64(3), count, "count stays exact past card_limit")
+	assert.Equal(t, []string{"Waiting 20d", "Waiting 9d"}, names("New"), "open lane: longest-waiting first, capped")
+	assert.Equal(t, []string{"Disq 1d", "Disq 5d"}, names("Disqualified"), "terminal lane: most recent first")
+
+	assert.Equal(t, int64(0), out.Data.Summary.NewLeads.Current)
+	assert.Equal(t, int64(5), out.Data.Summary.NewLeads.Previous)
 }
 
 // TestPipelineOverview_RoleGate: Marketing is allowed (FR-CRM-123), Production isn't.
