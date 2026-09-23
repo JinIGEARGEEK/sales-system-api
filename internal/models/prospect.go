@@ -1,6 +1,10 @@
 package models
 
-import "github.com/lib/pq"
+import (
+	"time"
+
+	"github.com/lib/pq"
+)
 
 // ProspectStatus is a fixed enum, not admin-configurable (mirrors LeadStatus,
 // not PipelineStage) — Marketing's funnel stage is a simple closed set.
@@ -52,6 +56,8 @@ type Prospect struct {
 	// only — see Deal.Position's doc comment (deal.go) for the full scheme;
 	// mirrored here identically, driven by ProspectHandler.UpdateStatus.
 	Position float64 `gorm:"not null;default:0;index" json:"position"`
+	// When this record entered its current lane; see stage_entered.go.
+	StageEnteredAt *time.Time `gorm:"index" json:"stage_entered_at"`
 }
 
 func (Prospect) TableName() string { return "prospects" }

@@ -495,6 +495,9 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	lead.Source, lead.Status, lead.Notes, lead.AssignedTo = form.Source, form.Status, form.Notes, form.AssignedTo
 	lead.BusinessUnit, lead.BusinessUnitItem = form.BusinessUnit, form.BusinessUnitItem
 	lead.ReferredByType, lead.ReferredByID = form.ReferredByType, form.ReferredByID
+	if oldStatus != lead.Status {
+		lead.MarkStageEntered()
+	}
 
 	// A general-purpose Update PUT doesn't necessarily resend classification
 	// (most fields, like a status/notes edit, have nothing to do with it), so
@@ -571,6 +574,9 @@ func (h *LeadHandler) UpdateStatus(c *fiber.Ctx) error {
 		lead.Position = *form.Position
 	} else if oldStatus != lead.Status {
 		lead.Position = nextLeadPosition(h.DB, lead.Status)
+	}
+	if oldStatus != lead.Status {
+		lead.MarkStageEntered()
 	}
 
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
@@ -790,6 +796,9 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 			return err
 		}
 
+		if lead.Status != models.LeadStatusQualified {
+			lead.MarkStageEntered()
+		}
 		lead.Status = models.LeadStatusQualified
 		lead.ConvertedDealID = &deal.ID
 		if err := tx.Save(&lead).Error; err != nil {

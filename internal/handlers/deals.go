@@ -444,6 +444,9 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	if !utils.IsLostStage(h.DB, deal.Stage) && deal.Status != models.DealStatusLost {
 		deal.LostReason = nil
 	}
+	if oldStage != deal.Stage {
+		deal.MarkStageEntered()
+	}
 
 	// Previously a plain h.DB.Save with no audit trail at all — a Stage
 	// change made from the Overview edit form (as opposed to the Kanban
@@ -692,6 +695,7 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 		deal.Probability = &def
 		catDef := h.defaultForecastCategoryFor(deal.Stage)
 		deal.ForecastCategory = &catDef
+		deal.MarkStageEntered()
 	}
 
 	// The client always sends its own computed Position when this is a real

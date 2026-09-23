@@ -83,6 +83,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	reportH := handlers.NewReportHandler(db)
 	auditLogH := handlers.NewAuditLogHandler(db)
 	dashboardH := handlers.NewDashboardHandler(db)
+	pipelineOverviewH := handlers.NewPipelineOverviewHandler(db)
 	attachmentH := handlers.NewAttachmentHandler(db, storage)
 	pipelineStageH := handlers.NewPipelineStageHandler(db)
 	leadSourceH := handlers.NewLeadSourceHandler(db)
@@ -296,19 +297,15 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 
 	// Leads
 	bulkRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesManager)
-	// Sales-pipeline roles for every Lead route except single-record GET —
-	// Marketing has no nav access to /crm/leads (deliberately, per
-	// user-story.md §4: "Production is not a full user of this CRM" mirrors
-	// Marketing's own Prospect-only scope, FR-CRM-105/106; spec §1.7 states
-	// Marketing/Production have "no access to Leads/Deals/any other
-	// resource") but could still reach a specific Lead via the Prospect
-	// "View Lead" link once converted, so GET stays open (that's the
-	// View Lead read access this is meant to preserve). List/Create/Delete
-	// had no role check at all until this fix, same gap Update/Convert had
-	// until 2026-09-09 — the frontend's buttons/nav were only ever hidden by
-	// convention, not actually blocked, so a Marketing (or Production) caller
-	// hitting any of these directly would have succeeded.
-	salesPipelineRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager)
+	// Sales-pipeline roles for every Lead route except single-record GET.
+	// **2026-09-23**: Marketing joined this set (full Sales Rep parity on
+	// Leads/Deals, alongside the Overview Pipeline page — feature-spec.md
+	// FR-CRM-123), reversing spec §1.7's earlier "Marketing has no access to
+	// Leads/Deals" rule. Production stays out, which is what this gate still
+	// blocks. Bulk/trash/restore stay on bulkRoles (Admin/Sales Manager), the
+	// same line Sales Rep sits behind. GET /:id stays ungated so Production
+	// can still follow a specific-Lead link.
+	salesPipelineRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager, models.RoleMarketing)
 	leads := authed.Group("/leads")
 	leads.Get("/", salesPipelineRoles, leadH.List)
 	leads.Post("/", salesPipelineRoles, leadH.Create)
@@ -369,7 +366,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	companies.Get("/:companyId/products", productH.ListForCompany)
 	companies.Post("/:companyId/products", productH.AddForCompany)
 	companies.Get("/:companyId/projects", projectH.ListForCompany)
-	companies.Post("/:companyId/projects", middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager), projectH.Create)
+	companies.Post("/:companyId/projects", salesPipelineRoles, projectH.Create)
 
 	// Contacts
 	contacts := authed.Group("/contacts")
@@ -384,8 +381,8 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	contacts.Delete("/:id", contactH.Delete)
 	contacts.Post("/:id/restore", bulkRoles, contactH.Restore)
 
-	// Deals — Admin/Sales Rep/Sales Manager only (spec §1.7: Marketing/
-	// Production have "no access to Leads/Deals/any other resource"). Every
+	// Deals — salesPipelineRoles only (Admin/Sales Rep/Sales Manager/Marketing
+	// since 2026-09-23; Production has no access, spec §1.7). Every
 	// route in this group, including the Quote/Payment/Contract sub-resources
 	// nested under a Deal, was previously open to any authenticated role —
 	// same bug class the 2026-09-09 Lead-mutation fix caught, just never
@@ -427,7 +424,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// inside the handler (mirrors Activity's CanWrite pattern).
 	attachments := authed.Group("/attachments")
 	attachments.Get("/", attachmentH.List)
-	attachments.Post("/", middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager), attachmentH.Create)
+	attachments.Post("/", salesPipelineRoles, attachmentH.Create)
 	attachments.Delete("/:id", attachmentH.Delete)
 
 	// Tags — shared taxonomy used across Companies/Deals/Contacts; List stays
@@ -548,7 +545,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// Manager's slice is wider than Sales Rep's (also includes
 	// reassigned/bulk_reassigned, for the Deal detail page's Owner History
 	// card — FR-CRM-025/M-8).
-	authed.Get("/audit-log", middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager), auditLogH.List)
+	authed.Get("/audit-log", salesPipelineRoles, auditLogH.List)
 
 	// Pipeline stages / lead sources — config writes are Admin-only, replacing
 	// the previously hardcoded DealStage/LeadSource enums as the source of
@@ -704,6 +701,11 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// Lead stats for the Sales tab — same "not role-gated, frontend decides"
 	// convention as the two dashboard routes above.
 	authed.Get("/dashboard/lead-summary", dashboardH.LeadSummary)
+
+	// Overview Pipeline (FR-CRM-123) — Prospect/Lead/Deal lanes plus the
+	// period summary strip in one payload. Same salesPipelineRoles gate as
+	// the Lead/Deal routes it reads from (Production has no access).
+	authed.Get("/pipeline/overview", salesPipelineRoles, pipelineOverviewH.Overview)
 	// Forecast accuracy history (Commit/Best Case/Pipeline forecast rigor) —
 	// same "not role-gated, frontend decides" convention as the routes above.
 	authed.Get("/dashboard/forecast-accuracy", dashboardH.ForecastAccuracy)

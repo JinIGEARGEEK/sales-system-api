@@ -247,130 +247,104 @@ func TestRBAC_PipelineStagesLeadSourcesListOpenWritesAdminOnly(t *testing.T) {
 	}
 }
 
-// TestRBAC_LeadUpdateConvertSalesPipelineOnly guards a 2026-09-09 fix: PUT
-// /leads/:id and POST /leads/:id/convert had no role check at all — Marketing
-// has no nav access to /crm/leads (deliberately: Marketing's own scope is
-// Prospects only, FR-CRM-105/106) but the frontend's Mark SQL/Convert to Deal
-// buttons on the Lead detail page were only ever hidden by convention, not
-// actually blocked server-side, so a Marketing (or Production) caller hitting
-// either endpoint directly would have succeeded. GET /leads/:id stays open —
-// that's the read-only "View Lead" access this fix is meant to preserve, via
-// the Prospect detail page's link to a converted Lead.
-func TestRBAC_LeadUpdateConvertSalesPipelineOnly(t *testing.T) {
+// TestRBAC_LeadsSalesPipelineRoles guards the Lead routes' salesPipelineRoles
+// gate. Until 2026-09-09 PUT/convert (and until later List/Create/Delete) had
+// no role check at all. Since 2026-09-23 Marketing is inside that gate (full
+// Sales Rep parity on Leads/Deals, FR-CRM-123), so Production is now the role
+// this gate actually keeps out. GET /leads/:id stays open to every role.
+func TestRBAC_LeadsSalesPipelineRoles(t *testing.T) {
 	app, db := testutil.App(t)
 	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
-	rep := testutil.CreateUser(t, db, models.RoleSalesRep)
+	production := testutil.CreateUser(t, db, models.RoleProduction)
 	lead := seedLead(t, db, nil)
 
-	t.Run("get is still open to marketing", func(t *testing.T) {
-		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/leads/"+itoa(lead.ID), nil, marketing.ID, marketing.Role)
+	t.Run("get is open to production", func(t *testing.T) {
+		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/leads/"+itoa(lead.ID), nil, production.ID, production.Role)
 		resp := doJSON(t, app, req, nil)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 
-	t.Run("update is forbidden for marketing", func(t *testing.T) {
-		req := testutil.AuthRequest(t, http.MethodPut, "/api/v1/leads/"+itoa(lead.ID), map[string]interface{}{
-			"name": lead.Name, "source": string(lead.Source), "status": "Qualified",
-		}, marketing.ID, marketing.Role)
-		resp := doJSON(t, app, req, nil)
-		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-	})
+	for _, tc := range []struct {
+		name, method, path string
+		body               map[string]interface{}
+	}{
+		{"list", http.MethodGet, "/api/v1/leads", nil},
+		{"create", http.MethodPost, "/api/v1/leads", map[string]interface{}{"name": "Test Lead", "source": "Website"}},
+		{"update", http.MethodPut, "/api/v1/leads/" + itoa(lead.ID), map[string]interface{}{
+			"name": lead.Name, "source": string(lead.Source), "status": "Contacted",
+		}},
+		{"status move", http.MethodPatch, "/api/v1/leads/" + itoa(lead.ID) + "/status", map[string]interface{}{"status": "New"}},
+	} {
+		t.Run(tc.name+" is forbidden for production", func(t *testing.T) {
+			req := testutil.AuthRequest(t, tc.method, tc.path, tc.body, production.ID, production.Role)
+			resp := doJSON(t, app, req, nil)
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+		})
+		t.Run(tc.name+" is allowed for marketing", func(t *testing.T) {
+			req := testutil.AuthRequest(t, tc.method, tc.path, tc.body, marketing.ID, marketing.Role)
+			resp := doJSON(t, app, req, nil)
+			assert.Less(t, resp.StatusCode, 300, "marketing has Sales Rep parity on Leads")
+		})
+	}
 
-	t.Run("convert is forbidden for marketing", func(t *testing.T) {
+	t.Run("convert passes the role gate for marketing", func(t *testing.T) {
 		req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/leads/"+itoa(lead.ID)+"/convert", map[string]interface{}{
 			"deal": map[string]interface{}{"title": "x", "value": 100, "stage": "Lead"},
 		}, marketing.ID, marketing.Role)
 		resp := doJSON(t, app, req, nil)
-		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+		assert.NotEqual(t, http.StatusForbidden, resp.StatusCode)
 	})
 
-	t.Run("update is allowed for sales rep", func(t *testing.T) {
-		req := testutil.AuthRequest(t, http.MethodPut, "/api/v1/leads/"+itoa(lead.ID), map[string]interface{}{
-			"name": lead.Name, "source": string(lead.Source), "status": "Qualified",
-		}, rep.ID, rep.Role)
-		resp := doJSON(t, app, req, nil)
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
-	})
-}
-
-// TestRBAC_LeadListCreateDeleteSalesPipelineOnly guards the other three Lead
-// mutations that had no role check at all until this fix — the same gap
-// Update/Convert had until 2026-09-09, just never carried over to List/
-// Create/Delete. GET by id stays open (Marketing's "View Lead" read access).
-func TestRBAC_LeadListCreateDeleteSalesPipelineOnly(t *testing.T) {
-	app, db := testutil.App(t)
-	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
-	rep := testutil.CreateUser(t, db, models.RoleSalesRep)
-
-	t.Run("list is forbidden for marketing", func(t *testing.T) {
-		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/leads", nil, marketing.ID, marketing.Role)
-		resp := doJSON(t, app, req, nil)
-		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-	})
-
-	t.Run("create is forbidden for marketing", func(t *testing.T) {
-		req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/leads", map[string]interface{}{
-			"name": "Test Lead", "source": "Website",
-		}, marketing.ID, marketing.Role)
-		resp := doJSON(t, app, req, nil)
-		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-	})
-
-	lead := seedLead(t, db, nil)
-	t.Run("delete is forbidden for marketing", func(t *testing.T) {
+	t.Run("delete is allowed for marketing", func(t *testing.T) {
 		req := testutil.AuthRequest(t, http.MethodDelete, "/api/v1/leads/"+itoa(lead.ID), nil, marketing.ID, marketing.Role)
 		resp := doJSON(t, app, req, nil)
-		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 	})
 
-	t.Run("list/create/delete are allowed for sales rep", func(t *testing.T) {
-		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/leads", nil, rep.ID, rep.Role)
+	t.Run("bulk actions stay Admin/Sales Manager only", func(t *testing.T) {
+		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/leads/trash", nil, marketing.ID, marketing.Role)
 		resp := doJSON(t, app, req, nil)
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
-
-		req = testutil.AuthRequest(t, http.MethodDelete, "/api/v1/leads/"+itoa(lead.ID), nil, rep.ID, rep.Role)
-		resp = doJSON(t, app, req, nil)
-		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	})
 }
 
-// TestRBAC_DealsSalesPipelineOnly guards the Deals resource group (list,
-// create, get, update, delete, stage-move, and the nested Quote/Payment/
-// Contract sub-resources) — spec §1.7 states Marketing/Production have "no
-// access to Leads/Deals/any other resource", but every one of these routes
-// was previously open to any authenticated role.
-func TestRBAC_DealsSalesPipelineOnly(t *testing.T) {
+// TestRBAC_DealsSalesPipelineRoles guards the Deals resource group (list,
+// get, the nested Quote/Payment/Contract sub-resources): Marketing is allowed
+// since 2026-09-23 (FR-CRM-123), Production stays forbidden (spec §1.7).
+func TestRBAC_DealsSalesPipelineRoles(t *testing.T) {
 	app, db := testutil.App(t)
 	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
-	rep := testutil.CreateUser(t, db, models.RoleSalesRep)
+	production := testutil.CreateUser(t, db, models.RoleProduction)
 	deal := seedDeal(t, db, nil)
 
-	t.Run("list is forbidden for marketing", func(t *testing.T) {
-		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/deals", nil, marketing.ID, marketing.Role)
-		resp := doJSON(t, app, req, nil)
-		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-	})
+	for _, path := range []string{
+		"/api/v1/deals",
+		"/api/v1/deals/" + itoa(deal.ID),
+		"/api/v1/deals/" + itoa(deal.ID) + "/quotes",
+	} {
+		t.Run(path+" is forbidden for production", func(t *testing.T) {
+			req := testutil.AuthRequest(t, http.MethodGet, path, nil, production.ID, production.Role)
+			resp := doJSON(t, app, req, nil)
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+		})
+		t.Run(path+" is allowed for marketing", func(t *testing.T) {
+			req := testutil.AuthRequest(t, http.MethodGet, path, nil, marketing.ID, marketing.Role)
+			resp := doJSON(t, app, req, nil)
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
+		})
+	}
 
-	t.Run("get by id is forbidden for marketing", func(t *testing.T) {
-		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/deals/"+itoa(deal.ID), nil, marketing.ID, marketing.Role)
-		resp := doJSON(t, app, req, nil)
-		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-	})
-
-	t.Run("quotes sub-resource is forbidden for marketing", func(t *testing.T) {
-		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/deals/"+itoa(deal.ID)+"/quotes", nil, marketing.ID, marketing.Role)
-		resp := doJSON(t, app, req, nil)
-		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-	})
-
-	t.Run("list and get are allowed for sales rep", func(t *testing.T) {
-		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/deals", nil, rep.ID, rep.Role)
+	t.Run("stage move is allowed for marketing", func(t *testing.T) {
+		req := testutil.AuthRequest(t, http.MethodPatch, "/api/v1/deals/"+itoa(deal.ID)+"/stage",
+			map[string]interface{}{"stage": "Qualified"}, marketing.ID, marketing.Role)
 		resp := doJSON(t, app, req, nil)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
 
-		req = testutil.AuthRequest(t, http.MethodGet, "/api/v1/deals/"+itoa(deal.ID), nil, rep.ID, rep.Role)
-		resp = doJSON(t, app, req, nil)
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	t.Run("export stays Admin/Sales Manager only", func(t *testing.T) {
+		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/deals/export", nil, marketing.ID, marketing.Role)
+		resp := doJSON(t, app, req, nil)
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	})
 }
 
