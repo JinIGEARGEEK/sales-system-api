@@ -79,8 +79,8 @@ func getOverview(t *testing.T, app *fiber.App, user *models.User, query string) 
 
 // TestPipelineOverview_LanesAndTerminalWindow guards the core shape: open
 // lanes list every current record regardless of period, terminal lanes (Won
-// here) only those that entered inside the period, and a converted Lead is
-// left out of the Lead zone since it's already on the board as its Deal.
+// here) only those that entered inside the period, and a converted Lead
+// leaves its status lane for the Lead zone's own Converted lane.
 func TestPipelineOverview_LanesAndTerminalWindow(t *testing.T) {
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
@@ -122,7 +122,11 @@ func TestPipelineOverview_LanesAndTerminalWindow(t *testing.T) {
 	assert.True(t, ok, "Converted is always appended as a terminal Prospect lane")
 
 	count, _, _, _ = out.lane("lead", "Qualified")
-	assert.Equal(t, int64(0), count, "a converted Lead shows as its Deal, not in the Lead zone")
+	assert.Equal(t, int64(0), count, "a converted Lead leaves its status lane")
+	count, _, _, _ = out.lane("lead", "Converted")
+	assert.Equal(t, int64(1), count, "…for the Converted lane, since it converted inside the period")
+	_, _, _, ok = out.lane("lead", "")
+	assert.False(t, ok, "no Other lane when every record sits in a known lane")
 
 	count, value, cards, _ := out.lane("deal", "Negotiation")
 	assert.Equal(t, int64(1), count, "open lanes ignore the period")
@@ -281,6 +285,89 @@ func TestPipelineOverview_CardOrderLimitAndPrevious(t *testing.T) {
 
 	assert.Equal(t, int64(0), out.Data.Summary.NewLeads.Current)
 	assert.Equal(t, int64(5), out.Data.Summary.NewLeads.Previous)
+}
+
+// TestPipelineOverview_OtherLane guards the catch-all lane: a record whose
+// stage isn't one of the zone's lanes (blank, or a deactivated stage) shows
+// under kind "other" with its real stage on the card, instead of dropping
+// off the board while still counting in the summary.
+func TestPipelineOverview_OtherLane(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	blank := &models.Prospect{Name: "No Status", Source: "Social Media", Status: models.ProspectStatusNew}
+	require.NoError(t, db.Create(blank).Error)
+	require.NoError(t, db.Model(blank).UpdateColumn("status", "").Error)
+	retired := &models.Prospect{Name: "Retired Stage", Source: "Social Media", Status: "Warm Hold"}
+	require.NoError(t, db.Create(retired).Error)
+	require.NoError(t, db.Create(&models.Prospect{Name: "Normal", Source: "Social Media", Status: models.ProspectStatusNew}).Error)
+
+	var out struct {
+		Data struct {
+			Zones []struct {
+				Key   string `json:"key"`
+				Lanes []struct {
+					Name     string `json:"name"`
+					Kind     string `json:"kind"`
+					Terminal bool   `json:"terminal"`
+					Count    int64  `json:"count"`
+					Cards    []struct {
+						Name  string `json:"name"`
+						Stage string `json:"stage"`
+					} `json:"cards"`
+				} `json:"lanes"`
+			} `json:"zones"`
+		} `json:"data"`
+	}
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/pipeline/overview", nil, admin.ID, admin.Role)
+	require.Equal(t, fiber.StatusOK, doJSON(t, app, req, &out).StatusCode)
+
+	var found bool
+	for _, z := range out.Data.Zones {
+		if z.Key != "prospect" {
+			continue
+		}
+		last := z.Lanes[len(z.Lanes)-1]
+		require.Equal(t, "other", last.Kind, "the Other lane comes last")
+		found = true
+		assert.Equal(t, "", last.Name)
+		assert.False(t, last.Terminal, "always shown, whatever the period")
+		assert.Equal(t, int64(2), last.Count)
+		stages := map[string]string{}
+		for _, c := range last.Cards {
+			stages[c.Name] = c.Stage
+		}
+		assert.Equal(t, map[string]string{"No Status": "", "Retired Stage": "Warm Hold"}, stages)
+		for _, l := range z.Lanes {
+			if l.Name == "New" {
+				assert.Equal(t, int64(1), l.Count, "known lanes are unaffected")
+			}
+		}
+	}
+	assert.True(t, found)
+}
+
+// TestPipelineOverview_LeadConvertStampsConvertedLane: converting an already-
+// Qualified Lead still restamps stage_entered_at, since on the Overview it
+// moves into the Converted lane at that moment.
+func TestPipelineOverview_LeadConvertStampsConvertedLane(t *testing.T) {
+	app, db := testutil.App(t)
+	rep := testutil.CreateUser(t, db, models.RoleSalesRep)
+	company := seedCompany(t, db)
+	lead := seedLead(t, db, &company.ID) // seeded as Qualified
+	old := time.Now().AddDate(0, 0, -40)
+	require.NoError(t, db.Model(lead).UpdateColumn("stage_entered_at", old).Error)
+
+	req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/leads/"+itoa(lead.ID)+"/convert", map[string]interface{}{
+		"deal": map[string]interface{}{"title": "From Lead", "value": 100, "stage": "Qualified"},
+	}, rep.ID, rep.Role)
+	resp := doJSON(t, app, req, nil)
+	require.Less(t, resp.StatusCode, 300)
+
+	var reloaded models.Lead
+	require.NoError(t, db.First(&reloaded, lead.ID).Error)
+	require.NotNil(t, reloaded.StageEnteredAt)
+	assert.WithinDuration(t, time.Now(), *reloaded.StageEnteredAt, 10*time.Second)
 }
 
 // TestPipelineOverview_RoleGate: Marketing is allowed (FR-CRM-123), Production isn't.

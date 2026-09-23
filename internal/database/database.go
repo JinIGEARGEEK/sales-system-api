@@ -245,6 +245,16 @@ func backfillStageEnteredAt(db *gorm.DB) error {
 		{"leads", `
 			UPDATE leads SET stage_entered_at = CASE WHEN status = 'New' THEN created_at ELSE updated_at END
 			WHERE stage_entered_at IS NULL`},
+		// A converted Lead sits in the Overview's Converted lane from the
+		// moment it converted, which its Deal's created_at records exactly.
+		// Before 2026-09-23 conversion didn't restamp stage_entered_at when
+		// the Lead was already Qualified, so move any earlier value up to
+		// the conversion. Idempotent: conversions since then already match.
+		{"leads (converted)", `
+			UPDATE leads l SET stage_entered_at = d.created_at
+			FROM deals d
+			WHERE d.id = l.converted_deal_id
+			  AND (l.stage_entered_at IS NULL OR l.stage_entered_at < d.created_at)`},
 		{"prospects", `
 			UPDATE prospects SET stage_entered_at = CASE WHEN status = 'New' THEN created_at ELSE updated_at END
 			WHERE stage_entered_at IS NULL`},

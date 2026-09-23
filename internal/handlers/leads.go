@@ -796,9 +796,10 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 			return err
 		}
 
-		if lead.Status != models.LeadStatusQualified {
-			lead.MarkStageEntered()
-		}
+		// Always restamped, even if already Qualified: on the Overview
+		// Pipeline a converted Lead moves into its own Converted lane
+		// (FR-CRM-123), so conversion is a lane change there.
+		lead.MarkStageEntered()
 		lead.Status = models.LeadStatusQualified
 		lead.ConvertedDealID = &deal.ID
 		if err := tx.Save(&lead).Error; err != nil {
