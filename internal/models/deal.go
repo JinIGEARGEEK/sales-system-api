@@ -1,6 +1,10 @@
 package models
 
-import "github.com/lib/pq"
+import (
+	"time"
+
+	"github.com/lib/pq"
+)
 
 type DealStage string
 
@@ -166,6 +170,8 @@ type Deal struct {
 	// every drag-move (DealHandler.UpdateStage) so no sibling row ever needs
 	// rewriting. See database.AutoMigrate's backfill for pre-existing rows.
 	Position float64 `gorm:"not null;default:0;index" json:"position"`
+	// When this record entered its current lane; see stage_entered.go.
+	StageEnteredAt *time.Time `gorm:"index" json:"stage_entered_at"`
 }
 
 func (Deal) TableName() string { return "deals" }

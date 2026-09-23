@@ -136,6 +136,43 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := backfillCardPositions(db); err != nil {
 		return err
 	}
+	if err := backfillStageEnteredAt(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+// backfillStageEnteredAt populates the new Deal/Lead/Prospect
+// stage_entered_at column (see models/stage_entered.go) for rows created
+// before it existed. Only touches rows still NULL, so it's safe to re-run on
+// every boot. Best available evidence per table:
+//   - deals: the latest stage_changed audit row, else updated_at (older stage
+//     edits made through the Overview form weren't audited)
+//   - leads/prospects: created_at while still in the initial "New" lane (it
+//     never moved), else updated_at (status changes were never audited)
+//
+// updated_at can only be later than the real move, never earlier, so a
+// backfilled "days in stage" can under-count but never over-count.
+func backfillStageEnteredAt(db *gorm.DB) error {
+	stmts := []struct{ table, sql string }{
+		{"deals", `
+			UPDATE deals d SET stage_entered_at = COALESCE(
+				(SELECT MAX(a.created_at) FROM audit_log_entries a
+				 WHERE a.entity_type = 'deal' AND a.entity_id = d.id AND a.action = 'stage_changed'),
+				d.updated_at)
+			WHERE d.stage_entered_at IS NULL`},
+		{"leads", `
+			UPDATE leads SET stage_entered_at = CASE WHEN status = 'New' THEN created_at ELSE updated_at END
+			WHERE stage_entered_at IS NULL`},
+		{"prospects", `
+			UPDATE prospects SET stage_entered_at = CASE WHEN status = 'New' THEN created_at ELSE updated_at END
+			WHERE stage_entered_at IS NULL`},
+	}
+	for _, st := range stmts {
+		if err := db.Exec(st.sql).Error; err != nil {
+			return fmt.Errorf("backfill %s stage_entered_at: %w", st.table, err)
+		}
+	}
 	return nil
 }
 

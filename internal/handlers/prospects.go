@@ -232,6 +232,9 @@ func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 	prospect.Source, prospect.Status, prospect.Notes, prospect.AssignedTo = form.Source, form.Status, form.Notes, form.AssignedTo
 	prospect.Tags = pq.StringArray(form.Tags)
 	prospect.BusinessUnit, prospect.BusinessUnitItem = form.BusinessUnit, form.BusinessUnitItem
+	if oldStatus != prospect.Status {
+		prospect.MarkStageEntered()
+	}
 
 	// Logs a company-scoped Activity when the stage actually changed, so
 	// Company.last_activity_at reflects that the customer was contacted —
@@ -300,6 +303,9 @@ func (h *ProspectHandler) UpdateStatus(c *fiber.Ctx) error {
 		prospect.Position = *form.Position
 	} else if oldStatus != prospect.Status {
 		prospect.Position = nextProspectPosition(h.DB, prospect.Status)
+	}
+	if oldStatus != prospect.Status {
+		prospect.MarkStageEntered()
 	}
 
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
@@ -507,6 +513,7 @@ func (h *ProspectHandler) Convert(c *fiber.Ctx) error {
 		}
 
 		prospect.Status = models.ProspectStatusConverted
+		prospect.MarkStageEntered()
 		prospect.ConvertedLeadID = &lead.ID
 		if err := tx.Save(&prospect).Error; err != nil {
 			return err
