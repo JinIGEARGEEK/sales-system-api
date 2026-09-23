@@ -8,6 +8,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/testutil"
@@ -49,6 +50,7 @@ type overviewResp struct {
 					Name         string `json:"name"`
 					CompanyName  string `json:"company_name"`
 					FromProspect bool   `json:"from_prospect"`
+					Stage        string `json:"stage"`
 				} `json:"cards"`
 			} `json:"lanes"`
 		} `json:"zones"`
@@ -288,7 +290,7 @@ func TestPipelineOverview_CardOrderLimitAndPrevious(t *testing.T) {
 }
 
 // TestPipelineOverview_OtherLane guards the catch-all lane: a record whose
-// stage isn't one of the zone's lanes (blank, or a deactivated stage) shows
+// stage isn't one of the zone's lanes (blank, NULL, or a deactivated stage) shows
 // under kind "other" with its real stage on the card, instead of dropping
 // off the board while still counting in the summary.
 func TestPipelineOverview_OtherLane(t *testing.T) {
@@ -298,29 +300,15 @@ func TestPipelineOverview_OtherLane(t *testing.T) {
 	blank := &models.Prospect{Name: "No Status", Source: "Social Media", Status: models.ProspectStatusNew}
 	require.NoError(t, db.Create(blank).Error)
 	require.NoError(t, db.Model(blank).UpdateColumn("status", "").Error)
+	null := &models.Prospect{Name: "Null Status", Source: "Social Media", Status: models.ProspectStatusNew}
+	require.NoError(t, db.Create(null).Error)
+	require.NoError(t, db.Model(null).UpdateColumn("status", gorm.Expr("NULL")).Error)
 	retired := &models.Prospect{Name: "Retired Stage", Source: "Social Media", Status: "Warm Hold"}
 	require.NoError(t, db.Create(retired).Error)
 	require.NoError(t, db.Create(&models.Prospect{Name: "Normal", Source: "Social Media", Status: models.ProspectStatusNew}).Error)
 
-	var out struct {
-		Data struct {
-			Zones []struct {
-				Key   string `json:"key"`
-				Lanes []struct {
-					Name     string `json:"name"`
-					Kind     string `json:"kind"`
-					Terminal bool   `json:"terminal"`
-					Count    int64  `json:"count"`
-					Cards    []struct {
-						Name  string `json:"name"`
-						Stage string `json:"stage"`
-					} `json:"cards"`
-				} `json:"lanes"`
-			} `json:"zones"`
-		} `json:"data"`
-	}
-	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/pipeline/overview", nil, admin.ID, admin.Role)
-	require.Equal(t, fiber.StatusOK, doJSON(t, app, req, &out).StatusCode)
+	out, resp := getOverview(t, app, admin, "")
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
 
 	var found bool
 	for _, z := range out.Data.Zones {
@@ -332,19 +320,16 @@ func TestPipelineOverview_OtherLane(t *testing.T) {
 		found = true
 		assert.Equal(t, "", last.Name)
 		assert.False(t, last.Terminal, "always shown, whatever the period")
-		assert.Equal(t, int64(2), last.Count)
+		assert.Equal(t, int64(3), last.Count)
 		stages := map[string]string{}
 		for _, c := range last.Cards {
 			stages[c.Name] = c.Stage
 		}
-		assert.Equal(t, map[string]string{"No Status": "", "Retired Stage": "Warm Hold"}, stages)
-		for _, l := range z.Lanes {
-			if l.Name == "New" {
-				assert.Equal(t, int64(1), l.Count, "known lanes are unaffected")
-			}
-		}
+		assert.Equal(t, map[string]string{"No Status": "", "Null Status": "", "Retired Stage": "Warm Hold"}, stages)
 	}
 	assert.True(t, found)
+	count, _, _, _ := out.lane("prospect", "New")
+	assert.Equal(t, int64(1), count, "known lanes are unaffected")
 }
 
 // TestPipelineOverview_LeadConvertStampsConvertedLane: converting an already-

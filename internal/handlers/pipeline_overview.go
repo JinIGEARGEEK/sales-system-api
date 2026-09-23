@@ -56,6 +56,10 @@ const (
 	laneOther = "other"
 )
 
+// isTerminalLane reports whether a lane only shows what entered it inside the
+// period (won/lost/converted), as opposed to everything currently in it.
+func isTerminalLane(kind string) bool { return kind != laneOpen && kind != laneOther }
+
 // leadConvertedLane is the Lead zone's lane for a Lead that became a Deal.
 // Not a real Lead status (conversion leaves status at Qualified); derived
 // from converted_deal_id, mirroring Prospect's system-set "Converted".
@@ -216,10 +220,10 @@ func (e overviewEntity) zone(db *gorm.DB, c *fiber.Ctx, key string, defs []laneD
 	var names, open, terminal []string
 	for _, d := range defs {
 		names = append(names, d.name)
-		if d.kind == laneOpen {
-			open = append(open, d.name)
-		} else {
+		if isTerminalLane(d.kind) {
 			terminal = append(terminal, d.name)
+		} else {
+			open = append(open, d.name)
 		}
 	}
 	lane := e.laneExpr
@@ -276,7 +280,7 @@ func (e overviewEntity) zone(db *gorm.DB, c *fiber.Ctx, key string, defs []laneD
 		aggByLane[r.Lane] = i
 	}
 	build := func(name, kind string) overviewLane {
-		l := overviewLane{Name: name, Kind: kind, Terminal: kind != laneOpen && kind != laneOther, Cards: []overviewCard{}}
+		l := overviewLane{Name: name, Kind: kind, Terminal: isTerminalLane(kind), Cards: []overviewCard{}}
 		if i, ok := aggByLane[name]; ok {
 			l.Count, l.Value = aggRows[i].Count, aggRows[i].Value
 		}
