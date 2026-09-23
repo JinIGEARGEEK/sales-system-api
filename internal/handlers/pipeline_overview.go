@@ -20,9 +20,11 @@ import (
 // Two kinds of lane:
 //   - open lanes show every record currently in them, whatever the period,
 //     since "what's in the pipeline right now" is always current;
-//   - terminal lanes (Prospect Converted/Disqualified, Lead Disqualified, Deal
-//     Won/Lost) show only records that entered them inside the selected
-//     period, or they'd grow forever and bury the review.
+//   - terminal lanes (Prospect Converted/Disqualified, Lead Disqualified/
+//     Converted, Deal Won/Lost) show only records that entered them inside
+//     the selected period, or they'd grow forever and bury the review;
+//   - an "other" lane (only when non-empty) holds records whose stage isn't
+//     one of the zone's lanes, so nothing silently drops off the board.
 //
 // "Entered" and "days in stage" both come from stage_entered_at
 // (models/stage_entered.go).
@@ -40,13 +42,28 @@ const (
 	overviewMaxCardLimit     = 100
 )
 
-// Lane kinds. "open" lanes are always current; the rest are terminal.
+// Lane kinds. "open" and "other" lanes are always current; the rest are
+// terminal (only what entered them inside the period).
 const (
 	laneOpen      = "open"
 	laneWon       = "won"
 	laneLost      = "lost"
 	laneConverted = "converted"
+	// laneOther catches records whose stage/status isn't one of the zone's
+	// lanes (blank, or a stage an Admin deactivated/renamed), so they stay
+	// visible and fixable instead of silently dropping off the board. Only
+	// returned when it has records; its Name is "" (the UI labels it).
+	laneOther = "other"
 )
+
+// isTerminalLane reports whether a lane only shows what entered it inside the
+// period (won/lost/converted), as opposed to everything currently in it.
+func isTerminalLane(kind string) bool { return kind != laneOpen && kind != laneOther }
+
+// leadConvertedLane is the Lead zone's lane for a Lead that became a Deal.
+// Not a real Lead status (conversion leaves status at Qualified); derived
+// from converted_deal_id, mirroring Prospect's system-set "Converted".
+const leadConvertedLane = "Converted"
 
 type overviewCard struct {
 	ID             uint       `json:"id"`
@@ -61,6 +78,9 @@ type overviewCard struct {
 	FromProspect   bool       `json:"from_prospect"`
 	StageEnteredAt *time.Time `json:"stage_entered_at"`
 	CreatedAt      time.Time  `json:"created_at"`
+	// The record's own stage/status value — what an "other" lane card shows,
+	// since that lane's name doesn't say.
+	Stage string `json:"stage"`
 }
 
 type overviewLane struct {
@@ -125,33 +145,34 @@ type laneDef struct{ name, kind string }
 // overviewEntity describes how one of the three tables maps onto a card, so
 // the zone/summary queries below are written once for all three.
 type overviewEntity struct {
-	table        string
-	laneColumn   string // status (prospects/leads) or stage (deals)
+	table string
+	// laneExpr is the SQL value that decides a row's lane: status
+	// (prospects), stage (deals), or for leads, "Converted" once
+	// converted_deal_id is set, else status.
+	laneExpr     string
 	nameColumn   string
 	sourceColumn string
 	valueExpr    string
 	probExpr     string
 	lostExpr     string
 	fromProspect string
-	// laneFilter narrows which rows appear in lanes (not in the summary's
-	// "new" counts): a converted Lead is on the board as its Deal instead.
-	laneFilter string
 }
 
 var (
 	prospectEntity = overviewEntity{
-		table: "prospects", laneColumn: "status", nameColumn: "name", sourceColumn: "source",
+		table: "prospects", laneExpr: "prospects.status", nameColumn: "name", sourceColumn: "source",
 		valueExpr: "0", probExpr: "NULL::int", lostExpr: "NULL::text",
 		fromProspect: "false",
 	}
 	leadEntity = overviewEntity{
-		table: "leads", laneColumn: "status", nameColumn: "name", sourceColumn: "source",
+		table:      "leads",
+		laneExpr:   "CASE WHEN leads.converted_deal_id IS NOT NULL THEN '" + leadConvertedLane + "' ELSE leads.status END",
+		nameColumn: "name", sourceColumn: "source",
 		valueExpr: "0", probExpr: "NULL::int", lostExpr: "NULL::text",
 		fromProspect: "leads.prospect_id IS NOT NULL",
-		laneFilter:   "leads.converted_deal_id IS NULL",
 	}
 	dealEntity = overviewEntity{
-		table: "deals", laneColumn: "stage", nameColumn: "title", sourceColumn: "channel",
+		table: "deals", laneExpr: "deals.stage", nameColumn: "title", sourceColumn: "channel",
 		valueExpr: "deals.value", probExpr: "deals.probability", lostExpr: "deals.lost_reason",
 		fromProspect: "EXISTS (SELECT 1 FROM leads l WHERE l.id = deals.lead_id AND l.prospect_id IS NOT NULL)",
 	}
@@ -189,39 +210,46 @@ func (e overviewEntity) base(db *gorm.DB, c *fiber.Ctx) *gorm.DB {
 	return q
 }
 
-// zone loads every lane of one zone in two queries: a grouped count/value per
-// lane, and the top `limit` cards per lane via ROW_NUMBER(). Rows count
-// toward a lane when they sit in an open lane (any time) or entered a
-// terminal lane inside w.
+// zone loads every lane of one zone. One subquery tags each row with its
+// lane ("bucket"): its own stage when that's one of defs, else "" for the
+// "other" lane. Rows are included when they sit in an open lane (any time),
+// entered a terminal lane inside w, or belong to no lane at all. From that,
+// one grouped query gives each lane's count/value and one ROW_NUMBER() query
+// its top `limit` cards.
 func (e overviewEntity) zone(db *gorm.DB, c *fiber.Ctx, key string, defs []laneDef, w window, limit int) (overviewZone, error) {
-	var open, terminal []string
+	var names, open, terminal []string
 	for _, d := range defs {
-		if d.kind == laneOpen {
-			open = append(open, d.name)
-		} else {
+		names = append(names, d.name)
+		if isTerminalLane(d.kind) {
 			terminal = append(terminal, d.name)
+		} else {
+			open = append(open, d.name)
 		}
 	}
-	lane := e.col(e.laneColumn)
+	lane := e.laneExpr
 	entered := e.col("stage_entered_at")
-	scope := func() *gorm.DB {
-		q := e.base(db, c)
-		if e.laneFilter != "" {
-			q = q.Where(e.laneFilter)
-		}
-		// GORM renders an empty IN list as IN (NULL), which matches nothing.
-		return q.Where(db.Where(lane+" IN ?", open).
-			Or(lane+" IN ? AND "+entered+" >= ? AND "+entered+" < ?", terminal, w.from, w.to))
-	}
+	// GORM renders an empty IN list as IN (NULL), which matches nothing.
+	rows := e.base(db, c).
+		Where(db.Where(lane+" IN ?", open).
+			Or(lane+" IN ? AND "+entered+" >= ? AND "+entered+" < ?", terminal, w.from, w.to).
+			Or(lane+" IS NULL OR "+lane+" NOT IN ?", names)).
+		Joins("LEFT JOIN companies ON companies.id = "+e.col("company_id")).
+		Select(e.col("id")+", "+e.col(e.nameColumn)+" AS name, "+e.col("company_id")+", "+
+			"COALESCE(companies.name, '') AS company_name, "+e.col("assigned_to")+", "+
+			e.col(e.sourceColumn)+" AS source, "+e.valueExpr+" AS value, "+
+			e.probExpr+" AS probability, "+e.lostExpr+" AS lost_reason, "+
+			"("+e.fromProspect+") AS from_prospect, "+entered+", "+e.col("created_at")+", "+
+			"COALESCE("+lane+", '') AS stage, "+
+			"CASE WHEN "+lane+" IN ? THEN "+lane+" ELSE '' END AS bucket", names)
 
 	var aggRows []struct {
-		Lane  string
+		Lane  string `gorm:"column:bucket"`
 		Count int64
 		Value float64
 	}
-	if err := scope().
-		Select(lane + " AS lane, COUNT(*) AS count, COALESCE(SUM(" + e.valueExpr + "), 0) AS value").
-		Group(lane).Scan(&aggRows).Error; err != nil {
+	if err := db.Table("(?) AS z", rows).
+		Select("bucket, COUNT(*) AS count, COALESCE(SUM(value), 0) AS value").
+		Group("bucket").Scan(&aggRows).Error; err != nil {
 		return overviewZone{}, err
 	}
 
@@ -229,26 +257,20 @@ func (e overviewEntity) zone(db *gorm.DB, c *fiber.Ctx, key string, defs []laneD
 	if limit > 0 && len(aggRows) > 0 {
 		// Open lanes list the longest-waiting cards first (what a reviewer
 		// asks about); terminal lanes the most recent closes first.
-		ranked := scope().
-			Select(lane+" AS lane, "+e.col("id")+", "+e.col(e.nameColumn)+" AS name, "+e.col("company_id")+", "+
-				"COALESCE(companies.name, '') AS company_name, "+e.col("assigned_to")+", "+
-				e.col(e.sourceColumn)+" AS source, "+e.valueExpr+" AS value, "+
-				e.probExpr+" AS probability, "+e.lostExpr+" AS lost_reason, "+
-				"("+e.fromProspect+") AS from_prospect, "+entered+", "+e.col("created_at")+", "+
-				"ROW_NUMBER() OVER (PARTITION BY "+lane+" ORDER BY "+
-				"CASE WHEN "+lane+" IN ? THEN -EXTRACT(EPOCH FROM "+entered+") ELSE EXTRACT(EPOCH FROM "+entered+") END "+
-				"NULLS FIRST, "+e.col("id")+") AS rn", terminal).
-			Joins("LEFT JOIN companies ON companies.id = " + e.col("company_id"))
+		ranked := db.Table("(?) AS z", rows).
+			Select("z.*, ROW_NUMBER() OVER (PARTITION BY bucket ORDER BY "+
+				"CASE WHEN bucket IN ? THEN -EXTRACT(EPOCH FROM stage_entered_at) ELSE EXTRACT(EPOCH FROM stage_entered_at) END "+
+				"NULLS FIRST, id) AS rn", terminal)
 		// Card must be a named, exported field: GORM can't populate an
 		// embedded unexported type, and would silently leave it zeroed.
-		var rows []struct {
-			Lane string
+		var ranks []struct {
+			Lane string       `gorm:"column:bucket"`
 			Card overviewCard `gorm:"embedded"`
 		}
-		if err := db.Table("(?) AS ranked", ranked).Where("rn <= ?", limit).Order("rn").Scan(&rows).Error; err != nil {
+		if err := db.Table("(?) AS r", ranked).Where("rn <= ?", limit).Order("rn").Scan(&ranks).Error; err != nil {
 			return overviewZone{}, err
 		}
-		for _, r := range rows {
+		for _, r := range ranks {
 			cardsByLane[r.Lane] = append(cardsByLane[r.Lane], r.Card)
 		}
 	}
@@ -257,16 +279,22 @@ func (e overviewEntity) zone(db *gorm.DB, c *fiber.Ctx, key string, defs []laneD
 	for i, r := range aggRows {
 		aggByLane[r.Lane] = i
 	}
-	z := overviewZone{Key: key, Lanes: make([]overviewLane, 0, len(defs))}
-	for _, d := range defs {
-		l := overviewLane{Name: d.name, Kind: d.kind, Terminal: d.kind != laneOpen, Cards: []overviewCard{}}
-		if i, ok := aggByLane[d.name]; ok {
+	build := func(name, kind string) overviewLane {
+		l := overviewLane{Name: name, Kind: kind, Terminal: isTerminalLane(kind), Cards: []overviewCard{}}
+		if i, ok := aggByLane[name]; ok {
 			l.Count, l.Value = aggRows[i].Count, aggRows[i].Value
 		}
-		if cards := cardsByLane[d.name]; cards != nil {
+		if cards := cardsByLane[name]; cards != nil {
 			l.Cards = cards
 		}
-		z.Lanes = append(z.Lanes, l)
+		return l
+	}
+	z := overviewZone{Key: key, Lanes: make([]overviewLane, 0, len(defs)+1)}
+	for _, d := range defs {
+		z.Lanes = append(z.Lanes, build(d.name, d.kind))
+	}
+	if _, ok := aggByLane[""]; ok {
+		z.Lanes = append(z.Lanes, build("", laneOther))
 	}
 	return z, nil
 }
@@ -364,12 +392,15 @@ func (h *PipelineOverviewHandler) zones(c *fiber.Ctx, w window, limit int) ([]ov
 	}
 	pDefs = append(pDefs, laneDef{string(models.ProspectStatusConverted), laneConverted})
 
-	// Lead statuses are a fixed enum.
+	// Lead statuses are a fixed enum, plus the derived Converted lane (a Lead
+	// that became a Deal, shown here for the period it converted in, the same
+	// way Prospect's Converted lane works one stage earlier).
 	lDefs := []laneDef{
 		{string(models.LeadStatusNew), laneOpen},
 		{string(models.LeadStatusContacted), laneOpen},
 		{string(models.LeadStatusQualified), laneOpen},
 		{string(models.LeadStatusDisqualified), laneLost},
+		{leadConvertedLane, laneConverted},
 	}
 
 	var dStages []models.PipelineStage
