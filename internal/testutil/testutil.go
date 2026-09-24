@@ -101,6 +101,7 @@ var tables = []string{
 	"leads",
 	"prospects",
 	"users",
+	"data_migrations",
 }
 
 var (

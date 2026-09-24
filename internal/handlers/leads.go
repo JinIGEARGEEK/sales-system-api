@@ -89,15 +89,6 @@ func (h *LeadHandler) List(c *fiber.Ctx) error {
 	return utils.List(c, leads, page, perPage, total)
 }
 
-// nextLeadPosition returns the Position to append a card to the end of the
-// given Status lane — mirrors nextDealPosition (deals.go). See Lead.Position's
-// doc comment (models/lead.go) for the full scheme.
-func nextLeadPosition(db *gorm.DB, status models.LeadStatus) float64 {
-	var max float64
-	db.Model(&models.Lead{}).Where("status = ?", status).Select("COALESCE(MAX(position), 0)").Scan(&max)
-	return max + 1
-}
-
 type leadForm struct {
 	Name       string            `json:"name"`
 	CompanyID  *uint             `json:"company_id"`
@@ -229,7 +220,7 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 	if err := h.computeAndClassify(&lead, form.Classification); err != nil {
 		return utils.Internal(c, "Failed to score lead")
 	}
-	lead.Position = nextLeadPosition(h.DB, lead.Status)
+	lead.Position = leadLanes.next(h.DB, lead.Status)
 	if err := h.DB.Create(&lead).Error; err != nil {
 		return utils.Internal(c, "Failed to create lead")
 	}
@@ -497,6 +488,8 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	lead.ReferredByType, lead.ReferredByID = form.ReferredByType, form.ReferredByID
 	if oldStatus != lead.Status {
 		lead.MarkStageEntered()
+		// No drag geometry on the edit form — append to the new lane's end.
+		lead.Position = leadLanes.next(h.DB, lead.Status)
 	}
 
 	// A general-purpose Update PUT doesn't necessarily resend classification
@@ -547,9 +540,11 @@ type leadStatusForm struct {
 // @Param id path int true "Lead ID"
 // @Param body body leadStatusForm true "New status/position"
 // @Success 200 {object} models.Lead
+// @Header 200 {string} X-Lane-Rebalanced "\"true\" when the destination lane was renumbered to 1..n — refetch the lane, its other cards' positions changed"
 // @Failure 400 {object} map[string]interface{} "status is required"
 // @Failure 403 {object} map[string]interface{} "Not authorized to update this lead"
 // @Failure 404 {object} map[string]interface{} "Lead not found"
+// @Failure 422 {object} map[string]interface{} "position out of range (±1e9)"
 // @Router /leads/{id}/status [patch]
 func (h *LeadHandler) UpdateStatus(c *fiber.Ctx) error {
 	var lead models.Lead
@@ -567,26 +562,33 @@ func (h *LeadHandler) UpdateStatus(c *fiber.Ctx) error {
 	if form.Status == "" {
 		return utils.ValidationError(c, "status is required", map[string][]string{"status": {"required"}})
 	}
+	if err := validateCardPosition(c, form.Position); err != nil {
+		return nil
+	}
 
 	oldStatus := lead.Status
 	lead.Status = form.Status
-	if form.Position != nil {
-		lead.Position = *form.Position
-	} else if oldStatus != lead.Status {
-		lead.Position = nextLeadPosition(h.DB, lead.Status)
-	}
+	lead.Position = leadLanes.placeOnMove(h.DB, form.Position, oldStatus != lead.Status, lead.Status, lead.Position)
 	if oldStatus != lead.Status {
 		lead.MarkStageEntered()
 	}
 
+	rebalanced := false
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(&lead).Error; err != nil {
+			return err
+		}
+		var err error
+		if rebalanced, err = leadLanes.rebalanceIfCrowded(tx, lead.Status, lead.ID, &lead.Position); err != nil {
 			return err
 		}
 		return utils.LogStatusChangeActivity(tx, "Lead", oldStatus, lead.Status, lead.CompanyID, lead.CompanyID, middleware.CurrentUserID(c))
 	})
 	if err != nil {
 		return utils.Internal(c, "Failed to update lead status")
+	}
+	if rebalanced {
+		c.Set(LaneRebalancedHeader, "true")
 	}
 	return utils.OK(c, lead)
 }
@@ -783,6 +785,7 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 		}
 		def := models.StageDefaultProbability(deal.Stage)
 		deal.Probability = &def
+		deal.Position = dealLanes.next(tx, deal.Stage)
 		if err := tx.Create(&deal).Error; err != nil {
 			return err
 		}
@@ -801,6 +804,7 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 		// (FR-CRM-123), so conversion is a lane change there.
 		lead.MarkStageEntered()
 		lead.Status = models.LeadStatusQualified
+		lead.Position = leadLanes.next(tx, lead.Status)
 		lead.ConvertedDealID = &deal.ID
 		if err := tx.Save(&lead).Error; err != nil {
 			return err

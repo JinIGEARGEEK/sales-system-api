@@ -166,9 +166,13 @@ type Deal struct {
 	ForecastCategory *ForecastCategory `gorm:"type:varchar(16)" json:"forecast_category"`
 	// Position orders this Deal's Kanban card within its own Stage lane only —
 	// never compared across stages. Set to MAX(position)+1 in its lane on
-	// Create, and recomputed as the midpoint of its new neighbors' Position on
-	// every drag-move (DealHandler.UpdateStage) so no sibling row ever needs
-	// rewriting. See database.AutoMigrate's backfill for pre-existing rows.
+	// Create (including Lead conversion) and on any lane change that carries
+	// no position (the edit form, a dropdown-move), and to the client's
+	// midpoint of its new neighbors on a drag-move (DealHandler.UpdateStage),
+	// so siblings normally never need rewriting. When a drop lands within
+	// 1e-6 of a neighbor the lane is renumbered 1..n instead
+	// (handlers/card_position.go). See database.BackfillCardPositions for
+	// pre-existing rows.
 	Position float64 `gorm:"not null;default:0;index" json:"position"`
 	// When this record entered its current lane; see stage_entered.go.
 	StageEnteredAt *time.Time `gorm:"index" json:"stage_entered_at"`
