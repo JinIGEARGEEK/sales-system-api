@@ -224,7 +224,7 @@ func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 	prospect.Tags = pq.StringArray(form.Tags)
 	prospect.BusinessUnit, prospect.BusinessUnitItem = form.BusinessUnit, form.BusinessUnitItem
 	if oldStatus != prospect.Status {
-		prospect.MarkStageEntered()
+		prospect.MarkStageEntered(string(oldStatus))
 		// No drag geometry on the edit form — append to the new lane's end.
 		prospect.Position = prospectLanes.next(h.DB, prospect.Status)
 	}
@@ -518,7 +518,7 @@ func (h *ProspectHandler) Convert(c *fiber.Ctx) error {
 		fromStatus := prospect.Status
 		prospect.Status = models.ProspectStatusConverted
 		prospect.Position = prospectLanes.next(tx, prospect.Status)
-		prospect.MarkStageEntered()
+		prospect.MarkStageEntered(string(fromStatus))
 		prospect.ConvertedLeadID = &lead.ID
 		if err := tx.Save(&prospect).Error; err != nil {
 			return err

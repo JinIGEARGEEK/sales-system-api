@@ -487,7 +487,7 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	lead.BusinessUnit, lead.BusinessUnitItem = form.BusinessUnit, form.BusinessUnitItem
 	lead.ReferredByType, lead.ReferredByID = form.ReferredByType, form.ReferredByID
 	if oldStatus != lead.Status {
-		lead.MarkStageEntered()
+		lead.MarkStageEntered(string(oldStatus))
 		// No drag geometry on the edit form — append to the new lane's end.
 		lead.Position = leadLanes.next(h.DB, lead.Status)
 	}

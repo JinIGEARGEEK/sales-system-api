@@ -436,7 +436,7 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 		deal.LostReason = nil
 	}
 	if oldStage != deal.Stage {
-		deal.MarkStageEntered()
+		deal.MarkStageEntered(string(oldStage))
 		// No drag geometry on the edit form — append to the new lane's end.
 		deal.Position = dealLanes.next(h.DB, deal.Stage)
 	}
@@ -649,6 +649,9 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	}
 	if !utils.IsActivePipelineStage(h.DB, string(form.Stage)) {
 		return utils.ValidationError(c, "stage is not a valid active pipeline stage", map[string][]string{"stage": {"invalid"}})
+	}
+	if form.LostReason != nil && !models.IsValidLostReason(*form.LostReason) {
+		return utils.ValidationError(c, "lost_reason is invalid", map[string][]string{"lost_reason": {"invalid"}})
 	}
 	if err := validateCardPosition(c, form.Position); err != nil {
 		return nil
