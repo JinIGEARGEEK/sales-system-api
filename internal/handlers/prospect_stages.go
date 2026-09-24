@@ -149,6 +149,7 @@ func (h *ProspectStageHandler) Update(c *fiber.Ctx) error {
 		return utils.ValidationError(c, "stale_days is invalid", staleFields)
 	}
 
+	oldName := stage.Name
 	stage.Name, stage.SortOrder = form.Name, form.SortOrder
 	stage.IsDisqualifiedStage = form.IsDisqualifiedStage
 	if form.IsActive != nil {
@@ -166,7 +167,11 @@ func (h *ProspectStageHandler) Update(c *fiber.Ctx) error {
 				return err
 			}
 		}
-		return tx.Save(&stage).Error
+		if err := tx.Save(&stage).Error; err != nil {
+			return err
+		}
+		// Prospects store their status by name — carry them along on a rename.
+		return renameStageReferences(tx, &models.Prospect{}, "status", oldName, stage.Name)
 	})
 	if err != nil {
 		return utils.Internal(c, "Failed to update prospect stage")

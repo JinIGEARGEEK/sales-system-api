@@ -317,7 +317,7 @@ func (h *DealHandler) Create(c *fiber.Ctx) error {
 		ForecastCategory: form.ForecastCategory,
 	}
 	if deal.Stage == "" {
-		deal.Stage = models.DealStageLead
+		deal.Stage = utils.DefaultPipelineStage(h.DB)
 	}
 	if deal.Status == "" {
 		deal.Status = models.DealStatusOpen

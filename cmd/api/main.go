@@ -123,6 +123,7 @@ func main() {
 	notifier.StartWorkflowRuleReminders(db, cfg)
 	// Daily forecast-accuracy snapshot — see internal/notifier/forecast_snapshots.go.
 	notifier.StartForecastSnapshots(db, cfg)
+	notifier.StartWeeklyDigest(db, cfg)
 
 	log.Fatal(app.Listen(":" + cfg.Port))
 }

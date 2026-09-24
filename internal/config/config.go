@@ -30,6 +30,11 @@ type Config struct {
 	SMTPPassword string
 	SMTPFrom     string
 
+	// AppURL is the frontend's public base URL (e.g. https://crm.example.com),
+	// used to link from emails back into the app. Optional: emails just omit
+	// the link when it's unset.
+	AppURL string
+
 	// Object storage backend for Quote/Contract/Attachment uploads — see
 	// biz_spec/s3-migration-plan.md. "local" (default) writes to disk, fine
 	// for dev/docker-compose but not durable on a stateless deploy platform;
@@ -70,6 +75,7 @@ func Load() *Config {
 		SMTPUsername: getEnv("SMTP_USERNAME", ""),
 		SMTPPassword: getEnv("SMTP_PASSWORD", ""),
 		SMTPFrom:     getEnv("SMTP_FROM", ""),
+		AppURL:       getEnv("APP_URL", ""),
 
 		StorageBackend:    getEnv("STORAGE_BACKEND", "local"),
 		S3Bucket:          getEnv("S3_BUCKET", ""),

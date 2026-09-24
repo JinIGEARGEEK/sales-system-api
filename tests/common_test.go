@@ -75,3 +75,29 @@ func doJSON(t *testing.T, app *fiber.App, req *http.Request, out interface{}) *h
 	}
 	return resp
 }
+
+// keepSeedConfig snapshots the seed-once config tables (pipeline_stages,
+// prospect_stages, app_settings — not truncated between tests, see
+// testutil) and restores them when the test ends, for a test that renames a
+// stage, sets a stale threshold, or flips a setting. Without it the change
+// leaks into every later test in the run.
+func keepSeedConfig(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	var stages []models.PipelineStage
+	var prospectStages []models.ProspectStage
+	var settings []models.AppSettings
+	require.NoError(t, db.Unscoped().Find(&stages).Error)
+	require.NoError(t, db.Unscoped().Find(&prospectStages).Error)
+	require.NoError(t, db.Find(&settings).Error)
+	t.Cleanup(func() {
+		for i := range stages {
+			db.Unscoped().Save(&stages[i])
+		}
+		for i := range prospectStages {
+			db.Unscoped().Save(&prospectStages[i])
+		}
+		for i := range settings {
+			db.Save(&settings[i])
+		}
+	})
+}

@@ -673,6 +673,10 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	settings := authed.Group("/admin/settings")
 	settings.Get("/", salesPipelineRoles, settingsH.Get)
 	settings.Patch("/", adminOnly, settingsH.Update)
+	// Weekly digest (FR-CRM-123): preview what Monday's email would say, or
+	// send it to yourself; the schedule itself is notifier.StartWeeklyDigest.
+	authed.Get("/admin/weekly-digest/preview", adminOnly, settingsH.WeeklyDigestPreview)
+	authed.Post("/admin/weekly-digest/test", adminOnly, settingsH.SendWeeklyDigestTest)
 
 	// Per-quarter/per-year sales targets — Admin-only config, FR-CRM-092.
 	// Overrides AppSettings.QuarterlySalesTarget/4 for a specific period.

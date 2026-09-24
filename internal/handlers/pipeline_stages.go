@@ -154,6 +154,7 @@ func (h *PipelineStageHandler) Update(c *fiber.Ctx) error {
 		return utils.ValidationError(c, "stale_days is invalid", staleFields)
 	}
 
+	oldName := stage.Name
 	stage.Name, stage.SortOrder = form.Name, form.SortOrder
 	stage.IsWonStage, stage.IsLostStage = form.IsWonStage, form.IsLostStage
 	if form.IsActive != nil {
@@ -169,7 +170,12 @@ func (h *PipelineStageHandler) Update(c *fiber.Ctx) error {
 		if err := clearOtherTerminalStages(tx, form, stage.ID); err != nil {
 			return err
 		}
-		return tx.Save(&stage).Error
+		if err := tx.Save(&stage).Error; err != nil {
+			return err
+		}
+		// Deals store their stage by name, so a rename must carry them along
+		// or they'd fall out of every lane (and fail validation on save).
+		return renameStageReferences(tx, &models.Deal{}, "stage", oldName, stage.Name)
 	})
 	if err != nil {
 		return utils.Internal(c, "Failed to update pipeline stage")
