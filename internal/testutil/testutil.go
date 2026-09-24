@@ -165,38 +165,56 @@ func ensureDatabase(cfg *config.Config) error {
 	return nil
 }
 
+// advisoryLock takes the cross-process testDBLockKey advisory lock on a
+// dedicated connection from sqlDB and returns the function that releases it.
+// Postgres scopes advisory locks to the current database, so the lock only
+// excludes holders connected to the same database as sqlDB.
+func advisoryLock(ctx context.Context, sqlDB *sql.DB) (func(), error) {
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reserve a dedicated connection for the advisory lock: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", testDBLockKey); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("acquire advisory lock: %w", err)
+	}
+	return func() {
+		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", testDBLockKey)
+		_ = conn.Close()
+	}, nil
+}
+
 // setup runs once per test binary (per sync.Once), but `go test ./...` runs
 // each package's test binary as its own OS process against the same shared
-// database — so on a fresh database (e.g. CI's ephemeral Postgres container,
-// every run) multiple packages' setup() calls can run concurrently and race
-// on ensureDatabase/AutoMigrate's CREATE DATABASE/CREATE TABLE/CREATE TYPE,
-// surfacing as "duplicate key value violates unique constraint
-// pg_type_typname_nsp_index". Guard the whole sequence with the same
-// cross-process advisory lock acquireDBLock uses for tests themselves, held
-// on a dedicated connection for just this setup, so only one process's
-// setup() runs at a time.
+// database — so multiple packages' setup() calls can run concurrently with
+// each other and with other processes' tests. Two locks guard it, because
+// Postgres scopes advisory locks per database:
+//
+//   - CREATE DATABASE (ensureDatabase) runs under the lock on the "postgres"
+//     admin database, since the test database may not exist yet. Otherwise
+//     concurrent setups on a fresh database (e.g. CI's ephemeral Postgres,
+//     every run) race and fail with "duplicate key value violates unique
+//     constraint pg_type_typname_nsp_index".
+//   - AutoMigrate and the seeds run under the lock on the test database
+//     itself, the same lock acquireDBLock holds around each test. Otherwise
+//     one process's AutoMigrate backfills run alongside another process's
+//     test and deadlock.
 func setup() {
 	testCfg = buildConfig()
-
-	lockConn, err := sql.Open("postgres", adminDSN(testCfg))
-	if err != nil {
-		panic(fmt.Sprintf("testutil: open setup lock conn: %v", err))
-	}
-	defer lockConn.Close()
-
 	ctx := context.Background()
-	conn, err := lockConn.Conn(ctx)
+
+	adminDB, err := sql.Open("postgres", adminDSN(testCfg))
 	if err != nil {
-		panic(fmt.Sprintf("testutil: reserve setup lock conn: %v", err))
+		panic(fmt.Sprintf("testutil: open admin conn: %v", err))
 	}
-	defer func() { _ = conn.Close() }()
-
-	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", testDBLockKey); err != nil {
-		panic(fmt.Sprintf("testutil: acquire setup lock: %v", err))
+	defer adminDB.Close()
+	unlockAdmin, err := advisoryLock(ctx, adminDB)
+	if err != nil {
+		panic(fmt.Sprintf("testutil: setup lock on admin database: %v", err))
 	}
-	defer func() { _, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", testDBLockKey) }()
-
-	if err := ensureDatabase(testCfg); err != nil {
+	err = ensureDatabase(testCfg)
+	unlockAdmin()
+	if err != nil {
 		panic(fmt.Sprintf("testutil: ensure test database: %v", err))
 	}
 
@@ -204,6 +222,15 @@ func setup() {
 	if err != nil {
 		panic(fmt.Sprintf("testutil: connect to test database: %v", err))
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		panic(fmt.Sprintf("testutil: get underlying *sql.DB: %v", err))
+	}
+	unlock, err := advisoryLock(ctx, sqlDB)
+	if err != nil {
+		panic(fmt.Sprintf("testutil: setup lock on test database: %v", err))
+	}
+	defer unlock()
 	if err := database.AutoMigrate(db); err != nil {
 		panic(fmt.Sprintf("testutil: automigrate: %v", err))
 	}
@@ -330,18 +357,9 @@ func acquireDBLock(t *testing.T) {
 	t.Helper()
 	sqlDB, err := testDB.DB()
 	require.NoError(t, err, "get underlying *sql.DB")
-
-	ctx := context.Background()
-	conn, err := sqlDB.Conn(ctx)
-	require.NoError(t, err, "reserve a dedicated connection for the advisory lock")
-
-	_, err = conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", testDBLockKey)
+	unlock, err := advisoryLock(context.Background(), sqlDB)
 	require.NoError(t, err, "acquire cross-process test DB lock")
-
-	t.Cleanup(func() {
-		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", testDBLockKey)
-		_ = conn.Close()
-	})
+	t.Cleanup(unlock)
 }
 
 // Config exposes the test config (in particular JWTSecret) to tests that need
