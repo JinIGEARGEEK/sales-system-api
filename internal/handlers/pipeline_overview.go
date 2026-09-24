@@ -81,15 +81,25 @@ type overviewCard struct {
 	// The record's own stage/status value — what an "other" lane card shows,
 	// since that lane's name doesn't say.
 	Stage string `json:"stage"`
+	// The lane it left on its last move ("" if it has never moved), and
+	// whether that move went forward or backward in this zone's lane order
+	// ("forward" / "backward" / "" when it can't be said, e.g. out of a
+	// retired stage or back out of Lost). Computed per zone; see laneRanks.
+	PreviousStage string `json:"previous_stage"`
+	Direction     string `json:"direction" gorm:"-"`
 }
 
 type overviewLane struct {
-	Name     string         `json:"name"`
-	Kind     string         `json:"kind"`
-	Terminal bool           `json:"terminal"`
-	Count    int64          `json:"count"`
-	Value    float64        `json:"value"`
-	Cards    []overviewCard `json:"cards"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	Terminal bool   `json:"terminal"`
+	// Days a card may sit in this lane before it's stale: the stage's own
+	// StaleDays, else models.DefaultStaleDays. 0 on terminal lanes, which
+	// are never stale.
+	StaleDays int            `json:"stale_days"`
+	Count     int64          `json:"count"`
+	Value     float64        `json:"value"`
+	Cards     []overviewCard `json:"cards"`
 }
 
 type overviewZone struct {
@@ -115,12 +125,37 @@ type overviewOpenPipeline struct {
 	WeightedValue float64 `json:"weighted_value"`
 }
 
+// overviewHighlight is the board-wide Stale/Moved/Slipped counts, exact over
+// every open-lane record (not just the cards returned per lane), so the
+// page's highlight buttons and stale-Deals banner never undercount.
+type overviewHighlight struct {
+	Stale          int64   `json:"stale"`
+	Moved          int64   `json:"moved"`
+	Slipped        int64   `json:"slipped"`
+	StaleDeals     int64   `json:"stale_deals"`
+	StaleDealValue float64 `json:"stale_deal_value"`
+}
+
+// overviewCohort: of the records created in the period (Cohort), how many
+// have reached the next funnel step so far (Converted).
+type overviewCohort struct {
+	Cohort    int64 `json:"cohort"`
+	Converted int64 `json:"converted"`
+}
+
+type overviewConversion struct {
+	ProspectToLead overviewCohort `json:"prospect_to_lead"`
+	LeadToDeal     overviewCohort `json:"lead_to_deal"`
+	DealToWon      overviewCohort `json:"deal_to_won"`
+}
+
 type overviewSummary struct {
 	NewProspects overviewCompare      `json:"new_prospects"`
 	NewLeads     overviewCompare      `json:"new_leads"`
 	NewDeals     overviewCompare      `json:"new_deals"`
 	Won          overviewWon          `json:"won"`
 	OpenPipeline overviewOpenPipeline `json:"open_pipeline"`
+	Conversion   overviewConversion   `json:"conversion"`
 }
 
 type overviewPeriod struct {
@@ -131,16 +166,81 @@ type overviewPeriod struct {
 }
 
 type PipelineOverview struct {
-	Period  overviewPeriod  `json:"period"`
-	Summary overviewSummary `json:"summary"`
-	Zones   []overviewZone  `json:"zones"`
+	Period    overviewPeriod    `json:"period"`
+	Summary   overviewSummary   `json:"summary"`
+	Highlight overviewHighlight `json:"highlight"`
+	Zones     []overviewZone    `json:"zones"`
 }
 
 // window is a half-open [from, to) time range.
 type window struct{ from, to time.Time }
 
-// laneDef is one lane of a zone, in display order.
-type laneDef struct{ name, kind string }
+// laneDef is one lane of a zone, in display order. staleDays is only used on
+// open lanes.
+type laneDef struct {
+	name, kind string
+	staleDays  int
+}
+
+// Lane ranks give a move its direction: open lanes rank by display order,
+// won/converted rank above all of them (so reopening one is a move
+// backward), and lost lanes have no rank (leaving Lost is a reopen, neither
+// a slip nor progress).
+const rankClosedWon = 1 << 20
+
+func laneRanks(defs []laneDef) map[string]int {
+	ranks := map[string]int{}
+	for i, d := range defs {
+		switch d.kind {
+		case laneOpen:
+			ranks[d.name] = i
+		case laneWon, laneConverted:
+			ranks[d.name] = rankClosedWon
+		}
+	}
+	return ranks
+}
+
+// moveDirection is the direction of a move from `from` to `to`, or "" when
+// either end has no rank.
+func moveDirection(ranks map[string]int, from, to string) string {
+	f, okFrom := ranks[from]
+	t, okTo := ranks[to]
+	switch {
+	case !okFrom || !okTo || f == t:
+		return ""
+	case t > f:
+		return "forward"
+	default:
+		return "backward"
+	}
+}
+
+// rankCase renders ranks as a SQL CASE over expr (NULL for no rank), plus
+// its bind args, so the Slipped count uses the exact same order as the
+// per-card Direction.
+func rankCase(expr string, ranks map[string]int) (string, []interface{}) {
+	if len(ranks) == 0 {
+		return "NULL::int", nil
+	}
+	var b strings.Builder
+	args := make([]interface{}, 0, len(ranks)*2)
+	b.WriteString("CASE " + expr)
+	for name, r := range ranks {
+		b.WriteString(" WHEN ? THEN ?::int")
+		args = append(args, name, r)
+	}
+	b.WriteString(" END")
+	return b.String(), args
+}
+
+// staleDaysOrDefault resolves a stage's configured threshold.
+func staleDaysOrDefault(v *int) int {
+	if v != nil && *v > 0 {
+		return *v
+	}
+	return models.DefaultStaleDays
+}
 
 // overviewEntity describes how one of the three tables maps onto a card, so
 // the zone/summary queries below are written once for all three.
@@ -214,9 +314,10 @@ func (e overviewEntity) base(db *gorm.DB, c *fiber.Ctx) *gorm.DB {
 // lane ("bucket"): its own stage when that's one of defs, else "" for the
 // "other" lane. Rows are included when they sit in an open lane (any time),
 // entered a terminal lane inside w, or belong to no lane at all. From that,
-// one grouped query gives each lane's count/value and one ROW_NUMBER() query
-// its top `limit` cards.
-func (e overviewEntity) zone(db *gorm.DB, c *fiber.Ctx, key string, defs []laneDef, w window, limit int) (overviewZone, error) {
+// one grouped query gives each lane's count/value, one ROW_NUMBER() query
+// its top `limit` cards, and one more the zone's exact Stale/Moved/Slipped
+// counts over all its open-lane rows.
+func (e overviewEntity) zone(db *gorm.DB, c *fiber.Ctx, key string, defs []laneDef, w window, limit int) (overviewZone, overviewHighlight, error) {
 	var names, open, terminal []string
 	for _, d := range defs {
 		names = append(names, d.name)
@@ -228,6 +329,7 @@ func (e overviewEntity) zone(db *gorm.DB, c *fiber.Ctx, key string, defs []laneD
 	}
 	lane := e.laneExpr
 	entered := e.col("stage_entered_at")
+	laneRank := laneRanks(defs)
 	// GORM renders an empty IN list as IN (NULL), which matches nothing.
 	rows := e.base(db, c).
 		Where(db.Where(lane+" IN ?", open).
@@ -239,7 +341,7 @@ func (e overviewEntity) zone(db *gorm.DB, c *fiber.Ctx, key string, defs []laneD
 			e.col(e.sourceColumn)+" AS source, "+e.valueExpr+" AS value, "+
 			e.probExpr+" AS probability, "+e.lostExpr+" AS lost_reason, "+
 			"("+e.fromProspect+") AS from_prospect, "+entered+", "+e.col("created_at")+", "+
-			"COALESCE("+lane+", '') AS stage, "+
+			"COALESCE("+lane+", '') AS stage, COALESCE("+e.col("previous_stage")+", '') AS previous_stage, "+
 			"CASE WHEN "+lane+" IN ? THEN "+lane+" ELSE '' END AS bucket", names)
 
 	var aggRows []struct {
@@ -250,7 +352,7 @@ func (e overviewEntity) zone(db *gorm.DB, c *fiber.Ctx, key string, defs []laneD
 	if err := db.Table("(?) AS z", rows).
 		Select("bucket, COUNT(*) AS count, COALESCE(SUM(value), 0) AS value").
 		Group("bucket").Scan(&aggRows).Error; err != nil {
-		return overviewZone{}, err
+		return overviewZone{}, overviewHighlight{}, err
 	}
 
 	cardsByLane := map[string][]overviewCard{}
@@ -268,19 +370,28 @@ func (e overviewEntity) zone(db *gorm.DB, c *fiber.Ctx, key string, defs []laneD
 			Card overviewCard `gorm:"embedded"`
 		}
 		if err := db.Table("(?) AS r", ranked).Where("rn <= ?", limit).Order("rn").Scan(&ranks).Error; err != nil {
-			return overviewZone{}, err
+			return overviewZone{}, overviewHighlight{}, err
 		}
 		for _, r := range ranks {
+			r.Card.Direction = moveDirection(laneRank, r.Card.PreviousStage, r.Card.Stage)
 			cardsByLane[r.Lane] = append(cardsByLane[r.Lane], r.Card)
 		}
+	}
+
+	hl, err := zoneHighlight(db, rows, defs, laneRank, w)
+	if err != nil {
+		return overviewZone{}, overviewHighlight{}, err
 	}
 
 	aggByLane := map[string]int{}
 	for i, r := range aggRows {
 		aggByLane[r.Lane] = i
 	}
-	build := func(name, kind string) overviewLane {
+	build := func(name, kind string, staleDays int) overviewLane {
 		l := overviewLane{Name: name, Kind: kind, Terminal: isTerminalLane(kind), Cards: []overviewCard{}}
+		if !l.Terminal {
+			l.StaleDays = staleDays
+		}
 		if i, ok := aggByLane[name]; ok {
 			l.Count, l.Value = aggRows[i].Count, aggRows[i].Value
 		}
@@ -291,12 +402,70 @@ func (e overviewEntity) zone(db *gorm.DB, c *fiber.Ctx, key string, defs []laneD
 	}
 	z := overviewZone{Key: key, Lanes: make([]overviewLane, 0, len(defs)+1)}
 	for _, d := range defs {
-		z.Lanes = append(z.Lanes, build(d.name, d.kind))
+		z.Lanes = append(z.Lanes, build(d.name, d.kind, d.staleDays))
 	}
 	if _, ok := aggByLane[""]; ok {
-		z.Lanes = append(z.Lanes, build("", laneOther))
+		z.Lanes = append(z.Lanes, build("", laneOther, models.DefaultStaleDays))
 	}
-	return z, nil
+	return z, hl, nil
+}
+
+// zoneHighlight counts a zone's open-lane rows (open lanes plus "other")
+// that are stale (past their lane's threshold), moved (changed lane inside
+// w, not merely created there), and slipped (moved backward). The stale
+// cutoff is local midnight minus the threshold, so "stale" means the same
+// whole calendar days the page shows on each card.
+func zoneHighlight(db *gorm.DB, rows *gorm.DB, defs []laneDef, ranks map[string]int, w window) (overviewHighlight, error) {
+	now := time.Now()
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	cutoffOf := func(days int) time.Time { return midnight.AddDate(0, 0, -days) }
+
+	var terminal []string
+	var cutoff strings.Builder
+	cutoffArgs := []interface{}{}
+	cutoff.WriteString("CASE bucket")
+	for _, d := range defs {
+		if isTerminalLane(d.kind) {
+			terminal = append(terminal, d.name)
+			continue
+		}
+		cutoff.WriteString(" WHEN ? THEN ?::timestamptz")
+		cutoffArgs = append(cutoffArgs, d.name, cutoffOf(d.staleDays))
+	}
+	cutoff.WriteString(" ELSE ?::timestamptz END")
+	cutoffArgs = append(cutoffArgs, cutoffOf(models.DefaultStaleDays))
+
+	curRank, curArgs := rankCase("stage", ranks)
+	prevRank, prevArgs := rankCase("previous_stage", ranks)
+
+	stale := "COALESCE(stage_entered_at, created_at) < " + cutoff.String()
+	moved := "stage_entered_at >= ? AND stage_entered_at < ? AND stage_entered_at > created_at + interval '1 minute'"
+	slipped := moved + " AND (" + prevRank + ") > (" + curRank + ")"
+
+	args := []interface{}{}
+	args = append(args, cutoffArgs...)
+	args = append(args, w.from, w.to)
+	args = append(args, w.from, w.to)
+	args = append(args, prevArgs...)
+	args = append(args, curArgs...)
+	args = append(args, cutoffArgs...)
+
+	var hl struct {
+		Stale      int64
+		Moved      int64
+		Slipped    int64
+		StaleValue float64
+	}
+	err := db.Table("(?) AS z", rows).Where("bucket NOT IN ?", terminal).
+		Select("COUNT(*) FILTER (WHERE "+stale+") AS stale, "+
+			"COUNT(*) FILTER (WHERE "+moved+") AS moved, "+
+			"COUNT(*) FILTER (WHERE "+slipped+") AS slipped, "+
+			"COALESCE(SUM(value) FILTER (WHERE "+stale+"), 0) AS stale_value", args...).
+		Scan(&hl).Error
+	if err != nil {
+		return overviewHighlight{}, err
+	}
+	return overviewHighlight{Stale: hl.Stale, Moved: hl.Moved, Slipped: hl.Slipped, StaleDealValue: hl.StaleValue}, nil
 }
 
 // compareCounts counts rows whose `column` falls in cur and in prev, in one pass.
@@ -355,7 +524,7 @@ func (h *PipelineOverviewHandler) Overview(c *fiber.Ctx) error {
 		limit = min(n, overviewMaxCardLimit)
 	}
 
-	zones, err := h.zones(c, cur, limit)
+	zones, highlight, err := h.zones(c, cur, limit)
 	if err != nil {
 		return utils.Internal(c, "Failed to load pipeline overview")
 	}
@@ -370,17 +539,18 @@ func (h *PipelineOverviewHandler) Overview(c *fiber.Ctx) error {
 			DateFrom: cur.from.Format(day), DateTo: cur.to.AddDate(0, 0, -1).Format(day),
 			PrevDateFrom: prev.from.Format(day), PrevDateTo: prev.to.AddDate(0, 0, -1).Format(day),
 		},
-		Summary: summary,
-		Zones:   zones,
+		Summary:   summary,
+		Highlight: highlight,
+		Zones:     zones,
 	})
 }
 
-func (h *PipelineOverviewHandler) zones(c *fiber.Ctx, w window, limit int) ([]overviewZone, error) {
+func (h *PipelineOverviewHandler) zones(c *fiber.Ctx, w window, limit int) ([]overviewZone, overviewHighlight, error) {
 	// Prospect lanes follow the Admin-configured ProspectStage list, plus the
 	// reserved system-set "Converted" status (never a ProspectStage row).
 	var pStages []models.ProspectStage
 	if err := h.DB.Where("is_active = ?", true).Order("sort_order, id").Find(&pStages).Error; err != nil {
-		return nil, err
+		return nil, overviewHighlight{}, err
 	}
 	pDefs := make([]laneDef, 0, len(pStages)+1)
 	for _, s := range pStages {
@@ -388,24 +558,25 @@ func (h *PipelineOverviewHandler) zones(c *fiber.Ctx, w window, limit int) ([]ov
 		if s.IsDisqualifiedStage {
 			kind = laneLost
 		}
-		pDefs = append(pDefs, laneDef{s.Name, kind})
+		pDefs = append(pDefs, laneDef{s.Name, kind, staleDaysOrDefault(s.StaleDays)})
 	}
-	pDefs = append(pDefs, laneDef{string(models.ProspectStatusConverted), laneConverted})
+	pDefs = append(pDefs, laneDef{string(models.ProspectStatusConverted), laneConverted, 0})
 
 	// Lead statuses are a fixed enum, plus the derived Converted lane (a Lead
 	// that became a Deal, shown here for the period it converted in, the same
-	// way Prospect's Converted lane works one stage earlier).
+	// way Prospect's Converted lane works one stage earlier). No config row
+	// to hold a threshold, so they use the default.
 	lDefs := []laneDef{
-		{string(models.LeadStatusNew), laneOpen},
-		{string(models.LeadStatusContacted), laneOpen},
-		{string(models.LeadStatusQualified), laneOpen},
-		{string(models.LeadStatusDisqualified), laneLost},
-		{leadConvertedLane, laneConverted},
+		{string(models.LeadStatusNew), laneOpen, models.DefaultStaleDays},
+		{string(models.LeadStatusContacted), laneOpen, models.DefaultStaleDays},
+		{string(models.LeadStatusQualified), laneOpen, models.DefaultStaleDays},
+		{string(models.LeadStatusDisqualified), laneLost, 0},
+		{leadConvertedLane, laneConverted, 0},
 	}
 
 	var dStages []models.PipelineStage
 	if err := h.DB.Where("is_active = ?", true).Order("sort_order, id").Find(&dStages).Error; err != nil {
-		return nil, err
+		return nil, overviewHighlight{}, err
 	}
 	dDefs := make([]laneDef, 0, len(dStages))
 	for _, s := range dStages {
@@ -416,10 +587,11 @@ func (h *PipelineOverviewHandler) zones(c *fiber.Ctx, w window, limit int) ([]ov
 		case s.IsLostStage:
 			kind = laneLost
 		}
-		dDefs = append(dDefs, laneDef{s.Name, kind})
+		dDefs = append(dDefs, laneDef{s.Name, kind, staleDaysOrDefault(s.StaleDays)})
 	}
 
 	zones := make([]overviewZone, 0, 3)
+	var total overviewHighlight
 	for _, z := range []struct {
 		key    string
 		entity overviewEntity
@@ -429,13 +601,19 @@ func (h *PipelineOverviewHandler) zones(c *fiber.Ctx, w window, limit int) ([]ov
 		{"lead", leadEntity, lDefs},
 		{"deal", dealEntity, dDefs},
 	} {
-		zone, err := z.entity.zone(h.DB, c, z.key, z.defs, w, limit)
+		zone, hl, err := z.entity.zone(h.DB, c, z.key, z.defs, w, limit)
 		if err != nil {
-			return nil, err
+			return nil, overviewHighlight{}, err
 		}
 		zones = append(zones, zone)
+		total.Stale += hl.Stale
+		total.Moved += hl.Moved
+		total.Slipped += hl.Slipped
+		if z.key == "deal" {
+			total.StaleDeals, total.StaleDealValue = hl.Stale, hl.StaleDealValue
+		}
 	}
-	return zones, nil
+	return zones, total, nil
 }
 
 func (h *PipelineOverviewHandler) summary(c *fiber.Ctx, cur, prev window) (overviewSummary, error) {
@@ -464,6 +642,27 @@ func (h *PipelineOverviewHandler) summary(c *fiber.Ctx, cur, prev window) (overv
 			cur.from, cur.to, prev.from, prev.to, cur.from, cur.to, prev.from, prev.to).
 		Scan(&s.Won).Error; err != nil {
 		return s, err
+	}
+
+	// Cohort conversion: of the records created in the period, how many
+	// have reached the next step so far. Unlike comparing two "new" counts,
+	// this can't exceed 100%.
+	for _, co := range []struct {
+		entity    overviewEntity
+		converted string
+		dst       *overviewCohort
+	}{
+		{prospectEntity, "prospects.converted_lead_id IS NOT NULL", &s.Conversion.ProspectToLead},
+		{leadEntity, "leads.converted_deal_id IS NOT NULL", &s.Conversion.LeadToDeal},
+		{dealEntity, "deals.status = 'won'", &s.Conversion.DealToWon},
+	} {
+		created := co.entity.col("created_at")
+		if err := co.entity.base(h.DB, c).
+			Where(created+" >= ? AND "+created+" < ?", cur.from, cur.to).
+			Select("COUNT(*) AS cohort, COUNT(*) FILTER (WHERE " + co.converted + ") AS converted").
+			Scan(co.dst).Error; err != nil {
+			return s, err
+		}
 	}
 
 	if err := dealEntity.base(h.DB, c).Where("deals.status = ?", models.DealStatusOpen).

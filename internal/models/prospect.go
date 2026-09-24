@@ -58,6 +58,9 @@ type Prospect struct {
 	Position float64 `gorm:"not null;default:0;index" json:"position"`
 	// When this record entered its current lane; see stage_entered.go.
 	StageEnteredAt *time.Time `gorm:"index" json:"stage_entered_at"`
+	// The lane this record was in before its last move (see
+	// MarkStageEntered); nil if it has never moved.
+	PreviousStage *string `gorm:"type:varchar(64)" json:"previous_stage"`
 }
 
 func (Prospect) TableName() string { return "prospects" }

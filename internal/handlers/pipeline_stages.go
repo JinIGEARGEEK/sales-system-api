@@ -97,6 +97,10 @@ func (h *PipelineStageHandler) Create(c *fiber.Ctx) error {
 	if fields, msg := form.validate(); fields != nil {
 		return utils.ValidationError(c, msg, fields)
 	}
+	staleDays, _, staleFields := staleDaysFromBody(c)
+	if staleFields != nil {
+		return utils.ValidationError(c, "stale_days is invalid", staleFields)
+	}
 
 	actorID := middleware.CurrentUserID(c)
 	stage := models.PipelineStage{
@@ -104,6 +108,7 @@ func (h *PipelineStageHandler) Create(c *fiber.Ctx) error {
 		IsActive:   form.IsActive == nil || *form.IsActive,
 		IsWonStage: form.IsWonStage, IsLostStage: form.IsLostStage,
 	}
+	stage.StaleDays = staleDays
 	stage.CreatedBy = &actorID
 	stage.UpdatedBy = &actorID
 
@@ -144,11 +149,18 @@ func (h *PipelineStageHandler) Update(c *fiber.Ctx) error {
 	if fields, msg := form.validate(); fields != nil {
 		return utils.ValidationError(c, msg, fields)
 	}
+	staleDays, staleDaysSent, staleFields := staleDaysFromBody(c)
+	if staleFields != nil {
+		return utils.ValidationError(c, "stale_days is invalid", staleFields)
+	}
 
 	stage.Name, stage.SortOrder = form.Name, form.SortOrder
 	stage.IsWonStage, stage.IsLostStage = form.IsWonStage, form.IsLostStage
 	if form.IsActive != nil {
 		stage.IsActive = *form.IsActive
+	}
+	if staleDaysSent {
+		stage.StaleDays = staleDays
 	}
 	actorID := middleware.CurrentUserID(c)
 	stage.UpdatedBy = &actorID

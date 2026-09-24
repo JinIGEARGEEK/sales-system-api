@@ -487,7 +487,7 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	lead.BusinessUnit, lead.BusinessUnitItem = form.BusinessUnit, form.BusinessUnitItem
 	lead.ReferredByType, lead.ReferredByID = form.ReferredByType, form.ReferredByID
 	if oldStatus != lead.Status {
-		lead.MarkStageEntered()
+		lead.MarkStageEntered(string(oldStatus))
 		// No drag geometry on the edit form — append to the new lane's end.
 		lead.Position = leadLanes.next(h.DB, lead.Status)
 	}
@@ -570,7 +570,7 @@ func (h *LeadHandler) UpdateStatus(c *fiber.Ctx) error {
 	lead.Status = form.Status
 	lead.Position = leadLanes.placeOnMove(h.DB, form.Position, oldStatus != lead.Status, lead.Status, lead.Position)
 	if oldStatus != lead.Status {
-		lead.MarkStageEntered()
+		lead.MarkStageEntered(string(oldStatus))
 	}
 
 	rebalanced := false
@@ -802,7 +802,7 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 		// Always restamped, even if already Qualified: on the Overview
 		// Pipeline a converted Lead moves into its own Converted lane
 		// (FR-CRM-123), so conversion is a lane change there.
-		lead.MarkStageEntered()
+		lead.MarkStageEntered(string(lead.Status))
 		lead.Status = models.LeadStatusQualified
 		lead.Position = leadLanes.next(tx, lead.Status)
 		lead.ConvertedDealID = &deal.ID

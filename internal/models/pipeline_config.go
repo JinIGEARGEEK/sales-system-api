@@ -16,7 +16,16 @@ type PipelineStage struct {
 	IsActive    bool   `gorm:"not null;default:true;index" json:"is_active"`
 	IsWonStage  bool   `gorm:"not null;default:false" json:"is_won_stage"`
 	IsLostStage bool   `gorm:"not null;default:false" json:"is_lost_stage"`
+	// StaleDays is how long a Deal may sit in this stage before the Overview
+	// Pipeline flags it stale (FR-CRM-123). Nil means the default
+	// (DefaultStaleDays). Meaningless on a won/lost stage, which is never
+	// stale.
+	StaleDays *int `json:"stale_days"`
 }
+
+// DefaultStaleDays is the stale threshold for any stage without its own
+// StaleDays, and for Lead statuses (a fixed enum with no config row).
+const DefaultStaleDays = 14
 
 func (PipelineStage) TableName() string { return "pipeline_stages" }
 
@@ -89,6 +98,8 @@ type ProspectStage struct {
 	SortOrder           int    `gorm:"not null;default:0;index" json:"sort_order"`
 	IsActive            bool   `gorm:"not null;default:true;index" json:"is_active"`
 	IsDisqualifiedStage bool   `gorm:"not null;default:false" json:"is_disqualified_stage"`
+	// StaleDays — same as PipelineStage.StaleDays, for Prospects.
+	StaleDays *int `json:"stale_days"`
 }
 
 func (ProspectStage) TableName() string { return "prospect_stages" }
