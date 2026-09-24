@@ -496,7 +496,7 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	lead.BusinessUnit, lead.BusinessUnitItem = form.BusinessUnit, form.BusinessUnitItem
 	lead.ReferredByType, lead.ReferredByID = form.ReferredByType, form.ReferredByID
 	if oldStatus != lead.Status {
-		lead.MarkStageEntered()
+		lead.MarkStageEntered(string(oldStatus))
 	}
 
 	// A general-purpose Update PUT doesn't necessarily resend classification
@@ -576,7 +576,7 @@ func (h *LeadHandler) UpdateStatus(c *fiber.Ctx) error {
 		lead.Position = nextLeadPosition(h.DB, lead.Status)
 	}
 	if oldStatus != lead.Status {
-		lead.MarkStageEntered()
+		lead.MarkStageEntered(string(oldStatus))
 	}
 
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
@@ -799,7 +799,7 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 		// Always restamped, even if already Qualified: on the Overview
 		// Pipeline a converted Lead moves into its own Converted lane
 		// (FR-CRM-123), so conversion is a lane change there.
-		lead.MarkStageEntered()
+		lead.MarkStageEntered(string(lead.Status))
 		lead.Status = models.LeadStatusQualified
 		lead.ConvertedDealID = &deal.ID
 		if err := tx.Save(&lead).Error; err != nil {

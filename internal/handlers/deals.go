@@ -445,7 +445,7 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 		deal.LostReason = nil
 	}
 	if oldStage != deal.Stage {
-		deal.MarkStageEntered()
+		deal.MarkStageEntered(string(oldStage))
 	}
 
 	// Previously a plain h.DB.Save with no audit trail at all — a Stage
@@ -615,6 +615,11 @@ type dealStageForm struct {
 	// dropdown-move, is distinguishable from an explicit 0) — see
 	// Deal.Position's doc comment (models/deal.go).
 	Position *float64 `json:"position"`
+	// LostReason is optional here (the Kanban drag doesn't collect one), but
+	// when sent on a move into a Lost stage it's validated and saved — the
+	// Overview Pipeline's side panel asks for it (FR-CRM-123). Ignored on a
+	// move into any other stage.
+	LostReason *models.LostReason `json:"lost_reason"`
 }
 
 // UpdateStage godoc
@@ -650,6 +655,9 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	if !utils.IsActivePipelineStage(h.DB, string(form.Stage)) {
 		return utils.ValidationError(c, "stage is not a valid active pipeline stage", map[string][]string{"stage": {"invalid"}})
 	}
+	if form.LostReason != nil && !models.IsValidLostReason(*form.LostReason) {
+		return utils.ValidationError(c, "lost_reason is invalid", map[string][]string{"lost_reason": {"invalid"}})
+	}
 
 	// isWon/isLost prefer the configured PipelineStage row's flags (so a custom,
 	// admin-added stage can behave like Won/Lost without being named exactly
@@ -680,6 +688,9 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 		// real "accepted" flow to hang the side effect off.
 	case isLost:
 		deal.Status = models.DealStatusLost
+		if form.LostReason != nil {
+			deal.LostReason = form.LostReason
+		}
 	default:
 		if deal.Status != models.DealStatusWon && deal.Status != models.DealStatusLost {
 			deal.Status = models.DealStatusOpen
@@ -687,15 +698,15 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	}
 	// Re-derive probability for the new stage on every drag/quick-move (Kanban
 	// has no probability input of its own) — the Deal's Overview tab can still
-	// override it manually afterwards. lost_reason isn't collected by this
-	// quick-move endpoint (only the full Update form validates it as
-	// required-when-Lost) so it's deliberately left untouched here.
+	// override it manually afterwards. lost_reason is optional on this
+	// quick-move endpoint (only the full Update form requires it when Lost):
+	// saved above when sent with a move into Lost, otherwise left untouched.
 	if oldStage != deal.Stage {
 		def := h.defaultProbabilityFor(deal.Stage)
 		deal.Probability = &def
 		catDef := h.defaultForecastCategoryFor(deal.Stage)
 		deal.ForecastCategory = &catDef
-		deal.MarkStageEntered()
+		deal.MarkStageEntered(string(oldStage))
 	}
 
 	// The client always sends its own computed Position when this is a real

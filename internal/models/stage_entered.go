@@ -14,7 +14,9 @@ import (
 //
 // Stamped by the BeforeCreate hooks below on insert, and by each handler that
 // can change a stage (Update, UpdateStatus/UpdateStage, Convert) via
-// MarkStageEntered, only when the stage actually changed. A same-lane reorder
+// MarkStageEntered, only when the stage actually changed. MarkStageEntered
+// also records PreviousStage (the lane it left); it stays nil on a record
+// that has never moved. A same-lane reorder
 // or an unrelated field edit leaves it alone. Rows created before this column
 // existed are backfilled once by database.backfillStageEnteredAt.
 
@@ -44,6 +46,17 @@ func (p *Prospect) BeforeCreate(*gorm.DB) error {
 	return nil
 }
 
-func (d *Deal) MarkStageEntered()     { d.StageEnteredAt = stageEnteredNow() }
-func (l *Lead) MarkStageEntered()     { l.StageEnteredAt = stageEnteredNow() }
-func (p *Prospect) MarkStageEntered() { p.StageEnteredAt = stageEnteredNow() }
+// MarkStageEntered stamps entry into the current lane and records the lane
+// it came from (PreviousStage), so the Overview Pipeline can tell a move
+// forward from a slip backward.
+func (d *Deal) MarkStageEntered(from string) {
+	d.StageEnteredAt, d.PreviousStage = stageEnteredNow(), &from
+}
+
+func (l *Lead) MarkStageEntered(from string) {
+	l.StageEnteredAt, l.PreviousStage = stageEnteredNow(), &from
+}
+
+func (p *Prospect) MarkStageEntered(from string) {
+	p.StageEnteredAt, p.PreviousStage = stageEnteredNow(), &from
+}

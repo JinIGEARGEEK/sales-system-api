@@ -250,6 +250,19 @@ func backfillStageEnteredAt(db *gorm.DB) error {
 		// Before 2026-09-23 conversion didn't restamp stage_entered_at when
 		// the Lead was already Qualified, so move any earlier value up to
 		// the conversion. Idempotent: conversions since then already match.
+		// previous_stage (added 2026-09-24) for Deals that moved before it
+		// existed: the "before" stage of their latest stage_changed audit
+		// row. Leads/Prospects have no stage audit, so theirs start filling
+		// in from their next move. Only touches rows still NULL.
+		{"deals (previous_stage)", `
+			UPDATE deals d SET previous_stage = a.before->>'stage'
+			FROM (
+				SELECT DISTINCT ON (entity_id) entity_id, before
+				FROM audit_log_entries
+				WHERE entity_type = 'deal' AND action = 'stage_changed'
+				ORDER BY entity_id, created_at DESC, id DESC
+			) a
+			WHERE a.entity_id = d.id AND d.previous_stage IS NULL AND a.before->>'stage' IS NOT NULL`},
 		{"leads (converted)", `
 			UPDATE leads l SET stage_entered_at = d.created_at
 			FROM deals d
