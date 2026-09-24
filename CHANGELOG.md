@@ -4,6 +4,24 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-09-24 — Kanban card position: fill the gaps left by the first version
+
+Follow-ups to 2026-09-22's persisted card positioning (`Deal`/`Lead`/`Prospect.position`):
+
+**Every lane change now sets a position.** Lead→Deal conversion (the new Deal, and the Lead moving to `Qualified`), Prospect→Lead conversion (the new Lead, and the Prospect moving to `Converted`), and a stage/status change through the full `PUT` edit forms used to keep the old value, or 0 for new rows. That put converted cards at the top of their lane, and they jumped to the bottom on the next boot's backfill. They now append to the end of the destination lane, the same as a dropdown-move.
+
+**Backfill runs once.** `database.BackfillCardPositions` used to re-run on every boot against every row at `position = 0`. But 0 is also a valid drag result, so a card dropped there moved on every deploy. It now runs a single time, recorded in a new `data_migrations` table (`database.runOnce`). That run appends zero-position rows after each lane's existing cards instead of numbering from 1, so it repairs rows the conversion bug left at 0 without colliding with real positions.
+
+**Lanes rebalance before float precision runs out.** Each drop halves the gap it lands in, so after about 50 drops into the same spot two neighbors would become equal. When a drop lands within 1e-6 of another card, the lane is renumbered to 1..n in the same order, and the response carries `X-Lane-Rebalanced: true` so the client refetches the lane. The header is listed in the CORS `ExposeHeaders` (`cmd/api/main.go`), because otherwise a frontend on another origin can't read it.
+
+**One shared helper.** The three per-type `next*Position` functions and the move logic repeated in each `PATCH` handler are now methods on one per-type lane descriptor (`dealLanes`/`leadLanes`/`prospectLanes` in `internal/handlers/card_position.go`). Its queries include soft-deleted rows, so a card restored from Trash can't land on a position that's already taken.
+
+**Position is validated and sorting is stable.** The `PATCH` move endpoints now reject a `position` outside ±1e9 (422). `utils.ApplySort` adds `id` as a tie-breaker in the same direction, so cards sharing a position, or rows sharing any sort value, come back in a stable order across pages.
+
+Frontend: after a move whose response has `X-Lane-Rebalanced: true`, refetch that lane before computing the next midpoint.
+
+Regression-guarded: `tests/card_position_test.go`. Spec: `api-system-spec.md` §3 (new `PATCH /leads/:id/status` row), §4 (new `PATCH /prospects/:id/status` row), §7.1.
+
 ## 2026-09-22 — Company Size default seed: added "คน" unit, new "> 100 คน" bucket
 
 `DefaultCompanySizeOptions` (`internal/models/company_config.go`) now carries a "คน" (people) unit suffix on every bucket (`1-10` → `1-10 คน`, etc.) and gained a new `> 100 คน` bucket. `cmd/api/main.go`'s demo Company seed rows were updated to reference the renamed buckets so a fresh dev DB stays internally consistent.

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -97,6 +98,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.AppSettings{},
 		&models.SalesTarget{},
 		&models.DocumentSequence{},
+		&models.DataMigration{},
 		&models.ForecastSnapshot{},
 		&models.QuoteTemplate{},
 		&models.APIKey{},
@@ -133,7 +135,7 @@ func AutoMigrate(db *gorm.DB) error {
 			return fmt.Errorf("drop legacy company_name column: %w", err)
 		}
 	}
-	if err := backfillCardPositions(db); err != nil {
+	if err := BackfillCardPositions(db); err != nil {
 		return err
 	}
 	if err := backfillStageEnteredAt(db); err != nil {
@@ -267,35 +269,66 @@ func backfillStageEnteredAt(db *gorm.DB) error {
 	return nil
 }
 
-// backfillCardPositions populates the new Deal/Lead/Prospect Position column
-// (Kanban card ordering within a lane — see Deal.Position's doc comment) for
-// any pre-existing row still sitting at the AutoMigrate-added default of 0.
-// Safe to re-run on every boot: it only ever touches rows still at 0, so a
-// card already given a real Position by a drag-move is never renumbered.
-// ROW_NUMBER() is partitioned per-lane (Stage for deals, Status for
-// leads/prospects) since Position is only ever compared within its own lane.
-func backfillCardPositions(db *gorm.DB) error {
-	backfills := []struct {
-		table     string
-		laneField string
-	}{
-		{"deals", "stage"},
-		{"leads", "status"},
-		{"prospects", "status"},
-	}
-	for _, b := range backfills {
-		sql := fmt.Sprintf(`
-			UPDATE %s SET position = sub.rn
-			FROM (
-				SELECT id, ROW_NUMBER() OVER (PARTITION BY %s ORDER BY created_at, id) AS rn
-				FROM %s WHERE position = 0
-			) sub
-			WHERE %s.id = sub.id`, b.table, b.laneField, b.table, b.table)
-		if err := db.Exec(sql).Error; err != nil {
-			return fmt.Errorf("backfill %s position: %w", b.table, err)
+// runOnce runs fn and records name in data_migrations in one transaction,
+// or does nothing if name is already recorded — for data migrations whose
+// "already done" state can't be read back off the data itself.
+func runOnce(db *gorm.DB, name string, fn func(tx *gorm.DB) error) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		var done int64
+		if err := tx.Model(&models.DataMigration{}).Where("name = ?", name).Count(&done).Error; err != nil {
+			return fmt.Errorf("check data migration %q: %w", name, err)
 		}
-	}
-	return nil
+		if done > 0 {
+			return nil
+		}
+		if err := fn(tx); err != nil {
+			return err
+		}
+		return tx.Create(&models.DataMigration{Name: name, AppliedAt: time.Now()}).Error
+	})
+}
+
+// cardPositionsBackfill names BackfillCardPositions' data_migrations row.
+const cardPositionsBackfill = "card_positions_backfill"
+
+// BackfillCardPositions (called from AutoMigrate; exported for its test)
+// gives every Deal/Lead/Prospect still at position 0 a real Kanban position
+// (see Deal.Position's doc comment), appended after the lane's highest
+// non-zero position in created_at order. Partitioned per lane (Stage for
+// deals, Status for leads/prospects) since positions are only compared
+// within a lane.
+//
+// Runs once (runOnce): 0 is also a valid drag-move result (e.g. the midpoint
+// of -1 and 1), so a "still at 0" check alone would move such a card on
+// every boot. The single run covers both databases from before the column
+// existed (every row at 0) and rows created at 0 by the Lead/Prospect
+// conversion paths before they assigned positions.
+func BackfillCardPositions(db *gorm.DB) error {
+	return runOnce(db, cardPositionsBackfill, func(tx *gorm.DB) error {
+		backfills := []struct {
+			table     string
+			laneField string
+		}{
+			{"deals", "stage"},
+			{"leads", "status"},
+			{"prospects", "status"},
+		}
+		for _, b := range backfills {
+			sql := fmt.Sprintf(`
+				UPDATE %[1]s SET position = sub.base + sub.rn
+				FROM (
+					SELECT z.id,
+						ROW_NUMBER() OVER (PARTITION BY z.%[2]s ORDER BY z.created_at, z.id) AS rn,
+						COALESCE((SELECT MAX(o.position) FROM %[1]s o WHERE o.%[2]s = z.%[2]s AND o.position <> 0), 0) AS base
+					FROM %[1]s z WHERE z.position = 0
+				) sub
+				WHERE %[1]s.id = sub.id`, b.table, b.laneField)
+			if err := tx.Exec(sql).Error; err != nil {
+				return fmt.Errorf("backfill %s position: %w", b.table, err)
+			}
+		}
+		return nil
+	})
 }
 
 // backfillCompanyDomains populates the new Company.Domain column (added

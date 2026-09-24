@@ -4285,6 +4285,12 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal"
+                        },
+                        "headers": {
+                            "X-Lane-Rebalanced": {
+                                "type": "string",
+                                "description": "\\\"true\\\" when the destination lane was renumbered to 1..n — refetch the lane, its other cards' positions changed"
+                            }
                         }
                     },
                     "400": {
@@ -4303,6 +4309,13 @@
                     },
                     "404": {
                         "description": "Deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "position out of range (±1e9)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -4958,6 +4971,12 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Lead"
+                        },
+                        "headers": {
+                            "X-Lane-Rebalanced": {
+                                "type": "string",
+                                "description": "\\\"true\\\" when the destination lane was renumbered to 1..n — refetch the lane, its other cards' positions changed"
+                            }
                         }
                     },
                     "400": {
@@ -4976,6 +4995,13 @@
                     },
                     "404": {
                         "description": "Lead not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "position out of range (±1e9)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -6260,6 +6286,12 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Prospect"
+                        },
+                        "headers": {
+                            "X-Lane-Rebalanced": {
+                                "type": "string",
+                                "description": "\\\"true\\\" when the destination lane was renumbered to 1..n — refetch the lane, its other cards' positions changed"
+                            }
                         }
                     },
                     "400": {
@@ -6278,6 +6310,13 @@
                     },
                     "404": {
                         "description": "Prospect not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "position out of range (±1e9)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -8602,7 +8641,7 @@
                     ]
                 },
                 "position": {
-                    "description": "Position orders this Deal's Kanban card within its own Stage lane only —\nnever compared across stages. Set to MAX(position)+1 in its lane on\nCreate, and recomputed as the midpoint of its new neighbors' Position on\nevery drag-move (DealHandler.UpdateStage) so no sibling row ever needs\nrewriting. See database.AutoMigrate's backfill for pre-existing rows.",
+                    "description": "Position orders this Deal's Kanban card within its own Stage lane only —\nnever compared across stages. Set to MAX(position)+1 in its lane on\nCreate (including Lead conversion) and on any lane change that carries\nno position (the edit form, a dropdown-move), and to the client's\nmidpoint of its new neighbors on a drag-move (DealHandler.UpdateStage),\nso siblings normally never need rewriting. When a drop lands within\n1e-6 of a neighbor the lane is renumbered 1..n instead\n(handlers/card_position.go). See database.BackfillCardPositions for\npre-existing rows.",
                     "type": "number"
                 },
                 "probability": {
@@ -8611,6 +8650,10 @@
                 },
                 "stage": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage"
+                },
+                "stage_entered_at": {
+                    "description": "When this record entered its current lane; see stage_entered.go.",
+                    "type": "string"
                 },
                 "status": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStatus"
@@ -8824,6 +8867,10 @@
                 },
                 "source": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource"
+                },
+                "stage_entered_at": {
+                    "description": "When this record entered its current lane; see stage_entered.go.",
+                    "type": "string"
                 },
                 "status": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadStatus"
@@ -9255,6 +9302,10 @@
                     "type": "number"
                 },
                 "source": {
+                    "type": "string"
+                },
+                "stage_entered_at": {
+                    "description": "When this record entered its current lane; see stage_entered.go.",
                     "type": "string"
                 },
                 "status": {

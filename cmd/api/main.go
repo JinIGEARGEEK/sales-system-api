@@ -34,6 +34,7 @@ import (
 
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/database"
+	"github.com/igeargeek/sales-system-api/internal/handlers"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/notifier"
 	"github.com/igeargeek/sales-system-api/internal/routes"
@@ -107,6 +108,9 @@ func main() {
 	}))
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: cfg.CORSOrigins,
+		// A cross-origin frontend can only read non-standard response
+		// headers listed here.
+		ExposeHeaders: handlers.LaneRebalancedHeader,
 	}))
 
 	// Unauthenticated — used by the hosting platform's health check (e.g.
