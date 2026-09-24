@@ -75,15 +75,6 @@ func rejectManualConvertedStatus(c *fiber.Ctx, newStatus, current models.Prospec
 	return utils.ErrHandled
 }
 
-// nextProspectPosition returns the Position to append a card to the end of
-// the given Status lane — mirrors nextDealPosition (deals.go). See
-// Prospect.Position's doc comment (models/prospect.go) for the full scheme.
-func nextProspectPosition(db *gorm.DB, status models.ProspectStatus) float64 {
-	var max float64
-	db.Model(&models.Prospect{}).Where("status = ?", status).Select("COALESCE(MAX(position), 0)").Scan(&max)
-	return max + 1
-}
-
 type prospectForm struct {
 	Name       string                `json:"name"`
 	CompanyID  *uint                 `json:"company_id"`
@@ -150,7 +141,7 @@ func (h *ProspectHandler) Create(c *fiber.Ctx) error {
 	if prospect.Status == "" {
 		prospect.Status = models.ProspectStatusNew
 	}
-	prospect.Position = nextProspectPosition(h.DB, prospect.Status)
+	prospect.Position = prospectLanes.next(h.DB, prospect.Status)
 	if err := h.DB.Create(&prospect).Error; err != nil {
 		return utils.Internal(c, "Failed to create prospect")
 	}
@@ -233,7 +224,9 @@ func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 	prospect.Tags = pq.StringArray(form.Tags)
 	prospect.BusinessUnit, prospect.BusinessUnitItem = form.BusinessUnit, form.BusinessUnitItem
 	if oldStatus != prospect.Status {
-		prospect.MarkStageEntered(string(oldStatus))
+		prospect.MarkStageEntered()
+		// No drag geometry on the edit form — append to the new lane's end.
+		prospect.Position = prospectLanes.next(h.DB, prospect.Status)
 	}
 
 	// Logs a company-scoped Activity when the stage actually changed, so
@@ -270,9 +263,11 @@ type prospectStatusForm struct {
 // @Param id path int true "Prospect ID"
 // @Param body body prospectStatusForm true "New status/position"
 // @Success 200 {object} models.Prospect
+// @Header 200 {string} X-Lane-Rebalanced "\"true\" when the destination lane was renumbered to 1..n — refetch the lane, its other cards' positions changed"
 // @Failure 400 {object} map[string]interface{} "status is required, or an attempted manual transition into Converted"
 // @Failure 403 {object} map[string]interface{} "Not authorized to update this prospect"
 // @Failure 404 {object} map[string]interface{} "Prospect not found"
+// @Failure 422 {object} map[string]interface{} "position out of range (±1e9)"
 // @Router /prospects/{id}/status [patch]
 func (h *ProspectHandler) UpdateStatus(c *fiber.Ctx) error {
 	var prospect models.Prospect
@@ -296,26 +291,33 @@ func (h *ProspectHandler) UpdateStatus(c *fiber.Ctx) error {
 	if !utils.IsActiveProspectStage(h.DB, string(form.Status)) {
 		return utils.ValidationError(c, "status is not a valid active prospect stage", map[string][]string{"status": {"invalid"}})
 	}
+	if err := validateCardPosition(c, form.Position); err != nil {
+		return nil
+	}
 
 	oldStatus := prospect.Status
 	prospect.Status = form.Status
-	if form.Position != nil {
-		prospect.Position = *form.Position
-	} else if oldStatus != prospect.Status {
-		prospect.Position = nextProspectPosition(h.DB, prospect.Status)
-	}
+	prospect.Position = prospectLanes.placeOnMove(h.DB, form.Position, oldStatus != prospect.Status, prospect.Status, prospect.Position)
 	if oldStatus != prospect.Status {
 		prospect.MarkStageEntered(string(oldStatus))
 	}
 
+	rebalanced := false
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(&prospect).Error; err != nil {
+			return err
+		}
+		var err error
+		if rebalanced, err = prospectLanes.rebalanceIfCrowded(tx, prospect.Status, prospect.ID, &prospect.Position); err != nil {
 			return err
 		}
 		return utils.LogStatusChangeActivity(tx, "Prospect", oldStatus, prospect.Status, prospect.CompanyID, prospect.CompanyID, middleware.CurrentUserID(c))
 	})
 	if err != nil {
 		return utils.Internal(c, "Failed to update prospect status")
+	}
+	if rebalanced {
+		c.Set(LaneRebalancedHeader, "true")
 	}
 	return utils.OK(c, prospect)
 }
@@ -498,6 +500,7 @@ func (h *ProspectHandler) Convert(c *fiber.Ctx) error {
 		if lead.AssignedTo == nil {
 			lead.AssignedTo = prospect.AssignedTo
 		}
+		lead.Position = leadLanes.next(tx, lead.Status)
 		if err := tx.Create(&lead).Error; err != nil {
 			return err
 		}
@@ -514,7 +517,8 @@ func (h *ProspectHandler) Convert(c *fiber.Ctx) error {
 
 		fromStatus := prospect.Status
 		prospect.Status = models.ProspectStatusConverted
-		prospect.MarkStageEntered(string(fromStatus))
+		prospect.Position = prospectLanes.next(tx, prospect.Status)
+		prospect.MarkStageEntered()
 		prospect.ConvertedLeadID = &lead.ID
 		if err := tx.Save(&prospect).Error; err != nil {
 			return err

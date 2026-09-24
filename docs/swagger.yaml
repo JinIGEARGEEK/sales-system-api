@@ -293,9 +293,13 @@ definitions:
         description: |-
           Position orders this Deal's Kanban card within its own Stage lane only —
           never compared across stages. Set to MAX(position)+1 in its lane on
-          Create, and recomputed as the midpoint of its new neighbors' Position on
-          every drag-move (DealHandler.UpdateStage) so no sibling row ever needs
-          rewriting. See database.AutoMigrate's backfill for pre-existing rows.
+          Create (including Lead conversion) and on any lane change that carries
+          no position (the edit form, a dropdown-move), and to the client's
+          midpoint of its new neighbors on a drag-move (DealHandler.UpdateStage),
+          so siblings normally never need rewriting. When a drop lands within
+          1e-6 of a neighbor the lane is renumbered 1..n instead
+          (handlers/card_position.go). See database.BackfillCardPositions for
+          pre-existing rows.
         type: number
       probability:
         description: |-
@@ -304,6 +308,9 @@ definitions:
         type: integer
       stage:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage'
+      stage_entered_at:
+        description: When this record entered its current lane; see stage_entered.go.
+        type: string
       status:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStatus'
       tags:
@@ -484,6 +491,9 @@ definitions:
         type: integer
       source:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource'
+      stage_entered_at:
+        description: When this record entered its current lane; see stage_entered.go.
+        type: string
       status:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadStatus'
       tags:
@@ -797,6 +807,9 @@ definitions:
           mirrored here identically, driven by ProspectHandler.UpdateStatus.
         type: number
       source:
+        type: string
+      stage_entered_at:
+        description: When this record entered its current lane; see stage_entered.go.
         type: string
       status:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProspectStatus'
@@ -4595,6 +4608,11 @@ paths:
       responses:
         "200":
           description: OK
+          headers:
+            X-Lane-Rebalanced:
+              description: \"true\" when the destination lane was renumbered to 1..n
+                — refetch the lane, its other cards' positions changed
+              type: string
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal'
         "400":
@@ -4611,6 +4629,11 @@ paths:
             type: object
         "404":
           description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: position out of range (±1e9)
           schema:
             additionalProperties: true
             type: object
@@ -5074,6 +5097,11 @@ paths:
       responses:
         "200":
           description: OK
+          headers:
+            X-Lane-Rebalanced:
+              description: \"true\" when the destination lane was renumbered to 1..n
+                — refetch the lane, its other cards' positions changed
+              type: string
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Lead'
         "400":
@@ -5088,6 +5116,11 @@ paths:
             type: object
         "404":
           description: Lead not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: position out of range (±1e9)
           schema:
             additionalProperties: true
             type: object
@@ -5969,6 +6002,11 @@ paths:
       responses:
         "200":
           description: OK
+          headers:
+            X-Lane-Rebalanced:
+              description: \"true\" when the destination lane was renumbered to 1..n
+                — refetch the lane, its other cards' positions changed
+              type: string
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Prospect'
         "400":
@@ -5984,6 +6022,11 @@ paths:
             type: object
         "404":
           description: Prospect not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: position out of range (±1e9)
           schema:
             additionalProperties: true
             type: object

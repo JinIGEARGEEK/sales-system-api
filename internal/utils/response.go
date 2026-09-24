@@ -97,10 +97,16 @@ func ApplySort(db *gorm.DB, sortParam string, allowed map[string]bool, defaultSo
 			col = col[1:]
 		}
 	}
+	dir := " ASC"
 	if desc {
-		return db.Order(col + " DESC")
+		dir = " DESC"
 	}
-	return db.Order(col + " ASC")
+	// id breaks ties so rows sharing a value (e.g. two Kanban cards with the
+	// same position) come back in a stable order across pages and refetches.
+	if col == "id" {
+		return db.Order(col + dir)
+	}
+	return db.Order(col + dir).Order("id" + dir)
 }
 
 func orDefault(v, def string) string {
