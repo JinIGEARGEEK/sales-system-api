@@ -28,6 +28,11 @@ definitions:
         type: integer
       id:
         type: integer
+      last_weekly_digest_at:
+        description: |-
+          LastWeeklyDigestAt — when the digest last went out; server-set only,
+          so a restart mid-Monday can't send the same week twice.
+        type: string
       lead_scoring_mql_threshold:
         description: |-
           LeadScoringMqlThreshold — FR-CRM-007: a Lead whose computed Score meets
@@ -57,6 +62,12 @@ definitions:
         type: boolean
       updated_at:
         type: string
+      weekly_digest_enabled:
+        description: |-
+          WeeklyDigestEnabled — the Monday-morning Overview Pipeline email to
+          Admins and Sales Managers (internal/notifier/weekly_digest.go). On by
+          default; it only ever sends when SMTP is configured.
+        type: boolean
     type: object
   github_com_igeargeek_sales-system-api_internal_models.BusinessUnit:
     enum:
@@ -293,10 +304,19 @@ definitions:
         description: |-
           Position orders this Deal's Kanban card within its own Stage lane only —
           never compared across stages. Set to MAX(position)+1 in its lane on
-          Create, and recomputed as the midpoint of its new neighbors' Position on
-          every drag-move (DealHandler.UpdateStage) so no sibling row ever needs
-          rewriting. See database.AutoMigrate's backfill for pre-existing rows.
+          Create (including Lead conversion) and on any lane change that carries
+          no position (the edit form, a dropdown-move), and to the client's
+          midpoint of its new neighbors on a drag-move (DealHandler.UpdateStage),
+          so siblings normally never need rewriting. When a drop lands within
+          1e-6 of a neighbor the lane is renumbered 1..n instead
+          (handlers/card_position.go). See database.BackfillCardPositions for
+          pre-existing rows.
         type: number
+      previous_stage:
+        description: |-
+          The lane this record was in before its last move (see
+          MarkStageEntered); nil if it has never moved.
+        type: string
       probability:
         description: |-
           Probability is the 0-100 win-probability, defaulted per-stage
@@ -304,6 +324,9 @@ definitions:
         type: integer
       stage:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage'
+      stage_entered_at:
+        description: When this record entered its current lane; see stage_entered.go.
+        type: string
       status:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStatus'
       tags:
@@ -454,6 +477,11 @@ definitions:
           see Deal.Position's doc comment (deal.go) for the full scheme; mirrored
           here identically, driven by LeadHandler.UpdateStatus.
         type: number
+      previous_stage:
+        description: |-
+          The lane this record was in before its last move (see
+          MarkStageEntered); nil if it has never moved.
+        type: string
       prospect_id:
         description: |-
           ProspectID is set when this Lead originated from a Marketing Prospect
@@ -484,6 +512,9 @@ definitions:
         type: integer
       source:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource'
+      stage_entered_at:
+        description: When this record entered its current lane; see stage_entered.go.
+        type: string
       status:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadStatus'
       tags:
@@ -635,6 +666,13 @@ definitions:
       name:
         type: string
       sort_order:
+        type: integer
+      stale_days:
+        description: |-
+          StaleDays is how long a Deal may sit in this stage before the Overview
+          Pipeline flags it stale (FR-CRM-123). Nil means the default
+          (DefaultStaleDays). Meaningless on a won/lost stage, which is never
+          stale.
         type: integer
       updated_at:
         type: string
@@ -796,7 +834,15 @@ definitions:
           only — see Deal.Position's doc comment (deal.go) for the full scheme;
           mirrored here identically, driven by ProspectHandler.UpdateStatus.
         type: number
+      previous_stage:
+        description: |-
+          The lane this record was in before its last move (see
+          MarkStageEntered); nil if it has never moved.
+        type: string
       source:
+        type: string
+      stage_entered_at:
+        description: When this record entered its current lane; see stage_entered.go.
         type: string
       status:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ProspectStatus'
@@ -828,6 +874,9 @@ definitions:
       name:
         type: string
       sort_order:
+        type: integer
+      stale_days:
+        description: StaleDays — same as PipelineStage.StaleDays, for Prospects.
         type: integer
       updated_at:
         type: string
@@ -1413,6 +1462,14 @@ definitions:
     type: object
   internal_handlers.dealStageForm:
     properties:
+      lost_reason:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason'
+        description: |-
+          LostReason is optional here (the Kanban drag doesn't collect one), but
+          when sent on a move into a Lost stage it's validated and saved — the
+          Overview Pipeline's side panel asks for it (FR-CRM-123). Ignored on a
+          move into any other stage.
       position:
         description: |-
           Position is the Kanban drag-drop's computed insertion point within the
@@ -1781,6 +1838,8 @@ definitions:
       quarterly_sales_target:
         type: integer
       require_signed_contract_before_won:
+        type: boolean
+      weekly_digest_enabled:
         type: boolean
     type: object
   internal_handlers.tagForm:
@@ -4595,6 +4654,11 @@ paths:
       responses:
         "200":
           description: OK
+          headers:
+            X-Lane-Rebalanced:
+              description: \"true\" when the destination lane was renumbered to 1..n
+                — refetch the lane, its other cards' positions changed
+              type: string
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal'
         "400":
@@ -4611,6 +4675,11 @@ paths:
             type: object
         "404":
           description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: position out of range (±1e9)
           schema:
             additionalProperties: true
             type: object
@@ -5074,6 +5143,11 @@ paths:
       responses:
         "200":
           description: OK
+          headers:
+            X-Lane-Rebalanced:
+              description: \"true\" when the destination lane was renumbered to 1..n
+                — refetch the lane, its other cards' positions changed
+              type: string
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Lead'
         "400":
@@ -5088,6 +5162,11 @@ paths:
             type: object
         "404":
           description: Lead not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: position out of range (±1e9)
           schema:
             additionalProperties: true
             type: object
@@ -5969,6 +6048,11 @@ paths:
       responses:
         "200":
           description: OK
+          headers:
+            X-Lane-Rebalanced:
+              description: \"true\" when the destination lane was renumbered to 1..n
+                — refetch the lane, its other cards' positions changed
+              type: string
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Prospect'
         "400":
@@ -5984,6 +6068,11 @@ paths:
             type: object
         "404":
           description: Prospect not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: position out of range (±1e9)
           schema:
             additionalProperties: true
             type: object

@@ -4285,6 +4285,12 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal"
+                        },
+                        "headers": {
+                            "X-Lane-Rebalanced": {
+                                "type": "string",
+                                "description": "\\\"true\\\" when the destination lane was renumbered to 1..n — refetch the lane, its other cards' positions changed"
+                            }
                         }
                     },
                     "400": {
@@ -4303,6 +4309,13 @@
                     },
                     "404": {
                         "description": "Deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "position out of range (±1e9)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -4958,6 +4971,12 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Lead"
+                        },
+                        "headers": {
+                            "X-Lane-Rebalanced": {
+                                "type": "string",
+                                "description": "\\\"true\\\" when the destination lane was renumbered to 1..n — refetch the lane, its other cards' positions changed"
+                            }
                         }
                     },
                     "400": {
@@ -4976,6 +4995,13 @@
                     },
                     "404": {
                         "description": "Lead not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "position out of range (±1e9)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -6260,6 +6286,12 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Prospect"
+                        },
+                        "headers": {
+                            "X-Lane-Rebalanced": {
+                                "type": "string",
+                                "description": "\\\"true\\\" when the destination lane was renumbered to 1..n — refetch the lane, its other cards' positions changed"
+                            }
                         }
                     },
                     "400": {
@@ -6278,6 +6310,13 @@
                     },
                     "404": {
                         "description": "Prospect not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "position out of range (±1e9)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -8255,6 +8294,10 @@
                 "id": {
                     "type": "integer"
                 },
+                "last_weekly_digest_at": {
+                    "description": "LastWeeklyDigestAt — when the digest last went out; server-set only,\nso a restart mid-Monday can't send the same week twice.",
+                    "type": "string"
+                },
                 "lead_scoring_mql_threshold": {
                     "description": "LeadScoringMqlThreshold — FR-CRM-007: a Lead whose computed Score meets\nor exceeds this value is classified \"mql\". Lives here rather than a new\nsingleton table since it's one more Admin-tunable number, same shape as\nthe two fields above.",
                     "type": "integer"
@@ -8272,6 +8315,10 @@
                 },
                 "updated_at": {
                     "type": "string"
+                },
+                "weekly_digest_enabled": {
+                    "description": "WeeklyDigestEnabled — the Monday-morning Overview Pipeline email to\nAdmins and Sales Managers (internal/notifier/weekly_digest.go). On by\ndefault; it only ever sends when SMTP is configured.",
+                    "type": "boolean"
                 }
             }
         },
@@ -8602,8 +8649,12 @@
                     ]
                 },
                 "position": {
-                    "description": "Position orders this Deal's Kanban card within its own Stage lane only —\nnever compared across stages. Set to MAX(position)+1 in its lane on\nCreate, and recomputed as the midpoint of its new neighbors' Position on\nevery drag-move (DealHandler.UpdateStage) so no sibling row ever needs\nrewriting. See database.AutoMigrate's backfill for pre-existing rows.",
+                    "description": "Position orders this Deal's Kanban card within its own Stage lane only —\nnever compared across stages. Set to MAX(position)+1 in its lane on\nCreate (including Lead conversion) and on any lane change that carries\nno position (the edit form, a dropdown-move), and to the client's\nmidpoint of its new neighbors on a drag-move (DealHandler.UpdateStage),\nso siblings normally never need rewriting. When a drop lands within\n1e-6 of a neighbor the lane is renumbered 1..n instead\n(handlers/card_position.go). See database.BackfillCardPositions for\npre-existing rows.",
                     "type": "number"
+                },
+                "previous_stage": {
+                    "description": "The lane this record was in before its last move (see\nMarkStageEntered); nil if it has never moved.",
+                    "type": "string"
                 },
                 "probability": {
                     "description": "Probability is the 0-100 win-probability, defaulted per-stage\n(StageDefaultProbability) but always manually overridable.",
@@ -8611,6 +8662,10 @@
                 },
                 "stage": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage"
+                },
+                "stage_entered_at": {
+                    "description": "When this record entered its current lane; see stage_entered.go.",
+                    "type": "string"
                 },
                 "status": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStatus"
@@ -8803,6 +8858,10 @@
                     "description": "Position orders this Lead's Kanban card within its own Status lane only —\nsee Deal.Position's doc comment (deal.go) for the full scheme; mirrored\nhere identically, driven by LeadHandler.UpdateStatus.",
                     "type": "number"
                 },
+                "previous_stage": {
+                    "description": "The lane this record was in before its last move (see\nMarkStageEntered); nil if it has never moved.",
+                    "type": "string"
+                },
                 "prospect_id": {
                     "description": "ProspectID is set when this Lead originated from a Marketing Prospect\nvia ProspectHandler.Convert (nil for a Lead created directly) — mirrors\nDeal.LeadID's back-reference to its own originating record.",
                     "type": "integer"
@@ -8824,6 +8883,10 @@
                 },
                 "source": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource"
+                },
+                "stage_entered_at": {
+                    "description": "When this record entered its current lane; see stage_entered.go.",
+                    "type": "string"
                 },
                 "status": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadStatus"
@@ -9037,6 +9100,10 @@
                     "type": "string"
                 },
                 "sort_order": {
+                    "type": "integer"
+                },
+                "stale_days": {
+                    "description": "StaleDays is how long a Deal may sit in this stage before the Overview\nPipeline flags it stale (FR-CRM-123). Nil means the default\n(DefaultStaleDays). Meaningless on a won/lost stage, which is never\nstale.",
                     "type": "integer"
                 },
                 "updated_at": {
@@ -9254,7 +9321,15 @@
                     "description": "Position orders this Prospect's Kanban card within its own Status lane\nonly — see Deal.Position's doc comment (deal.go) for the full scheme;\nmirrored here identically, driven by ProspectHandler.UpdateStatus.",
                     "type": "number"
                 },
+                "previous_stage": {
+                    "description": "The lane this record was in before its last move (see\nMarkStageEntered); nil if it has never moved.",
+                    "type": "string"
+                },
                 "source": {
+                    "type": "string"
+                },
+                "stage_entered_at": {
+                    "description": "When this record entered its current lane; see stage_entered.go.",
                     "type": "string"
                 },
                 "status": {
@@ -9302,6 +9377,10 @@
                     "type": "string"
                 },
                 "sort_order": {
+                    "type": "integer"
+                },
+                "stale_days": {
+                    "description": "StaleDays — same as PipelineStage.StaleDays, for Prospects.",
                     "type": "integer"
                 },
                 "updated_at": {
@@ -10082,6 +10161,14 @@
         "internal_handlers.dealStageForm": {
             "type": "object",
             "properties": {
+                "lost_reason": {
+                    "description": "LostReason is optional here (the Kanban drag doesn't collect one), but\nwhen sent on a move into a Lost stage it's validated and saved — the\nOverview Pipeline's side panel asks for it (FR-CRM-123). Ignored on a\nmove into any other stage.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason"
+                        }
+                    ]
+                },
                 "position": {
                     "description": "Position is the Kanban drag-drop's computed insertion point within the\ndestination Stage lane (a pointer so an omitted field, e.g. the mobile\ndropdown-move, is distinguishable from an explicit 0) — see\nDeal.Position's doc comment (models/deal.go).",
                     "type": "number"
@@ -10600,6 +10687,9 @@
                     "type": "integer"
                 },
                 "require_signed_contract_before_won": {
+                    "type": "boolean"
+                },
+                "weekly_digest_enabled": {
                     "type": "boolean"
                 }
             }

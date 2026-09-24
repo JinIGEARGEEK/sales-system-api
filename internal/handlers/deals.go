@@ -55,15 +55,6 @@ func (h *DealHandler) List(c *fiber.Ctx) error {
 	return utils.List(c, deals, page, perPage, total)
 }
 
-// nextDealPosition returns the Position to append a card to the end of the
-// given Stage lane — MAX(position) in that lane, plus 1, or 1 for an empty
-// lane. See Deal.Position's doc comment (models/deal.go) for the full scheme.
-func nextDealPosition(db *gorm.DB, stage models.DealStage) float64 {
-	var max float64
-	db.Model(&models.Deal{}).Where("stage = ?", stage).Select("COALESCE(MAX(position), 0)").Scan(&max)
-	return max + 1
-}
-
 type dealForm struct {
 	CompanyID         uint                     `json:"company_id"`
 	ContactID         uint                     `json:"contact_id"`
@@ -335,7 +326,7 @@ func (h *DealHandler) Create(c *fiber.Ctx) error {
 		def := h.defaultForecastCategoryFor(deal.Stage)
 		deal.ForecastCategory = &def
 	}
-	deal.Position = nextDealPosition(h.DB, deal.Stage)
+	deal.Position = dealLanes.next(h.DB, deal.Stage)
 	if err := h.DB.Create(&deal).Error; err != nil {
 		return utils.Internal(c, "Failed to create deal")
 	}
@@ -446,6 +437,8 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	}
 	if oldStage != deal.Stage {
 		deal.MarkStageEntered(string(oldStage))
+		// No drag geometry on the edit form — append to the new lane's end.
+		deal.Position = dealLanes.next(h.DB, deal.Stage)
 	}
 
 	// Previously a plain h.DB.Save with no audit trail at all — a Stage
@@ -632,9 +625,11 @@ type dealStageForm struct {
 // @Param id path int true "Deal ID"
 // @Param body body dealStageForm true "New stage"
 // @Success 200 {object} models.Deal
+// @Header 200 {string} X-Lane-Rebalanced "\"true\" when the destination lane was renumbered to 1..n — refetch the lane, its other cards' positions changed"
 // @Failure 400 {object} map[string]interface{} "Invalid request body, stage is required, stage is not a valid active pipeline stage, or a signed contract is required before marking this deal Won"
 // @Failure 403 {object} map[string]interface{} "Not authorized to update this deal"
 // @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Failure 422 {object} map[string]interface{} "position out of range (±1e9)"
 // @Router /deals/{id}/stage [patch]
 func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	var deal models.Deal
@@ -657,6 +652,9 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	}
 	if form.LostReason != nil && !models.IsValidLostReason(*form.LostReason) {
 		return utils.ValidationError(c, "lost_reason is invalid", map[string][]string{"lost_reason": {"invalid"}})
+	}
+	if err := validateCardPosition(c, form.Position); err != nil {
+		return nil
 	}
 
 	// isWon/isLost prefer the configured PipelineStage row's flags (so a custom,
@@ -709,21 +707,16 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 		deal.MarkStageEntered(string(oldStage))
 	}
 
-	// The client always sends its own computed Position when this is a real
-	// drag (in-lane reorder or cross-lane move dropped at a specific spot);
-	// when it's omitted (the mobile dropdown-move, which has no drag
-	// geometry to compute from) and the stage actually changed, append to
-	// the end of the destination lane instead of leaving the old lane's
-	// Position value stale/meaningless in the new one.
-	if form.Position != nil {
-		deal.Position = *form.Position
-	} else if oldStage != deal.Stage {
-		deal.Position = nextDealPosition(h.DB, deal.Stage)
-	}
+	deal.Position = dealLanes.placeOnMove(h.DB, form.Position, oldStage != deal.Stage, deal.Stage, deal.Position)
 
 	after := models.JSONMap{"stage": deal.Stage, "status": deal.Status}
+	rebalanced := false
 	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error {
 		if err := tx.Save(&deal).Error; err != nil {
+			return err
+		}
+		var err error
+		if rebalanced, err = dealLanes.rebalanceIfCrowded(tx, deal.Stage, deal.ID, &deal.Position); err != nil {
 			return err
 		}
 		if oldStage != deal.Stage {
@@ -734,6 +727,9 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	}, oldStage != deal.Stage, "deal", deal.ID, "stage_changed", before, after, middleware.CurrentUserID(c))
 	if err != nil {
 		return utils.Internal(c, "Failed to update deal stage")
+	}
+	if rebalanced {
+		c.Set(LaneRebalancedHeader, "true")
 	}
 	return utils.OK(c, deal)
 }
