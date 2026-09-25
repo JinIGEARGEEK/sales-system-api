@@ -18,6 +18,16 @@ The frontend's Tasks and Activities list pages used to load one capped page (`pe
 
 Regression-guarded: `tests/task_activity_paging_test.go`. Spec: `api-system-spec.md` §7.2, §7.6, and the audit-log row.
 
+## 2026-09-25 — Weekly Overview Pipeline email, safe stage renames
+
+**Weekly digest (FR-CRM-124).** Every Monday from 08:00 server-local time, active Admins and Sales Managers get last week's Overview Pipeline by email: the summary with cohort conversion, stale Deals (longest-waiting first), Deals that slipped back, Deals lost with their reason, and a link to the board. It's built by `internal/overview`, the same code as `GET /pipeline/overview`, so the email and the page agree. The hourly check claims the week with one conditional update before sending, so two API instances can't both send it, and releases the claim only when every send failed. An Admin can turn it off (`weekly_digest_enabled` on `PATCH /admin/settings`, optional; a settings save never touches `last_weekly_digest_at`), preview it (`GET /admin/weekly-digest/preview`) and send themselves a test (`POST /admin/weekly-digest/test`). Needs SMTP; the link needs `APP_URL`.
+
+**Time zone.** The Docker image sets `TZ=Asia/Bangkok` and the binary embeds the tz database. The alpine image ships no zoneinfo, so `time.Local` was UTC: the digest would have gone out at 15:00 Bangkok time, and the Overview Pipeline's "today" started at 07:00.
+
+**Stage renames carry records along.** Renaming a pipeline or Prospect stage repoints every Deal/Prospect storing it by name (`stage`/`status` and `previous_stage`, soft-deleted rows included) in the same transaction. New Deals and Prospects start in the first open stage rather than the literal `Lead`/`New`, Lead→Deal conversion falls back to it when `Qualified` is gone and takes that stage's configured probability, and the Marketing dashboard finds the Disqualified stage by its flag. Stage names are trimmed and limited to the column they're stored in (64 characters for pipeline stages, 16 for Prospect stages); a too-long or already-used name is a `422`, not a `500`. Known limitation: the time-in-stage report groups audit history by the name at the time of each move, so a renamed stage's history shows under its old name.
+
+Regression-guarded: `tests/weekly_digest_test.go`, `tests/stage_rules_test.go`, `internal/digest/weekly_internal_test.go`. Spec: `api-system-spec.md` (settings, weekly digest, pipeline/Prospect stages, `/prospects`, `/pipeline/overview`).
+
 ## 2026-09-25 — Open API: read a Deal's payment schedule
 
 New read-only `GET /open/deals/:dealId/payment-installments` (`X-API-Key`). It returns the Deal's planned installments with their derived `covered`/`status`, the same response as the staff route (§7.5a). An integration can now get a customer's payment milestones by listing their Projects and following each `deal_id`.
