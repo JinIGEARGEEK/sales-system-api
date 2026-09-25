@@ -165,9 +165,9 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	})
 
 	// Open API — external/integration access to Company, Contact, Project,
-	// Product, Prospect, and Lead — the resources partner systems most
-	// commonly need to sync (CRM/marketing tool sources of truth, plus the
-	// pipeline entities feeding them). Authenticated by X-API-Key
+	// Product, Prospect, and Lead, plus a read-only Deal payment schedule —
+	// the resources partner systems most commonly need to sync (CRM/marketing
+	// tool sources of truth, plus the pipeline entities feeding them). Authenticated by X-API-Key
 	// (RequireAPIKey) instead of the staff Bearer-JWT flow `authed` below,
 	// since a server-to-server caller has no user session to log in as; the
 	// key acts as its configured owner_user_id, so these reuse the exact same
@@ -175,7 +175,8 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// same created_by/updated_by attribution, same CanWrite ownership rules
 	// for Prospect/Lead) rather than duplicating that logic. Deliberately
 	// excludes Delete/Trash/Restore/bulk/Convert endpoints and every other
-	// resource — scope is create/update/read only.
+	// resource — scope is create/update/read only (read only for Deal
+	// payment schedules).
 	//
 	// Registered BEFORE `authed` below rather than alongside it: `authed :=
 	// api.Group("", middleware.RequireAuth(...), ...)` registers those
@@ -274,6 +275,28 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	openLeads.Get("/:id", leadH.Get)
 	openLeads.Put("/:id", leadH.Update)
 
+	// Sales-pipeline roles — the Lead/Deal gate: Admin, Sales Rep, Sales
+	// Manager and Marketing. **2026-09-23**: Marketing joined this set (full
+	// Sales Rep parity on Leads/Deals, alongside the Overview Pipeline page —
+	// feature-spec.md FR-CRM-123), reversing spec §1.7's earlier "Marketing
+	// has no access to Leads/Deals" rule. Production stays out, which is what
+	// this gate still blocks. Declared here, ahead of `authed`, so the Open
+	// API's Deal route below shares it with the staff /deals group.
+	salesPipelineRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager, models.RoleMarketing)
+
+	// Deal payment schedules — read-only, the one Deal sub-resource exposed
+	// here, so an integration can follow a Project's deal_id to its planned
+	// installments and their derived paid/partial/overdue/upcoming status.
+	// Reuses PaymentInstallmentHandler.List as-is, so the staff route's
+	// access rules carry over unchanged: the same salesPipelineRoles gate the
+	// staff /deals group applies (Production keys 403), and
+	// dealForSubResource's CanWrite check — a key acting as anyone but an
+	// Admin/Sales Manager (a Sales Rep or Marketing user) only sees schedules
+	// on Deals assigned to that user (or unassigned), unlike Prospect/Lead
+	// reads above.
+	openDeals := open.Group("/deals", salesPipelineRoles)
+	openDeals.Get("/:dealId/payment-installments", paymentInstallmentH.List)
+
 	authed := api.Group("", middleware.RequireAuth(cfg, db), middleware.RequirePasswordChanged(db))
 
 	authed.Post("/auth/logout", authH.Logout)
@@ -297,15 +320,10 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 
 	// Leads
 	bulkRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesManager)
-	// Sales-pipeline roles for every Lead route except single-record GET.
-	// **2026-09-23**: Marketing joined this set (full Sales Rep parity on
-	// Leads/Deals, alongside the Overview Pipeline page — feature-spec.md
-	// FR-CRM-123), reversing spec §1.7's earlier "Marketing has no access to
-	// Leads/Deals" rule. Production stays out, which is what this gate still
-	// blocks. Bulk/trash/restore stay on bulkRoles (Admin/Sales Manager), the
-	// same line Sales Rep sits behind. GET /:id stays ungated so Production
-	// can still follow a specific-Lead link.
-	salesPipelineRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager, models.RoleMarketing)
+	// salesPipelineRoles (declared above the Open API group) gates every Lead
+	// route except single-record GET, which stays ungated so Production can
+	// still follow a specific-Lead link. Bulk/trash/restore stay on
+	// bulkRoles (Admin/Sales Manager), the same line Sales Rep sits behind.
 	leads := authed.Group("/leads")
 	leads.Get("/", salesPipelineRoles, leadH.List)
 	leads.Post("/", salesPipelineRoles, leadH.Create)

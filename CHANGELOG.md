@@ -18,6 +18,14 @@ The frontend's Tasks and Activities list pages used to load one capped page (`pe
 
 Regression-guarded: `tests/task_activity_paging_test.go`. Spec: `api-system-spec.md` §7.2, §7.6, and the audit-log row.
 
+## 2026-09-25 — Open API: read a Deal's payment schedule
+
+New read-only `GET /open/deals/:dealId/payment-installments` (`X-API-Key`). It returns the Deal's planned installments with their derived `covered`/`status`, the same response as the staff route (§7.5a). An integration can now get a customer's payment milestones by listing their Projects and following each `deal_id`.
+
+It reuses `PaymentInstallmentHandler.List`, so the staff route's rules carry over: Production-owned keys get `403`, and a key owned by a Sales Rep or Marketing user only reads schedules on that user's own or unassigned Deals. Admin/Sales Manager keys read every Deal. That is stricter than Open API Prospect/Lead reads, which aren't scoped by owner. No other Deal route is exposed, and there are no installment writes.
+
+Regression-guarded: `TestOpenAPI_DealPaymentInstallmentsList` in `tests/open_api_test.go`. Spec: `api-system-spec.md` §7.5a, §8.9. Guide: `docs/OPEN_API_GUIDE.md` §11a.
+
 ## 2026-09-24 — Kanban card position: fill the gaps left by the first version
 
 Follow-ups to 2026-09-22's persisted card positioning (`Deal`/`Lead`/`Prospect.position`):

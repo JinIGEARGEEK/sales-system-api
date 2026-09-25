@@ -701,3 +701,71 @@ func TestOpenAPI_ProspectLeadListGetNotScopedByOwnership(t *testing.T) {
 	}
 	require.True(t, found, "a Sales-Rep-owned key must still see another rep's Lead in the list")
 }
+
+// TestOpenAPI_DealPaymentInstallmentsList guards the read-only
+// /open/deals/:dealId/payment-installments route: it returns the same
+// waterfall-derived statuses as the staff route, and keeps that route's
+// access rules — Production keys are role-gated out, and a key acting as a
+// non-manager (Sales Rep or Marketing) only sees schedules on its own (or
+// unassigned) Deals.
+func TestOpenAPI_DealPaymentInstallmentsList(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	rep := testutil.CreateUser(t, db, models.RoleSalesRep)
+	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
+	production := testutil.CreateUser(t, db, models.RoleProduction)
+
+	deal := seedDeal(t, db, &rep.ID)
+	past := time.Now().AddDate(0, 0, -10)
+	future := time.Now().AddDate(0, 1, 0)
+	require.NoError(t, db.Create(&[]models.PaymentInstallment{
+		{DealID: deal.ID, Amount: 500, DueDate: past},
+		{DealID: deal.ID, Amount: 500, DueDate: future},
+	}).Error)
+	require.NoError(t, db.Create(&models.Payment{DealID: deal.ID, Amount: 700, Method: models.PaymentMethodTransfer}).Error)
+
+	path := "/api/v1/open/deals/" + itoa(deal.ID) + "/payment-installments"
+
+	adminKey := createAPIKey(t, app, admin.ID, admin.ID)
+	var list struct {
+		Data []struct {
+			Installment models.PaymentInstallment `json:"installment"`
+			Covered     float64                   `json:"covered"`
+			Status      string                    `json:"status"`
+		} `json:"data"`
+	}
+	resp := doJSON(t, app, openRequest(t, http.MethodGet, path, nil, adminKey), &list)
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
+	require.Len(t, list.Data, 2)
+	require.Equal(t, "paid", list.Data[0].Status)
+	require.Equal(t, 500.0, list.Data[0].Covered)
+	require.Equal(t, "partial", list.Data[1].Status)
+	require.Equal(t, 200.0, list.Data[1].Covered)
+
+	repKey := createAPIKey(t, app, admin.ID, rep.ID)
+	require.Equal(t, fiber.StatusOK, doJSON(t, app, openRequest(t, http.MethodGet, path, nil, repKey), nil).StatusCode)
+
+	othersDeal := seedDeal(t, db, &admin.ID)
+	othersPath := "/api/v1/open/deals/" + itoa(othersDeal.ID) + "/payment-installments"
+	require.Equal(t, fiber.StatusForbidden, doJSON(t, app, openRequest(t, http.MethodGet, othersPath, nil, repKey), nil).StatusCode)
+
+	// Marketing passes the role gate but isn't a manager under CanWrite, so
+	// it's scoped exactly like the Sales Rep key above.
+	marketingKey := createAPIKey(t, app, admin.ID, marketing.ID)
+	require.Equal(t, fiber.StatusForbidden, doJSON(t, app, openRequest(t, http.MethodGet, path, nil, marketingKey), nil).StatusCode)
+	require.Equal(t, fiber.StatusOK, doJSON(t, app, openRequest(t, http.MethodGet, othersPath, nil, adminKey), nil).StatusCode)
+
+	productionKey := createAPIKey(t, app, admin.ID, production.ID)
+	require.Equal(t, fiber.StatusForbidden, doJSON(t, app, openRequest(t, http.MethodGet, path, nil, productionKey), nil).StatusCode)
+
+	missing := "/api/v1/open/deals/999999/payment-installments"
+	require.Equal(t, fiber.StatusNotFound, doJSON(t, app, openRequest(t, http.MethodGet, missing, nil, adminKey), nil).StatusCode)
+
+	// Read-only: a POST with a valid key must not add an installment.
+	postResp := doJSON(t, app, openRequest(t, http.MethodPost, path,
+		map[string]interface{}{"amount": 100, "due_date": future}, adminKey), nil)
+	require.NotEqual(t, fiber.StatusCreated, postResp.StatusCode)
+	var count int64
+	require.NoError(t, db.Model(&models.PaymentInstallment{}).Where("deal_id = ?", deal.ID).Count(&count).Error)
+	require.EqualValues(t, 2, count)
+}
