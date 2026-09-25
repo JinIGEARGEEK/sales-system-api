@@ -1,6 +1,6 @@
 # Open API — User Manual
 
-A guide for external/partner integrations that need to create, read, or update **Company**, **Contact**, **Project**, **Product**, **Prospect**, and **Lead** records without a staff login. If you're working inside this repo on the main resource API instead, see [`biz_spec/api-system-spec.md`](../biz_spec/api-system-spec.md) — this document only covers the `/open/*` routes and the `/admin/api-keys` credentials that unlock them (§8.9 there).
+A guide for external/partner integrations that need to create, read, or update **Company**, **Contact**, **Project**, **Product**, **Prospect**, and **Lead** records without a staff login, and to read a Deal's **payment schedule** (read-only). If you're working inside this repo on the main resource API instead, see [`biz_spec/api-system-spec.md`](../biz_spec/api-system-spec.md) — this document only covers the `/open/*` routes and the `/admin/api-keys` credentials that unlock them (§8.9 there).
 
 This CRM is meant to be the **source of truth** for this data across our internal systems — several of them create, update, and read the same records here. Two things follow from that, both covered in detail below: every Company Create is deduped by website domain so the same real-world company never ends up as two rows (§11's `409 Conflict`), and every Create across every resource supports an `Idempotency-Key` header so a retried call can't accidentally create a duplicate either (§11).
 
@@ -11,6 +11,7 @@ This CRM is meant to be the **source of truth** for this data across our interna
 - Every call is authenticated with an **API key** sent in the `X-API-Key` header — not the `Authorization: Bearer <JWT>` staff login flow used elsewhere in this API.
 - A key **acts as** one specific staff user (its "owner"). Anything you create or update through the Open API is attributed to that person (`created_by`/`updated_by`), exactly as if they'd made the change themselves.
 - Six resources are exposed this way — **Company**, **Contact**, **Project**, **Product**, **Prospect**, and **Lead** — and only four operations per resource: **list, create, get, update**. There is no delete, trash, restore, bulk, or convert endpoint on the Open API, regardless of what the owner's own staff account could otherwise do.
+- One more read-only endpoint returns a **Deal's payment schedule** (§11a) — reach it from a Project's `deal_id`. Deals themselves (and their quotes, payments and contracts) aren't exposed.
 - **A key can read/write every record of these types in the system, not just ones its owner created.** There's no per-key or per-owner data partition — if you issue keys to more than one external partner, each one can see and modify every other partner's records too. Plan key issuance accordingly (§2) if that matters for your integration.
 - **Prospect/Lead's ownership rule (`CanWrite`) applies to create/update only, not list/get.** A key acting as a Sales Rep can only *create or update* a Prospect/Lead that's unassigned or already assigned to that same rep (a key acting as Admin or Sales Manager can write any of them) — but `GET /open/prospects`, `GET /open/leads`, and their `/:id` counterparts return every Prospect/Lead in the system regardless of who it's assigned to, for every key, the same "no per-row ownership filter on reads" behavior the staff app's own `/prospects`/`/leads` List and Get already have. Pick your key's `owner_user_id` (§2) with the write-side restriction in mind — it doesn't limit what that key can read.
 - Only an **Admin** can issue or revoke keys (§2 below). If you're an external integrator, get your key from whoever administers this CRM for your organization — you cannot self-serve one.
@@ -686,6 +687,51 @@ Content-Type: application/json
 
 `200 OK` on success. `403 Forbidden` if the key's owner doesn't own this Lead (Sales Rep) or is reassigning it to someone else. `404 Not Found` if the id doesn't exist.
 
+## 11a. Deal payment schedules (read-only)
+
+A Deal's payment schedule is its list of planned **installments** (payment milestones): an amount and a due date each, defined before the money arrives. Each one comes back with a `status` worked out from the payments actually recorded on the Deal. Payments are applied to the earliest-due installments first, and no status is stored.
+
+To get a customer's payment milestones: list their Projects (`GET /open/projects?company_id=42`, §8), then call this endpoint with each Project's non-null `deal_id`.
+
+### `GET /api/v1/open/deals/:dealId/payment-installments` — List
+
+```
+GET /api/v1/open/deals/19/payment-installments
+X-API-Key: sk_live_...
+```
+
+```json
+{
+  "data": [
+    {
+      "installment": { "id": 3, "deal_id": 19, "amount": 50000, "due_date": "2026-09-01T00:00:00Z", "note": "Deposit", "created_at": "2026-08-20T10:00:00Z", "updated_at": "2026-08-20T10:00:00Z" },
+      "covered": 50000,
+      "status": "paid"
+    },
+    {
+      "installment": { "id": 4, "deal_id": 19, "amount": 50000, "due_date": "2026-10-15T00:00:00Z", "note": "On delivery", "created_at": "2026-08-20T10:00:00Z", "updated_at": "2026-08-20T10:00:00Z" },
+      "covered": 20000,
+      "status": "partial"
+    }
+  ]
+}
+```
+
+Ordered by `due_date` ascending. Not paginated. An empty `data` array means no schedule has been defined for the Deal.
+
+| Field | Notes |
+|---|---|
+| `installment` | The planned installment: `amount`, `due_date`, `note`. |
+| `covered` | How much of `amount` has been paid so far. |
+| `status` | `paid` (fully covered), `partial` (partly covered, not yet due), `overdue` (past `due_date` and not fully covered), or `upcoming` (nothing paid yet, not yet due). |
+
+**Access.** Stricter than the other resources' reads:
+- A key whose owner is a **Production** user gets `403`, the same as that user in the staff app.
+- A key acting as a **Sales Rep** or **Marketing** user only sees schedules on Deals assigned to that user, or unassigned. Any other Deal returns `403`.
+- Admin and Sales Manager keys see every Deal. For an integration that reads every customer's schedule, give the key an Admin or Sales Manager owner (§2).
+
+`404 Not Found` if the Deal doesn't exist.
+
 ## 12. Avoiding duplicates (idempotent retries + domain dedupe)
 
 This CRM is the source of truth other internal systems sync this data through, so an accidental duplicate isn't just clutter here — it propagates to everything reading from it. Two independent safeguards:
@@ -738,8 +784,8 @@ Every error follows the same envelope:
 |---|---|---|
 | 400 | `BAD_REQUEST` | Request body isn't valid JSON, or a field's JSON type doesn't match what's expected (e.g. `revenue_size` sent as a number instead of a string, `company_id` sent as a string instead of a number, `tags` sent as a single string instead of an array). This happens *before* any field-level validation runs, so the response has no `fields` map — check every field's type against the tables in [§6](#6-companies) through [§11](#11-leads). |
 | 401 | `UNAUTHORIZED` | Missing/invalid/revoked API key |
-| 403 | `FORBIDDEN` | The key's owner (a Sales Rep) tried to create/update/assign a Prospect or Lead they don't own — see §1's ownership note |
-| 404 | `NOT_FOUND` | The record id doesn't exist — or, on Project Create, `company_id` doesn't reference an existing Company |
+| 403 | `FORBIDDEN` | The key's owner (a Sales Rep) tried to create/update/assign a Prospect or Lead they don't own — see §1's ownership note; or read a payment schedule on a Deal assigned to someone else, or the owner is a Production user (§11a) |
+| 404 | `NOT_FOUND` | The record id doesn't exist — or, on Project Create, `company_id` doesn't reference an existing Company, or on a payment schedule read, the Deal doesn't exist |
 | 409 | `CONFLICT` | A Company's website domain already belongs to a different Company (§12b); or an `Idempotency-Key` was reused with a different body, or while its original request is still in flight (§12a) |
 | 422 | `VALIDATION_ERROR` | Missing required field, invalid `website`/`email`/`phone` format, invalid `status`, or a `size`/`revenue_size`/`role_title`/`category`/`source`/`business_unit` that isn't a valid/active option |
 | 429 | `TOO_MANY_REQUESTS` | Over 300 requests/minute on this key |
@@ -786,15 +832,20 @@ curl -sS -X POST "$BASE/open/leads" \
   -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
   -H "Idempotency-Key: $(uuidgen)" \
   -d '{"name":"Jordan Lee","source":"Referral"}'
+
+# Read the payment schedule of a Project's Deal (use the Project's deal_id)
+curl -sS "$BASE/open/deals/19/payment-installments" -H "X-API-Key: $API_KEY"
 ```
 
 ## 15. FAQ
 
+**Does a Project have work milestones?** No. A Project is a summary record (status and dates) with no tasks or milestones, by design (FR-CRM-071). Payment milestones are available per Deal, §11a.
+
 **Can I delete a record through this API?** No — Open API scope is create/read/update only, on Company/Contact/Project/Product/Prospect/Lead. Ask an Admin to do it through the staff app.
 
-**Can my key see other resources (Deals, Customer-Products, …)?** No — only `/open/companies`, `/open/contacts`, `/open/projects`, `/open/products`, `/open/prospects`, `/open/leads`, and `/open/options` accept `X-API-Key`; every other route still requires the staff Bearer-JWT login. There's also no Convert endpoint (Prospect→Lead, Lead→Deal) on the Open API — that's staff-app only.
+**Can my key see other resources (Deals, Customer-Products, …)?** No — only `/open/companies`, `/open/contacts`, `/open/projects`, `/open/products`, `/open/prospects`, `/open/leads`, `/open/deals/:dealId/payment-installments` (read-only, §11a), and `/open/options` accept `X-API-Key`; every other route still requires the staff Bearer-JWT login. There's also no Convert endpoint (Prospect→Lead, Lead→Deal) on the Open API — that's staff-app only.
 
-**Can my key see/modify records another integration created?** Yes for Company/Contact/Project/Product — see §1: there's no per-key data partition. For Prospect/Lead, a key acting as a Sales Rep is still restricted to records assigned to that rep or unassigned (§1); a key acting as Admin/Sales Manager can see/modify any of them.
+**Can my key see/modify records another integration created?** Yes for Company/Contact/Project/Product — see §1: there's no per-key data partition. For Prospect/Lead, every key can *see* all of them, but a key acting as a Sales Rep can only *create/update* records assigned to that rep or unassigned (§1); a key acting as Admin/Sales Manager can modify any of them. Deal payment schedules are the one read that is owner-scoped (§11a).
 
 **What happens if the staff user my key acts as gets deactivated?** The key stops working immediately (within the 30s cache window) — reactivate that user or point the key at a different `owner_user_id` (issue a new key; a key's owner can't be changed after creation).
 
