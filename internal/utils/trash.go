@@ -20,11 +20,11 @@ func GenericTrash[T any](c *fiber.Ctx, db *gorm.DB, failMsg string, searchColumn
 	query := db.Unscoped().Model(new(T)).Where("deleted_at IS NOT NULL")
 
 	if search := c.Query("search"); search != "" && len(searchColumns) > 0 {
-		like := "%" + search + "%"
+		like := LikePattern(search)
 		conds := make([]string, len(searchColumns))
 		args := make([]interface{}, len(searchColumns))
 		for i, col := range searchColumns {
-			conds[i] = col + " ILIKE ?"
+			conds[i] = col + " ILIKE ? ESCAPE '\\'"
 			args[i] = like
 		}
 		query = query.Where(strings.Join(conds, " OR "), args...)

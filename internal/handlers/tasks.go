@@ -20,18 +20,23 @@ func NewTaskHandler(db *gorm.DB) *TaskHandler {
 	return &TaskHandler{DB: db}
 }
 
-// List — GET /tasks. Filters (see applyTaskFilters): related_type+related_id
-// (optional), status, assigned_to, campaign_id. status=pending must work
-// without related_type/related_id for the dashboard widget.
+// List — GET /tasks. Filters: see applyTaskFilters (related_type[+related_id],
+// status, assigned_to, campaign_id, search, business_unit, due_from,
+// due_before). status=pending must work without related_type/related_id for
+// the dashboard widget. Sortable by created_at (default, newest first),
+// due_date or title.
 func (h *TaskHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
-	query := applyTaskFilters(h.DB.Model(&models.Task{}), c)
+	query, err := applyTaskFilters(h.DB.Model(&models.Task{}), c)
+	if err != nil {
+		return utils.ValidationError(c, "due_from/due_before must be an RFC 3339 timestamp or YYYY-MM-DD date", map[string][]string{"due_date": {"invalid"}})
+	}
 
 	var total int64
 	query.Count(&total)
 
 	var tasks []models.Task
-	query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "due_date": true}, "-created_at")
+	query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "due_date": true, "title": true}, "-created_at")
 	if err := query.Limit(perPage).Offset(offset).Find(&tasks).Error; err != nil {
 		return utils.Internal(c, "Failed to list tasks")
 	}

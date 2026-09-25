@@ -54,8 +54,8 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 		query = tagFilter(query, v)
 	}
 	if v := c.Query("search"); v != "" {
-		like := "%" + v + "%"
-		query = query.Where("name ILIKE ? OR website ILIKE ?", like, like)
+		like := utils.LikePattern(v)
+		query = query.Where("name ILIKE ? ESCAPE '\\' OR website ILIKE ? ESCAPE '\\'", like, like)
 	}
 	// stale_days — only companies with no company-scoped Activity (see
 	// company_activity.go's withLastActivityAt for the same "related_type =
@@ -104,8 +104,8 @@ func applyContactFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 		query = tagFilter(query, v)
 	}
 	if v := c.Query("search"); v != "" {
-		like := "%" + v + "%"
-		query = query.Where("name ILIKE ? OR email ILIKE ?", like, like)
+		like := utils.LikePattern(v)
+		query = query.Where("name ILIKE ? ESCAPE '\\' OR email ILIKE ? ESCAPE '\\'", like, like)
 	}
 	return query
 }
@@ -134,7 +134,7 @@ func applyDealFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 		query = query.Where("channel = ?", v)
 	}
 	if v := c.Query("search"); v != "" {
-		query = query.Where("title ILIKE ?", "%"+v+"%")
+		query = query.Where("title ILIKE ? ESCAPE '\\'", utils.LikePattern(v))
 	}
 	return query
 }
@@ -146,31 +146,105 @@ func applyProductFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 		query = query.Where("category = ?", v)
 	}
 	if v := c.Query("search"); v != "" {
-		query = query.Where("name ILIKE ?", "%"+v+"%")
+		query = query.Where("name ILIKE ? ESCAPE '\\'", utils.LikePattern(v))
 	}
 	return query
 }
 
-// applyTaskFilters applies related_type+related_id/status/assigned_to/
-// campaign_id filters used by TaskHandler.List. status=pending must work
-// without related_type/related_id for the dashboard widget, so related_type/
-// related_id are only applied together, not independently.
-func applyTaskFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
+// relatedRecordNameMatch is a WHERE fragment matching a row whose
+// polymorphic (related_type, related_id) pair points at a record whose
+// display name ILIKEs the bound pattern — the same label the frontend shows
+// in a Task/Activity row's "Related" column (Deal title; Contact/Company/
+// Prospect/Lead name). Needs the pattern bound five times, once per
+// subquery; see relatedRecordNameArgs. `table` qualifies the outer row's
+// columns so this composes safely with other joins.
+func relatedRecordNameMatch(table string) string {
+	col := func(c string) string { return table + "." + c }
+	sub := func(relatedType, target, nameCol string) string {
+		return "(" + col("related_type") + " = '" + relatedType + "' AND EXISTS (SELECT 1 FROM " + target +
+			" r WHERE r.id = " + col("related_id") + " AND r." + nameCol + " ILIKE ? ESCAPE '\\'))"
+	}
+	return sub("deal", "deals", "title") + " OR " +
+		sub("contact", "contacts", "name") + " OR " +
+		sub("company", "companies", "name") + " OR " +
+		sub("prospect", "prospects", "name") + " OR " +
+		sub("lead", "leads", "name")
+}
+
+func relatedRecordNameArgs(like string) []interface{} {
+	return []interface{}{like, like, like, like, like}
+}
+
+// parseTimeBound accepts either a full RFC 3339 timestamp (what the Tasks
+// page sends: the viewer's local midnight, with offset, so "today" means the
+// viewer's today rather than the server's) or a bare YYYY-MM-DD date
+// (interpreted as UTC midnight).
+func parseTimeBound(v string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t, nil
+	}
+	return time.Parse("2006-01-02", v)
+}
+
+// applyTaskFilters applies the GET /tasks filter block:
+//   - related_type+related_id together (a detail page's own Tasks tab), or
+//     related_type alone (every task linked to that kind of record);
+//   - status, assigned_to (a user id, or "unassigned"), campaign_id;
+//   - search: title/description, or the linked record's display name;
+//   - business_unit: tasks whose linked Deal/Prospect/Lead has that
+//     business unit (Contact/Company-linked tasks never match);
+//   - due_from (inclusive) / due_before (exclusive): RFC 3339 or YYYY-MM-DD
+//     bounds on due_date — the Tasks page's Overdue/Today/Upcoming groups.
+//
+// status=pending must keep working without related_type/related_id for the
+// dashboard widget. Returns a non-nil error (a 400 for the caller) only for
+// an unparseable due_from/due_before.
+func applyTaskFilters(query *gorm.DB, c *fiber.Ctx) (*gorm.DB, error) {
 	relatedType := c.Query("related_type")
 	relatedID := c.Query("related_id")
 	if relatedType != "" && relatedID != "" {
-		query = query.Where("related_type = ? AND related_id = ?", relatedType, relatedID)
+		query = query.Where("tasks.related_type = ? AND tasks.related_id = ?", relatedType, relatedID)
+	} else if relatedType != "" {
+		query = query.Where("tasks.related_type = ?", relatedType)
 	}
 	if v := c.Query("status"); v != "" {
-		query = query.Where("status = ?", v)
+		query = query.Where("tasks.status = ?", v)
 	}
-	if v := c.Query("assigned_to"); v != "" {
-		query = query.Where("assigned_to = ?", v)
+	if v := c.Query("assigned_to"); v == "unassigned" {
+		query = query.Where("tasks.assigned_to IS NULL")
+	} else if v != "" {
+		query = query.Where("tasks.assigned_to = ?", v)
 	}
 	if v := c.Query("campaign_id"); v != "" {
-		query = query.Where("campaign_id = ?", v)
+		query = query.Where("tasks.campaign_id = ?", v)
 	}
-	return query
+	if v := c.Query("search"); v != "" {
+		like := utils.LikePattern(v)
+		args := append([]interface{}{like, like}, relatedRecordNameArgs(like)...)
+		query = query.Where("tasks.title ILIKE ? ESCAPE '\\' OR tasks.description ILIKE ? ESCAPE '\\' OR "+relatedRecordNameMatch("tasks"), args...)
+	}
+	if v := c.Query("business_unit"); v != "" {
+		query = query.Where(
+			"(tasks.related_type = 'deal' AND tasks.related_id IN (SELECT id FROM deals WHERE business_unit = ?)) OR "+
+				"(tasks.related_type = 'prospect' AND tasks.related_id IN (SELECT id FROM prospects WHERE business_unit = ?)) OR "+
+				"(tasks.related_type = 'lead' AND tasks.related_id IN (SELECT id FROM leads WHERE business_unit = ?))",
+			v, v, v)
+	}
+	if v := c.Query("due_from"); v != "" {
+		t, err := parseTimeBound(v)
+		if err != nil {
+			return query, err
+		}
+		query = query.Where("tasks.due_date >= ?", t)
+	}
+	if v := c.Query("due_before"); v != "" {
+		t, err := parseTimeBound(v)
+		if err != nil {
+			return query, err
+		}
+		query = query.Where("tasks.due_date < ?", t)
+	}
+	return query, nil
 }
 
 // applyProjectFilters applies status/company_id filters shared by

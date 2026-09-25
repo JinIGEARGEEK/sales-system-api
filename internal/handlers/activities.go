@@ -19,23 +19,29 @@ func NewActivityHandler(db *gorm.DB) *ActivityHandler {
 	return &ActivityHandler{DB: db}
 }
 
-// List — GET /activities. Filters: related_type+related_id (required together), type.
+// List — GET /activities. Filters:
+//   - related_type+related_id together (a record's own timeline), or
+//     related_type alone (every activity on that kind of record);
+//   - type;
+//   - search: subject/notes, or the linked record's display name.
+//
+// include_stage_changes=true additionally interleaves Deal stage-change
+// history into the same paged, filtered, sorted list — see listFeed
+// (activity_feed.go). Without the flag the response is the plain Activity
+// list.
 func (h *ActivityHandler) List(c *fiber.Ctx) error {
 	relatedType := c.Query("related_type")
 	relatedID := c.Query("related_id")
-	if (relatedType == "") != (relatedID == "") {
-		return utils.BadRequest(c, "related_type and related_id must be provided together")
+	if relatedID != "" && relatedType == "" {
+		return utils.BadRequest(c, "related_id requires related_type")
 	}
 
 	page, perPage, offset := utils.Pagination(c)
-	query := h.DB.Model(&models.Activity{})
+	if c.QueryBool("include_stage_changes") && canSeeStageHistory(middleware.CurrentRole(c)) {
+		return h.listFeed(c, relatedType, relatedID, page, perPage, offset)
+	}
 
-	if relatedType != "" {
-		query = query.Where("related_type = ? AND related_id = ?", relatedType, relatedID)
-	}
-	if v := c.Query("type"); v != "" {
-		query = query.Where("type = ?", v)
-	}
+	query := applyActivityFilters(h.DB.Model(&models.Activity{}), c, relatedType, relatedID)
 
 	var total int64
 	query.Count(&total)
@@ -51,23 +57,37 @@ func (h *ActivityHandler) List(c *fiber.Ctx) error {
 }
 
 func (h *ActivityHandler) populateCreatedBy(activities []models.Activity) {
-	ids := make(map[uint]bool)
-	for _, a := range activities {
-		ids[a.CreatedByID] = true
+	ids := make([]uint, len(activities))
+	for i, a := range activities {
+		ids[i] = a.CreatedByID
 	}
-	idList := make([]uint, 0, len(ids))
-	for id := range ids {
-		idList = append(idList, id)
-	}
-	var users []models.User
-	h.DB.Where("id IN ?", idList).Find(&users)
-	names := make(map[uint]string, len(users))
-	for _, u := range users {
-		names[u.ID] = u.FirstName + " " + u.LastName
-	}
+	names := userNamesByID(h.DB, ids)
 	for i := range activities {
 		activities[i].CreatedBy = names[activities[i].CreatedByID]
 	}
+}
+
+// userNamesByID returns "First Last" for each distinct user id in ids, in one
+// query. Unknown ids are simply absent from the map.
+func userNamesByID(db *gorm.DB, ids []uint) map[uint]string {
+	seen := make(map[uint]bool, len(ids))
+	idList := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			idList = append(idList, id)
+		}
+	}
+	names := make(map[uint]string, len(idList))
+	if len(idList) == 0 {
+		return names
+	}
+	var users []models.User
+	db.Where("id IN ?", idList).Find(&users)
+	for _, u := range users {
+		names[u.ID] = u.FirstName + " " + u.LastName
+	}
+	return names
 }
 
 type activityForm struct {

@@ -170,8 +170,8 @@ func ApplyNullableCompanySearch(query *gorm.DB, table, sortField, search string)
 	}
 	query = query.Joins("LEFT JOIN companies ON companies.id = " + table + ".company_id")
 	if search != "" {
-		like := "%" + search + "%"
-		query = query.Where(table+".name ILIKE ? OR "+table+".email ILIKE ? OR companies.name ILIKE ?", like, like, like)
+		like := LikePattern(search)
+		query = query.Where(table+".name ILIKE ? ESCAPE '\\' OR "+table+".email ILIKE ? ESCAPE '\\' OR companies.name ILIKE ? ESCAPE '\\'", like, like, like)
 	}
 	return query, true
 }
