@@ -10,6 +10,7 @@ package digest
 import (
 	"fmt"
 	"log"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +29,11 @@ const (
 	weeklyDigestSendHour = 8
 	// digestListLimit caps each list (stale, slipped, lost) in the email.
 	digestListLimit = 10
+	// digestCardScan is how many cards per lane the digest reads to pick
+	// those lists from. Open lanes rank longest-waiting first, so a Deal that
+	// slipped back this week sits at the end of its lane — reading only the
+	// top digestListLimit would leave "Slipped back" empty on a busy lane.
+	digestCardScan = 500
 )
 
 // SendMail delivers one digest email. A variable so tests can capture sends
@@ -67,12 +73,28 @@ func MaybeSendWeekly(db *gorm.DB, cfg *config.Config, now time.Time) error {
 	if !settings.WeeklyDigestEnabled || now.Before(monday.Add(weeklyDigestSendHour*time.Hour)) {
 		return nil
 	}
-	if settings.LastWeeklyDigestAt != nil && !settings.LastWeeklyDigestAt.Before(monday) {
+	// Claim the week before sending, in one conditional UPDATE, so two API
+	// instances (or an overlapping check) can't both send it. Released
+	// again below if nothing could be sent, so the next check retries.
+	claim := db.Model(&models.AppSettings{}).Where("id = ?", settings.ID).
+		Where("last_weekly_digest_at IS NULL OR last_weekly_digest_at < ?", monday).
+		UpdateColumn("last_weekly_digest_at", now)
+	if claim.Error != nil {
+		return fmt.Errorf("claim week: %w", claim.Error)
+	}
+	if claim.RowsAffected == 0 {
 		return nil
+	}
+	release := func() error {
+		return db.Model(&models.AppSettings{}).Where("id = ?", settings.ID).
+			UpdateColumn("last_weekly_digest_at", settings.LastWeeklyDigestAt).Error
 	}
 
 	digest, err := BuildWeekly(db, cfg, now)
 	if err != nil {
+		if rerr := release(); rerr != nil {
+			log.Printf("weekly digest: release claim: %v", rerr)
+		}
 		return err
 	}
 	sent := 0
@@ -83,12 +105,15 @@ func MaybeSendWeekly(db *gorm.DB, cfg *config.Config, now time.Time) error {
 		}
 		sent++
 	}
-	// Mark the week done unless every send failed (then retry next hour).
-	// No recipients at all also counts as done — retrying won't create any.
+	// The week stays claimed unless every send failed (then retry next
+	// hour). No recipients at all also counts as done.
 	if len(digest.Recipients) > 0 && sent == 0 {
+		if err := release(); err != nil {
+			return fmt.Errorf("every send failed; release claim: %w", err)
+		}
 		return fmt.Errorf("every send failed; will retry")
 	}
-	return db.Model(&settings).UpdateColumn("last_weekly_digest_at", now).Error
+	return nil
 }
 
 // BuildWeekly renders the digest for the full week (Monday–Sunday)
@@ -96,7 +121,7 @@ func MaybeSendWeekly(db *gorm.DB, cfg *config.Config, now time.Time) error {
 func BuildWeekly(db *gorm.DB, cfg *config.Config, now time.Time) (Weekly, error) {
 	monday := weekStart(now)
 	week := overview.Window{From: monday.AddDate(0, 0, -7), To: monday}
-	ov, err := overview.Build(db, overview.Filters{}, week, overview.PreviousWindow(week), digestListLimit)
+	ov, err := overview.Build(db, overview.Filters{}, week, overview.PreviousWindow(week), digestCardScan)
 	if err != nil {
 		return Weekly{}, fmt.Errorf("build overview: %w", err)
 	}
@@ -162,13 +187,19 @@ var lostReasonLabels = map[string]string{
 	"price": "Price", "timing": "Timing", "competitor": "Competitor", "no_budget": "No budget", "other": "Other",
 }
 
-// baht formats a value compactly (฿850K, ฿4.7M), like the page does.
+// baht formats a value compactly with at most one decimal (฿850K, ฿1.6K,
+// ฿4.7M), like the page's priceFormatCompact ('0,0.[0]a').
 func baht(v float64) string {
-	switch {
-	case v >= 1e6:
-		return "฿" + strings.TrimSuffix(strings.TrimSuffix(fmt.Sprintf("%.1f", v/1e6), "0"), ".") + "M"
-	case v >= 1e3:
-		return fmt.Sprintf("฿%.0fK", v/1e3)
+	oneDecimal := func(x float64) string {
+		return strings.TrimSuffix(fmt.Sprintf("%.1f", math.Round(x*10)/10), ".0")
+	}
+	// Decide the unit on the rounded thousands figure, so ฿999,960 (which
+	// rounds to 1,000.0K) reads ฿1M rather than ฿1000K.
+	switch k := math.Round(v/100) / 10; {
+	case k >= 1000:
+		return "฿" + oneDecimal(v/1e6) + "M"
+	case k >= 1:
+		return "฿" + oneDecimal(v/1e3) + "K"
 	default:
 		return fmt.Sprintf("฿%.0f", v)
 	}
@@ -187,7 +218,8 @@ func cohortLine(c overview.Cohort, from, verb string) string {
 	if c.Cohort == 0 {
 		return ""
 	}
-	return fmt.Sprintf("   %d of %d new %s %s (%d%%)", c.Converted, c.Cohort, from, verb, c.Converted*100/c.Cohort)
+	pct := int64(math.Round(float64(c.Converted) * 100 / float64(c.Cohort))) // rounded, as on the page
+	return fmt.Sprintf("   %d of %d new %s %s (%d%%)", c.Converted, c.Cohort, from, verb, pct)
 }
 
 // daysIn is whole calendar days since the card entered its lane.

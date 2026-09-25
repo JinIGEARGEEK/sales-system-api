@@ -110,6 +110,53 @@ func TestWeeklyDigest_Schedule(t *testing.T) {
 	assert.Len(t, *sent, 2, "next week sends again")
 }
 
+// TestWeeklyDigest_SlippedInBusyLane: a Deal that slipped back last week
+// is listed even when its lane holds more longer-waiting Deals than the
+// email lists (open lanes rank longest-waiting first).
+func TestWeeklyDigest_SlippedInBusyLane(t *testing.T) {
+	_, db := testutil.App(t)
+	company := seedCompany(t, db)
+	contact := seedContact(t, db, company.ID)
+	longAgo := time.Date(2026, 8, 1, 9, 0, 0, 0, time.Local)
+	lastWeek := time.Date(2026, 9, 16, 11, 0, 0, 0, time.Local)
+	prev := "Negotiation"
+	deals := []*models.Deal{{Title: "Slipped Deal", Value: 1, Stage: models.DealStageQualified, Status: models.DealStatusOpen, StageEnteredAt: &lastWeek, PreviousStage: &prev}}
+	for i := 0; i < 15; i++ {
+		deals = append(deals, &models.Deal{Title: "Old Deal", Value: 1, Stage: models.DealStageQualified, Status: models.DealStatusOpen, StageEnteredAt: &longAgo})
+	}
+	for _, d := range deals {
+		d.CompanyID, d.ContactID = company.ID, contact.ID
+		require.NoError(t, db.Create(d).Error)
+		require.NoError(t, db.Model(d).UpdateColumn("created_at", longAgo).Error)
+	}
+
+	w, err := digest.BuildWeekly(db, &config.Config{}, digestNow)
+	require.NoError(t, err)
+	assert.Contains(t, w.Body, "Slipped Deal (Acme Corp): Negotiation -> Qualified")
+}
+
+// TestWeeklyDigest_FailedSendReleasesWeek: the week is claimed before
+// sending, and released when every send fails, so the next check retries.
+func TestWeeklyDigest_FailedSendReleasesWeek(t *testing.T) {
+	_, db := testutil.App(t)
+	keepSeedConfig(t, db)
+	testutil.CreateUser(t, db, models.RoleAdmin)
+	orig := digest.SendMail
+	digest.SendMail = func(*config.Config, string, string, string) error { return assert.AnError }
+	t.Cleanup(func() { digest.SendMail = orig })
+	cfg := &config.Config{SMTPHost: "smtp.example.com"}
+	due := time.Date(2026, 9, 21, 9, 0, 0, 0, time.Local)
+
+	require.Error(t, digest.MaybeSendWeekly(db, cfg, due))
+	var settings models.AppSettings
+	require.NoError(t, db.First(&settings).Error)
+	assert.True(t, settings.LastWeeklyDigestAt == nil || settings.LastWeeklyDigestAt.Before(due.Add(-9*time.Hour)), "claim released")
+
+	sent := captureDigestMail(t)
+	require.NoError(t, digest.MaybeSendWeekly(db, cfg, due.Add(time.Hour)))
+	assert.Len(t, *sent, 1, "retried and sent on the next check")
+}
+
 // TestWeeklyDigest_AdminEndpoints: preview is Admin-only and never sends;
 // the test send refuses without SMTP; the settings toggle is optional.
 func TestWeeklyDigest_AdminEndpoints(t *testing.T) {
