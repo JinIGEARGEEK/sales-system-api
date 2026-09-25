@@ -19,23 +19,29 @@ func NewActivityHandler(db *gorm.DB) *ActivityHandler {
 	return &ActivityHandler{DB: db}
 }
 
-// List — GET /activities. Filters: related_type+related_id (required together), type.
+// List — GET /activities. Filters:
+//   - related_type+related_id together (a record's own timeline), or
+//     related_type alone (every activity on that kind of record);
+//   - type;
+//   - search: subject/notes, or the linked record's display name.
+//
+// include_stage_changes=true additionally interleaves Deal stage-change
+// history into the same paged, filtered, sorted list — see listFeed
+// (activity_feed.go). Without the flag the response is exactly the plain
+// Activity list it always was.
 func (h *ActivityHandler) List(c *fiber.Ctx) error {
 	relatedType := c.Query("related_type")
 	relatedID := c.Query("related_id")
-	if (relatedType == "") != (relatedID == "") {
-		return utils.BadRequest(c, "related_type and related_id must be provided together")
+	if relatedID != "" && relatedType == "" {
+		return utils.BadRequest(c, "related_id requires related_type")
 	}
 
 	page, perPage, offset := utils.Pagination(c)
-	query := h.DB.Model(&models.Activity{})
+	if c.QueryBool("include_stage_changes") && canSeeStageHistory(middleware.CurrentRole(c)) {
+		return h.listFeed(c, relatedType, relatedID, page, perPage, offset)
+	}
 
-	if relatedType != "" {
-		query = query.Where("related_type = ? AND related_id = ?", relatedType, relatedID)
-	}
-	if v := c.Query("type"); v != "" {
-		query = query.Where("type = ?", v)
-	}
+	query := applyActivityFilters(h.DB.Model(&models.Activity{}), c, relatedType, relatedID)
 
 	var total int64
 	query.Count(&total)

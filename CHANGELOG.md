@@ -4,6 +4,18 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-09-25 — Server-side paging filters for Tasks/Activities; audit-log `action` filter
+
+The frontend's Tasks and Activities list pages used to load one capped page (`per_page=1000`, which `utils.Pagination` silently reset to 20, and `per_page=200`) and filter/page it client-side. They now page server-side, so the list endpoints gained the filters those pages need. Existing callers are unaffected: every addition is opt-in.
+
+**`GET /tasks`** (`applyTaskFilters`): `related_type` alone, `assigned_to=unassigned`, `search` (title/description or the linked record's display name), `business_unit` (via the linked Deal/Prospect), and `due_from` (inclusive) / `due_before` (exclusive), each RFC 3339 or `YYYY-MM-DD` (422 if unparseable). `sort` also allows `title`.
+
+**`GET /activities`**: `related_type` alone (a lone `related_id` is still a 400), `search` (subject/notes or the linked record's name), and `include_stage_changes=true`, which `UNION ALL`s Deal stage-change audit rows into the same filtered, counted, sorted and paged list (`internal/handlers/activity_feed.go`). Stage rows carry `kind`/`type` `stage_change`, `related_type` `deal`, `from_stage`/`to_stage`. The flag is ignored for roles outside the `/audit-log` gate.
+
+**`GET /audit-log`** now honors `action` for every role (narrowing only). It was ignored, so `action=stage_changed` also returned other Deal audit rows, which the frontend rendered as an empty "Stage set:" row.
+
+Regression-guarded: `tests/task_activity_paging_test.go`. Spec: `api-system-spec.md` §7.2, §7.6, and the audit-log row.
+
 ## 2026-09-24 — Kanban card position: fill the gaps left by the first version
 
 Follow-ups to 2026-09-22's persisted card positioning (`Deal`/`Lead`/`Prospect.position`):
