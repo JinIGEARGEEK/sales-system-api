@@ -15,10 +15,9 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/testutil"
 )
 
-// Server-side paging/filtering for the Tasks and Activities list pages
-// (previously one capped fetch filtered client-side): GET /tasks' search/
-// business_unit/due-date/unassigned/related_type-only filters, GET
-// /activities' search/related_type-only filters and include_stage_changes
+// Server-side paging/filtering for the Tasks and Activities list pages: GET
+// /tasks' search/business_unit/due-date/unassigned/related_type-only filters,
+// GET /activities' search/related_type-only filters and include_stage_changes
 // feed, and GET /audit-log honoring `action`.
 
 type pagedTasks struct {

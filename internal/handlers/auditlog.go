@@ -53,14 +53,8 @@ func (h *AuditLogHandler) List(c *fiber.Ctx) error {
 	} else {
 		query = query.Where("entity_type = ? AND action = ?", "deal", "stage_changed")
 	}
-	// action narrows within whatever slice the role may see (for a non-Admin
-	// it can only ever narrow, never widen, since the role clause above is
-	// ANDed). It used to be ignored entirely, so the frontend's
-	// action=stage_changed call (useDealStageHistory, the Activities pages'
-	// "Stage set: …" rows) also got every other Deal audit row back for an
-	// Admin (created/updated/reassigned/…) and reassigned rows for a Sales
-	// Manager — none with an after.stage, which rendered as a bare "Stage
-	// set:" with nothing after the colon.
+	// action is ANDed with the role clause above, so it can only narrow a
+	// non-Admin's visible slice, never widen it.
 	if v := c.Query("action"); v != "" {
 		query = query.Where("action = ?", v)
 	}

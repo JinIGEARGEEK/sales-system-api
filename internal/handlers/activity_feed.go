@@ -79,9 +79,7 @@ type ActivityFeedItem struct {
 // listFeed is GET /activities?include_stage_changes=true: real Activities
 // plus Deal stage-change history (the "deal"/"stage_changed" audit rows GET
 // /audit-log exposes to every pipeline role), UNION ALL'd into one list that
-// is filtered, counted, sorted and paged in SQL — so the cross-entity
-// Activities page can page server-side without losing that history. Stage
-// rows come back as kind/type "stage_change", related_type "deal",
+// is filtered, counted, sorted and paged in SQL. Stage rows come back as kind/type "stage_change", related_type "deal",
 // related_id = the Deal, with from_stage/to_stage read from the audit row's
 // before/after snapshots; real activities get kind "activity".
 //
@@ -147,7 +145,11 @@ func (h *ActivityHandler) listFeed(c *fiber.Ctx, relatedType, relatedID string, 
 		return utils.Internal(c, "Failed to list activities")
 	}
 
-	names := h.userNames(rows)
+	ids := make([]uint, len(rows))
+	for i, r := range rows {
+		ids[i] = r.CreatedByID
+	}
+	names := userNamesByID(h.DB, ids)
 	for _, r := range rows {
 		item := ActivityFeedItem{
 			ID: r.ID, Kind: r.Kind, Type: r.Type, Subject: r.Subject, Notes: r.Notes,
@@ -159,25 +161,4 @@ func (h *ActivityHandler) listFeed(c *fiber.Ctx, relatedType, relatedID string, 
 		items = append(items, item)
 	}
 	return utils.List(c, items, page, perPage, total)
-}
-
-func (h *ActivityHandler) userNames(rows []activityFeedRow) map[uint]string {
-	idList := make([]uint, 0, len(rows))
-	seen := make(map[uint]bool, len(rows))
-	for _, r := range rows {
-		if !seen[r.CreatedByID] {
-			seen[r.CreatedByID] = true
-			idList = append(idList, r.CreatedByID)
-		}
-	}
-	names := make(map[uint]string, len(idList))
-	if len(idList) == 0 {
-		return names
-	}
-	var users []models.User
-	h.DB.Where("id IN ?", idList).Find(&users)
-	for _, u := range users {
-		names[u.ID] = u.FirstName + " " + u.LastName
-	}
-	return names
 }

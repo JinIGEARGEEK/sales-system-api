@@ -27,8 +27,8 @@ func NewActivityHandler(db *gorm.DB) *ActivityHandler {
 //
 // include_stage_changes=true additionally interleaves Deal stage-change
 // history into the same paged, filtered, sorted list — see listFeed
-// (activity_feed.go). Without the flag the response is exactly the plain
-// Activity list it always was.
+// (activity_feed.go). Without the flag the response is the plain Activity
+// list.
 func (h *ActivityHandler) List(c *fiber.Ctx) error {
 	relatedType := c.Query("related_type")
 	relatedID := c.Query("related_id")
@@ -57,23 +57,37 @@ func (h *ActivityHandler) List(c *fiber.Ctx) error {
 }
 
 func (h *ActivityHandler) populateCreatedBy(activities []models.Activity) {
-	ids := make(map[uint]bool)
-	for _, a := range activities {
-		ids[a.CreatedByID] = true
+	ids := make([]uint, len(activities))
+	for i, a := range activities {
+		ids[i] = a.CreatedByID
 	}
-	idList := make([]uint, 0, len(ids))
-	for id := range ids {
-		idList = append(idList, id)
-	}
-	var users []models.User
-	h.DB.Where("id IN ?", idList).Find(&users)
-	names := make(map[uint]string, len(users))
-	for _, u := range users {
-		names[u.ID] = u.FirstName + " " + u.LastName
-	}
+	names := userNamesByID(h.DB, ids)
 	for i := range activities {
 		activities[i].CreatedBy = names[activities[i].CreatedByID]
 	}
+}
+
+// userNamesByID returns "First Last" for each distinct user id in ids, in one
+// query. Unknown ids are simply absent from the map.
+func userNamesByID(db *gorm.DB, ids []uint) map[uint]string {
+	seen := make(map[uint]bool, len(ids))
+	idList := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			idList = append(idList, id)
+		}
+	}
+	names := make(map[uint]string, len(idList))
+	if len(idList) == 0 {
+		return names
+	}
+	var users []models.User
+	db.Where("id IN ?", idList).Find(&users)
+	for _, u := range users {
+		names[u.ID] = u.FirstName + " " + u.LastName
+	}
+	return names
 }
 
 type activityForm struct {
