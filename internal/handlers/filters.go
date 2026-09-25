@@ -134,7 +134,7 @@ func applyDealFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 		query = query.Where("channel = ?", v)
 	}
 	if v := c.Query("search"); v != "" {
-		query = query.Where("title ILIKE ? ESCAPE '\\'", "%"+v+"%")
+		query = query.Where("title ILIKE ? ESCAPE '\\'", utils.LikePattern(v))
 	}
 	return query
 }
@@ -146,7 +146,7 @@ func applyProductFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 		query = query.Where("category = ?", v)
 	}
 	if v := c.Query("search"); v != "" {
-		query = query.Where("name ILIKE ? ESCAPE '\\'", "%"+v+"%")
+		query = query.Where("name ILIKE ? ESCAPE '\\'", utils.LikePattern(v))
 	}
 	return query
 }
@@ -191,9 +191,8 @@ func parseTimeBound(v string) (time.Time, error) {
 //     related_type alone (every task linked to that kind of record);
 //   - status, assigned_to (a user id, or "unassigned"), campaign_id;
 //   - search: title/description, or the linked record's display name;
-//   - business_unit: tasks whose linked Deal/Prospect has that business
-//     unit (Tasks have none of their own; Contact/Company-linked tasks never
-//     match);
+//   - business_unit: tasks whose linked Deal/Prospect/Lead has that
+//     business unit (Contact/Company-linked tasks never match);
 //   - due_from (inclusive) / due_before (exclusive): RFC 3339 or YYYY-MM-DD
 //     bounds on due_date — the Tasks page's Overdue/Today/Upcoming groups.
 //
@@ -227,8 +226,9 @@ func applyTaskFilters(query *gorm.DB, c *fiber.Ctx) (*gorm.DB, error) {
 	if v := c.Query("business_unit"); v != "" {
 		query = query.Where(
 			"(tasks.related_type = 'deal' AND tasks.related_id IN (SELECT id FROM deals WHERE business_unit = ?)) OR "+
-				"(tasks.related_type = 'prospect' AND tasks.related_id IN (SELECT id FROM prospects WHERE business_unit = ?))",
-			v, v)
+				"(tasks.related_type = 'prospect' AND tasks.related_id IN (SELECT id FROM prospects WHERE business_unit = ?)) OR "+
+				"(tasks.related_type = 'lead' AND tasks.related_id IN (SELECT id FROM leads WHERE business_unit = ?))",
+			v, v, v)
 	}
 	if v := c.Query("due_from"); v != "" {
 		t, err := parseTimeBound(v)

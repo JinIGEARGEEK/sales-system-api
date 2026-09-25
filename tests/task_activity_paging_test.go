@@ -152,6 +152,25 @@ func TestTaskAndActivitySearch_EscapesLikeWildcards(t *testing.T) {
 	}
 }
 
+func TestTasksList_BusinessUnitMatchesLeadLinkedTasks(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	env := taskEnv{app: app, admin: admin}
+	due := time.Now().AddDate(0, 0, 1)
+
+	lead := seedLead(t, db, nil)
+	require.NoError(t, db.Model(&models.Lead{}).Where("id = ?", lead.ID).Update("business_unit", models.BusinessUnitProduct).Error)
+	otherLead := seedLead(t, db, nil)
+	require.NoError(t, db.Model(&models.Lead{}).Where("id = ?", otherLead.ID).Update("business_unit", models.BusinessUnitProject).Error)
+
+	leadTask := createTask(t, db, models.Task{RelatedType: "lead", RelatedID: lead.ID, Title: "Qualify lead", DueDate: due})
+	createTask(t, db, models.Task{RelatedType: "lead", RelatedID: otherLead.ID, Title: "Qualify other lead", DueDate: due})
+	// A deal whose id collides with the lead's must not match via the lead clause.
+	createTask(t, db, models.Task{RelatedType: "deal", RelatedID: lead.ID, Title: "Deal with the same id", DueDate: due})
+
+	assert.ElementsMatch(t, []uint{leadTask.ID}, taskIDs(listTasks(t, env, "business_unit=Product").Data))
+}
+
 type feedItem struct {
 	ID          uint   `json:"id"`
 	Kind        string `json:"kind"`
