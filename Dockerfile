@@ -29,6 +29,11 @@ COPY --from=build /out/api ./api
 RUN chown app:app ./api
 USER app
 
+# Business-day logic (the Overview Pipeline's "today", the weekly digest's
+# Monday 08:00 and week boundaries) uses the server's local time, which is
+# UTC in this image unless TZ is set. Override per environment if needed.
+ENV TZ=Asia/Bangkok
+
 # Railway sets $PORT at runtime; the app already reads it via config.Load().
 EXPOSE 8080
 CMD ["./api"]

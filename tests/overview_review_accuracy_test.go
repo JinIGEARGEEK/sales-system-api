@@ -80,6 +80,7 @@ func TestOverview_HighlightExactBeyondCardLimit(t *testing.T) {
 // 14-day default, on the lane and in the counts.
 func TestOverview_PerStageStaleDays(t *testing.T) {
 	app, db := testutil.App(t)
+	keepSeedConfig(t, db)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 	thirty := 30
 	require.NoError(t, db.Model(&models.PipelineStage{}).Where("name = ?", "Negotiation").Update("stale_days", thirty).Error)
@@ -185,6 +186,7 @@ func TestOverview_CohortConversion(t *testing.T) {
 // older client that omits it can't wipe an Admin's threshold.
 func TestStageStaleDays_PartialUpdate(t *testing.T) {
 	app, db := testutil.App(t)
+	keepSeedConfig(t, db)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 	var stage models.PipelineStage
 	require.NoError(t, db.Where("name = ?", "Negotiation").First(&stage).Error)

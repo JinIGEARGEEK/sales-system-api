@@ -6,6 +6,43 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/models"
 )
 
+// DefaultPipelineStage is where a new Deal starts when no stage is given:
+// the first active, non-won/lost stage by sort order. Falls back to the
+// seeded "Lead" name only if no such stage exists, so an Admin renaming the
+// first stage (e.g. "Lead" → "Discovery") doesn't break Deal creation.
+func DefaultPipelineStage(db *gorm.DB) models.DealStage {
+	var stage models.PipelineStage
+	err := db.Where("is_active = ? AND is_won_stage = ? AND is_lost_stage = ?", true, false, false).
+		Order("sort_order, id").First(&stage).Error
+	if err != nil {
+		return models.DealStageLead
+	}
+	return models.DealStage(stage.Name)
+}
+
+// DefaultProspectStage is DefaultPipelineStage's Prospect counterpart: the
+// first active, non-disqualified stage by sort order, else the seeded "New".
+func DefaultProspectStage(db *gorm.DB) models.ProspectStatus {
+	var stage models.ProspectStage
+	err := db.Where("is_active = ? AND is_disqualified_stage = ?", true, false).
+		Order("sort_order, id").First(&stage).Error
+	if err != nil {
+		return models.ProspectStatusNew
+	}
+	return models.ProspectStatus(stage.Name)
+}
+
+// DisqualifiedProspectStage is the name of the stage flagged
+// is_disqualified_stage, else the seeded "Disqualified" — so a renamed
+// Disqualified stage still counts as closed.
+func DisqualifiedProspectStage(db *gorm.DB) models.ProspectStatus {
+	var stage models.ProspectStage
+	if err := db.Where("is_disqualified_stage = ?", true).Order("id").First(&stage).Error; err != nil {
+		return models.ProspectStatusDisqualified
+	}
+	return models.ProspectStatus(stage.Name)
+}
+
 // IsActivePipelineStage reports whether name matches an active PipelineStage
 // row — the DB-backed replacement for the old hardcoded DealStage whitelist.
 // Empty name is allowed through (unset stage falls back to its model default).

@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"strings"
+
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
@@ -45,12 +47,13 @@ type prospectStageForm struct {
 	IsDisqualifiedStage bool   `json:"is_disqualified_stage"`
 }
 
-// validate enforces the two name rules shared by Create and Update: required,
-// and "Converted" is reserved for the system-set terminal status (see
-// ProspectStage's own doc) and can never be claimed as a configurable stage.
-func (f prospectStageForm) validate() (map[string][]string, string) {
-	if f.Name == "" {
-		return map[string][]string{"name": {"required"}}, "name is required"
+// validate trims the name and applies the rules shared by Create and Update
+// (see stageNameFields), plus one more: "Converted" is reserved for the
+// system-set terminal status (see ProspectStage's own doc).
+func (f *prospectStageForm) validate() (map[string][]string, string) {
+	f.Name = strings.TrimSpace(f.Name)
+	if fields, msg := stageNameFields(f.Name, maxProspectStageNameLen); fields != nil {
+		return fields, msg
 	}
 	if f.Name == string(models.ProspectStatusConverted) {
 		return map[string][]string{"name": {"\"Converted\" is reserved"}}, "Converted is a reserved, system-set stage"
@@ -89,6 +92,11 @@ func (h *ProspectStageHandler) Create(c *fiber.Ctx) error {
 	}
 	if fields, msg := form.validate(); fields != nil {
 		return utils.ValidationError(c, msg, fields)
+	}
+	if taken, err := stageNameTaken(h.DB, &models.ProspectStage{}, form.Name, 0); err != nil {
+		return utils.Internal(c, "Failed to check stage name")
+	} else if taken {
+		return utils.ValidationError(c, "Stage name already in use", map[string][]string{"name": {"Name is already in use"}})
 	}
 	staleDays, _, staleFields := staleDaysFromBody(c)
 	if staleFields != nil {
@@ -144,11 +152,17 @@ func (h *ProspectStageHandler) Update(c *fiber.Ctx) error {
 	if fields, msg := form.validate(); fields != nil {
 		return utils.ValidationError(c, msg, fields)
 	}
+	if taken, err := stageNameTaken(h.DB, &models.ProspectStage{}, form.Name, stage.ID); err != nil {
+		return utils.Internal(c, "Failed to check stage name")
+	} else if taken {
+		return utils.ValidationError(c, "Stage name already in use", map[string][]string{"name": {"Name is already in use"}})
+	}
 	staleDays, staleDaysSent, staleFields := staleDaysFromBody(c)
 	if staleFields != nil {
 		return utils.ValidationError(c, "stale_days is invalid", staleFields)
 	}
 
+	oldName := stage.Name
 	stage.Name, stage.SortOrder = form.Name, form.SortOrder
 	stage.IsDisqualifiedStage = form.IsDisqualifiedStage
 	if form.IsActive != nil {
@@ -166,7 +180,11 @@ func (h *ProspectStageHandler) Update(c *fiber.Ctx) error {
 				return err
 			}
 		}
-		return tx.Save(&stage).Error
+		if err := tx.Save(&stage).Error; err != nil {
+			return err
+		}
+		// Prospects store their status by name — carry them along on a rename.
+		return renameStageReferences(tx, &models.Prospect{}, "status", oldName, stage.Name)
 	})
 	if err != nil {
 		return utils.Internal(c, "Failed to update prospect stage")

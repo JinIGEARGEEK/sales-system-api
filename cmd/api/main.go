@@ -24,6 +24,9 @@ import (
 	"log"
 	"os"
 	"time"
+	// Embedded zoneinfo, so TZ (e.g. Asia/Bangkok, set in the Dockerfile)
+	// works on the alpine image, which ships none.
+	_ "time/tzdata"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -127,6 +130,7 @@ func main() {
 	notifier.StartWorkflowRuleReminders(db, cfg)
 	// Daily forecast-accuracy snapshot — see internal/notifier/forecast_snapshots.go.
 	notifier.StartForecastSnapshots(db, cfg)
+	notifier.StartWeeklyDigest(db, cfg)
 
 	log.Fatal(app.Listen(":" + cfg.Port))
 }

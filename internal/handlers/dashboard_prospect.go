@@ -69,8 +69,9 @@ func (h *DashboardHandler) ProspectSummary(c *fiber.Ctx) error {
 	}
 
 	var openCount int64
+	disqualified := string(utils.DisqualifiedProspectStage(h.DB))
 	for _, row := range statusRows {
-		if row.Status != string(models.ProspectStatusConverted) && row.Status != string(models.ProspectStatusDisqualified) {
+		if row.Status != string(models.ProspectStatusConverted) && row.Status != disqualified {
 			openCount += row.Count
 		}
 	}

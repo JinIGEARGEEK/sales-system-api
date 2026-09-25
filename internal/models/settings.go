@@ -33,8 +33,15 @@ type AppSettings struct {
 	// DealHandler blocks a Deal from moving into Won (via Create, Update, or
 	// UpdateStage) unless it already has at least one Contract with
 	// status Signed.
-	RequireSignedContractBeforeWon bool      `gorm:"not null;default:false" json:"require_signed_contract_before_won"`
-	UpdatedAt                      time.Time `json:"updated_at"`
+	RequireSignedContractBeforeWon bool `gorm:"not null;default:false" json:"require_signed_contract_before_won"`
+	// WeeklyDigestEnabled — the Monday-morning Overview Pipeline email to
+	// Admins and Sales Managers (internal/notifier/weekly_digest.go). On by
+	// default; it only ever sends when SMTP is configured.
+	WeeklyDigestEnabled bool `gorm:"not null;default:true" json:"weekly_digest_enabled"`
+	// LastWeeklyDigestAt — when the digest last went out; server-set only,
+	// so a restart mid-Monday can't send the same week twice.
+	LastWeeklyDigestAt *time.Time `json:"last_weekly_digest_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 	// SMTPConfigured — read-only, derived from config.Config.SMTPHost at
 	// request time (SettingsHandler.Get/Update set it), never persisted
 	// (gorm:"-"). Task due-date email reminders (internal/notifier,
@@ -55,4 +62,5 @@ var DefaultAppSettings = AppSettings{
 	AnnualRevenueGoal:              12000000,
 	LeadScoringMqlThreshold:        50,
 	RequireSignedContractBeforeWon: false,
+	WeeklyDigestEnabled:            true,
 }

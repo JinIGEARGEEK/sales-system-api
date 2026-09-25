@@ -1,10 +1,13 @@
 package handlers
 
 import (
+	"time"
+
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
 	"github.com/igeargeek/sales-system-api/internal/config"
+	"github.com/igeargeek/sales-system-api/internal/digest"
 	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
@@ -41,6 +44,7 @@ type settingsForm struct {
 	AnnualRevenueGoal              *int64 `json:"annual_revenue_goal"`
 	LeadScoringMqlThreshold        *int64 `json:"lead_scoring_mql_threshold"`
 	RequireSignedContractBeforeWon *bool  `json:"require_signed_contract_before_won"`
+	WeeklyDigestEnabled            *bool  `json:"weekly_digest_enabled"`
 }
 
 // requireNonNegative validates one required *int64 form field, writing the
@@ -67,7 +71,7 @@ func requireNonNegative(c *fiber.Ctx, field string, value *int64) bool {
 
 // Update godoc
 // @Summary Update app settings
-// @Description Admin-only. quarterly_sales_target and annual_revenue_goal are required on every PATCH (this is a singleton row, not a per-field partial-update resource); both must be non-negative. lead_scoring_mql_threshold and require_signed_contract_before_won are optional and left unchanged if omitted.
+// @Description Admin-only. quarterly_sales_target and annual_revenue_goal are required on every PATCH (this is a singleton row, not a per-field partial-update resource); both must be non-negative. lead_scoring_mql_threshold, require_signed_contract_before_won and weekly_digest_enabled are optional and left unchanged if omitted.
 // @Tags admin/settings
 // @Security BearerAuth
 // @Accept json
@@ -101,9 +105,11 @@ func (h *SettingsHandler) Update(c *fiber.Ctx) error {
 
 	oldQuarterlyTarget, oldAnnualGoal, oldMqlThreshold := settings.QuarterlySalesTarget, settings.AnnualRevenueGoal, settings.LeadScoringMqlThreshold
 	oldRequireSignedContract := settings.RequireSignedContractBeforeWon
+	oldWeeklyDigest := settings.WeeklyDigestEnabled
 	before := models.JSONMap{
 		"quarterly_sales_target": oldQuarterlyTarget, "annual_revenue_goal": oldAnnualGoal,
 		"lead_scoring_mql_threshold": oldMqlThreshold, "require_signed_contract_before_won": oldRequireSignedContract,
+		"weekly_digest_enabled": oldWeeklyDigest,
 	}
 
 	settings.QuarterlySalesTarget = *form.QuarterlySalesTarget
@@ -117,14 +123,20 @@ func (h *SettingsHandler) Update(c *fiber.Ctx) error {
 	if form.RequireSignedContractBeforeWon != nil {
 		settings.RequireSignedContractBeforeWon = *form.RequireSignedContractBeforeWon
 	}
+	// Optional, same as the flag above.
+	if form.WeeklyDigestEnabled != nil {
+		settings.WeeklyDigestEnabled = *form.WeeklyDigestEnabled
+	}
 	after := models.JSONMap{
 		"quarterly_sales_target": settings.QuarterlySalesTarget, "annual_revenue_goal": settings.AnnualRevenueGoal,
 		"lead_scoring_mql_threshold": settings.LeadScoringMqlThreshold, "require_signed_contract_before_won": settings.RequireSignedContractBeforeWon,
+		"weekly_digest_enabled": settings.WeeklyDigestEnabled,
 	}
 
 	changed := oldQuarterlyTarget != settings.QuarterlySalesTarget || oldAnnualGoal != settings.AnnualRevenueGoal ||
-		oldMqlThreshold != settings.LeadScoringMqlThreshold || oldRequireSignedContract != settings.RequireSignedContractBeforeWon
-	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error { return tx.Save(&settings).Error },
+		oldMqlThreshold != settings.LeadScoringMqlThreshold || oldRequireSignedContract != settings.RequireSignedContractBeforeWon ||
+		oldWeeklyDigest != settings.WeeklyDigestEnabled
+	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error { return tx.Omit("last_weekly_digest_at").Save(&settings).Error },
 		changed, "settings", settings.ID, "updated", before, after, middleware.CurrentUserID(c))
 	if err != nil {
 		return utils.Internal(c, "Failed to update settings")
@@ -140,4 +152,55 @@ func (h *SettingsHandler) Update(c *fiber.Ctx) error {
 	}
 	settings.SMTPConfigured = h.cfg.SMTPHost != ""
 	return utils.OK(c, settings)
+}
+
+// weeklyDigestPreview is what GET /admin/weekly-digest/preview returns: the
+// digest as it would go out now, plus whether it actually can.
+type weeklyDigestPreview struct {
+	Subject        string     `json:"subject"`
+	Body           string     `json:"body"`
+	Recipients     []string   `json:"recipients"`
+	WeekFrom       string     `json:"week_from"`
+	WeekTo         string     `json:"week_to"`
+	Enabled        bool       `json:"enabled"`
+	SMTPConfigured bool       `json:"smtp_configured"`
+	LastSentAt     *time.Time `json:"last_sent_at"`
+}
+
+// WeeklyDigestPreview — GET /admin/weekly-digest/preview (Admin). Renders
+// last week's digest without sending it, so an Admin can see exactly what
+// Admins/Sales Managers get each Monday.
+func (h *SettingsHandler) WeeklyDigestPreview(c *fiber.Ctx) error {
+	weekly, err := digest.BuildWeekly(h.DB, h.cfg, time.Now())
+	if err != nil {
+		return utils.Internal(c, "Failed to build weekly digest")
+	}
+	settings := utils.GetAppSettings(h.DB)
+	return utils.OK(c, weeklyDigestPreview{
+		Subject: weekly.Subject, Body: weekly.Body, Recipients: weekly.Recipients,
+		WeekFrom: weekly.Week.From.Format("2006-01-02"), WeekTo: weekly.Week.To.AddDate(0, 0, -1).Format("2006-01-02"),
+		Enabled: settings.WeeklyDigestEnabled, SMTPConfigured: h.cfg != nil && h.cfg.SMTPHost != "",
+		LastSentAt: settings.LastWeeklyDigestAt,
+	})
+}
+
+// SendWeeklyDigestTest — POST /admin/weekly-digest/test (Admin). Emails the
+// current digest to the calling Admin only, so they can check it arrives and
+// reads well; doesn't touch the Monday schedule.
+func (h *SettingsHandler) SendWeeklyDigestTest(c *fiber.Ctx) error {
+	if h.cfg == nil || h.cfg.SMTPHost == "" {
+		return utils.ValidationError(c, "Email isn't configured on the server (SMTP_HOST)", map[string][]string{"smtp": {"not_configured"}})
+	}
+	var me models.User
+	if err := h.DB.First(&me, middleware.CurrentUserID(c)).Error; err != nil || me.Email == "" {
+		return utils.ValidationError(c, "Your account has no email address", map[string][]string{"email": {"missing"}})
+	}
+	weekly, err := digest.BuildWeekly(h.DB, h.cfg, time.Now())
+	if err != nil {
+		return utils.Internal(c, "Failed to build weekly digest")
+	}
+	if err := utils.SendMail(h.cfg, me.Email, "[Test] "+weekly.Subject, weekly.Body); err != nil {
+		return utils.Internal(c, "Failed to send the test email")
+	}
+	return utils.OK(c, fiber.Map{"sent_to": me.Email})
 }

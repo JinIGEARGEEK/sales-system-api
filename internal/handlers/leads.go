@@ -781,10 +781,18 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 			deal.Title = lead.Name
 		}
 		if deal.Stage == "" {
+			// "Qualified" by default; the first open stage if an Admin has
+			// renamed or retired it.
 			deal.Stage = models.DealStageQualified
+			if !utils.IsActivePipelineStage(tx, string(deal.Stage)) {
+				deal.Stage = utils.DefaultPipelineStage(tx)
+			}
 		}
-		def := models.StageDefaultProbability(deal.Stage)
-		deal.Probability = &def
+		// Same defaults as Deal Create: the stage's configured probability
+		// (so a renamed stage keeps its number) and its forecast category.
+		prob := utils.StageDefaultProbability(tx, deal.Stage)
+		category := models.StageDefaultForecastCategory(deal.Stage)
+		deal.Probability, deal.ForecastCategory = &prob, &category
 		deal.Position = dealLanes.next(tx, deal.Stage)
 		if err := tx.Create(&deal).Error; err != nil {
 			return err
