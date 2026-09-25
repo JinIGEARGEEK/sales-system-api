@@ -601,7 +601,7 @@ interface InstallmentStatus {
 
 | Method | Path | Status | Description |
 |---|---|---|---|
-| `GET` | `/deals/:dealId/payment-installments` | 🟢 | Returns `InstallmentStatus[]` — every installment on the Deal plus its derived status. Backs the Deal detail page's Payment Schedule section. |
+| `GET` | `/deals/:dealId/payment-installments` | 🟢 | Returns `InstallmentStatus[]` — every installment on the Deal plus its derived status. Backs the Deal detail page's Payment Schedule section. Also exposed read-only to API keys as `/open/deals/:dealId/payment-installments` (§8.9, added 2026-09-25). |
 | `POST` | `/deals/:dealId/payment-installments` | 🟢 | Body: `{amount, due_date, note}`. `amount` must be `> 0`, `due_date` is required. No validation against the Deal's value or existing installments' total — permissive, matching `Payment`'s own lack of a "can't exceed deal value" check. Same `dealForSubResource`/`CanWrite` RBAC as Payments/Quotes/Contracts (only the Deal's assigned Sales Rep, or Admin/Sales Manager, may create). |
 | `PUT` | `/payment-installments/:id` | 🟢 | Same body/validation as Create. Same ownership check, resolved via the installment's own `deal_id`. |
 | `DELETE` | `/payment-installments/:id` | 🟢 | Hard delete (`HardDeleteModel`, matching `Payment`'s own delete semantics) — planning data, not audit-critical. Same ownership check as Update. |
@@ -1011,6 +1011,7 @@ Every key **acts as** its `owner_user_id`: `RequireAPIKey` populates the exact s
 | `GET` / `PUT` | `/open/companies/:id` | `X-API-Key` | Read / update a `Company`. |
 | `GET` / `POST` | `/open/contacts` | `X-API-Key` | List / create a `Contact` (§5) — identical validation and shape to the staff-facing `/contacts` endpoint. |
 | `GET` / `PUT` | `/open/contacts/:id` | `X-API-Key` | Read / update a `Contact`. |
+| `GET` | `/open/deals/:dealId/payment-installments` | `X-API-Key` | **Added 2026-09-25.** Read-only `InstallmentStatus[]` for a Deal (§7.5a) — the same handler as the staff route, so the same rules apply: Admin/Sales Rep/Sales Manager/Marketing owners only (Production `403`), and `dealForSubResource`'s `CanWrite` check (a key owned by a Sales Rep or Marketing user only reads Deals assigned to that user, or unassigned — `403` otherwise; Admin/Sales Manager keys read every Deal). No other Deal route is exposed. |
 
 Rate-limited per key (not per source IP, unlike the login endpoint's limiter — many integration calls legitimately share one egress IP): 300 requests/minute, `429 TOO_MANY_REQUESTS` past that.
 
