@@ -40,8 +40,8 @@ func (h *UserHandler) List(c *fiber.Ctx) error {
 		query = query.Where("is_active = ?", status == "active")
 	}
 	if search := c.Query("search"); search != "" {
-		like := "%" + search + "%"
-		query = query.Where("first_name ILIKE ? OR last_name ILIKE ? OR email ILIKE ?", like, like, like)
+		like := utils.LikePattern(search)
+		query = query.Where("first_name ILIKE ? ESCAPE '\\' OR last_name ILIKE ? ESCAPE '\\' OR email ILIKE ? ESCAPE '\\'", like, like, like)
 	}
 
 	var total int64

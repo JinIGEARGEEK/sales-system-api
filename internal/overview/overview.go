@@ -27,6 +27,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/igeargeek/sales-system-api/internal/models"
+	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
 // Filters mirror the page's filter bar; empty fields don't filter.
@@ -334,9 +335,9 @@ func (e overviewEntity) base(db *gorm.DB, f Filters) *gorm.DB {
 		q = q.Where("? = ANY("+e.col("tags")+")", strings.ToLower(v))
 	}
 	if v := strings.TrimSpace(f.Search); v != "" {
-		like := "%" + v + "%"
-		q = q.Where("("+e.col(e.nameColumn)+" ILIKE ? OR EXISTS (SELECT 1 FROM companies sc WHERE sc.id = "+
-			e.col("company_id")+" AND sc.name ILIKE ?))", like, like)
+		like := utils.LikePattern(v)
+		q = q.Where("("+e.col(e.nameColumn)+" ILIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM companies sc WHERE sc.id = "+
+			e.col("company_id")+" AND sc.name ILIKE ? ESCAPE '\\'))", like, like)
 	}
 	return q
 }
