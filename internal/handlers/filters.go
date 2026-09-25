@@ -54,8 +54,8 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 		query = tagFilter(query, v)
 	}
 	if v := c.Query("search"); v != "" {
-		like := "%" + v + "%"
-		query = query.Where("name ILIKE ? OR website ILIKE ?", like, like)
+		like := utils.LikePattern(v)
+		query = query.Where("name ILIKE ? ESCAPE '\\' OR website ILIKE ? ESCAPE '\\'", like, like)
 	}
 	// stale_days — only companies with no company-scoped Activity (see
 	// company_activity.go's withLastActivityAt for the same "related_type =
@@ -104,8 +104,8 @@ func applyContactFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 		query = tagFilter(query, v)
 	}
 	if v := c.Query("search"); v != "" {
-		like := "%" + v + "%"
-		query = query.Where("name ILIKE ? OR email ILIKE ?", like, like)
+		like := utils.LikePattern(v)
+		query = query.Where("name ILIKE ? ESCAPE '\\' OR email ILIKE ? ESCAPE '\\'", like, like)
 	}
 	return query
 }
@@ -134,7 +134,7 @@ func applyDealFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 		query = query.Where("channel = ?", v)
 	}
 	if v := c.Query("search"); v != "" {
-		query = query.Where("title ILIKE ?", "%"+v+"%")
+		query = query.Where("title ILIKE ? ESCAPE '\\'", "%"+v+"%")
 	}
 	return query
 }
@@ -146,7 +146,7 @@ func applyProductFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 		query = query.Where("category = ?", v)
 	}
 	if v := c.Query("search"); v != "" {
-		query = query.Where("name ILIKE ?", "%"+v+"%")
+		query = query.Where("name ILIKE ? ESCAPE '\\'", "%"+v+"%")
 	}
 	return query
 }
@@ -162,7 +162,7 @@ func relatedRecordNameMatch(table string) string {
 	col := func(c string) string { return table + "." + c }
 	sub := func(relatedType, target, nameCol string) string {
 		return "(" + col("related_type") + " = '" + relatedType + "' AND EXISTS (SELECT 1 FROM " + target +
-			" r WHERE r.id = " + col("related_id") + " AND r." + nameCol + " ILIKE ?))"
+			" r WHERE r.id = " + col("related_id") + " AND r." + nameCol + " ILIKE ? ESCAPE '\\'))"
 	}
 	return sub("deal", "deals", "title") + " OR " +
 		sub("contact", "contacts", "name") + " OR " +
@@ -220,9 +220,9 @@ func applyTaskFilters(query *gorm.DB, c *fiber.Ctx) (*gorm.DB, error) {
 		query = query.Where("tasks.campaign_id = ?", v)
 	}
 	if v := c.Query("search"); v != "" {
-		like := "%" + v + "%"
+		like := utils.LikePattern(v)
 		args := append([]interface{}{like, like}, relatedRecordNameArgs(like)...)
-		query = query.Where("tasks.title ILIKE ? OR tasks.description ILIKE ? OR "+relatedRecordNameMatch("tasks"), args...)
+		query = query.Where("tasks.title ILIKE ? ESCAPE '\\' OR tasks.description ILIKE ? ESCAPE '\\' OR "+relatedRecordNameMatch("tasks"), args...)
 	}
 	if v := c.Query("business_unit"); v != "" {
 		query = query.Where(

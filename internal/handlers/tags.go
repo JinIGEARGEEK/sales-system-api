@@ -40,7 +40,7 @@ func (h *TagHandler) List(c *fiber.Ctx) error {
 		query = query.Where("status = ?", v)
 	}
 	if v := c.Query("search"); v != "" {
-		query = query.Where("name ILIKE ?", "%"+v+"%")
+		query = query.Where("name ILIKE ? ESCAPE '\\'", utils.LikePattern(v))
 	}
 
 	var total int64

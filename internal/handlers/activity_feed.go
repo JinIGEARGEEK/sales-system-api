@@ -22,9 +22,9 @@ func applyActivityFilters(query *gorm.DB, c *fiber.Ctx, relatedType, relatedID s
 		query = query.Where("activities.type = ?", v)
 	}
 	if v := c.Query("search"); v != "" {
-		like := "%" + v + "%"
+		like := utils.LikePattern(v)
 		args := append([]interface{}{like, like}, relatedRecordNameArgs(like)...)
-		query = query.Where("activities.subject ILIKE ? OR activities.notes ILIKE ? OR "+relatedRecordNameMatch("activities"), args...)
+		query = query.Where("activities.subject ILIKE ? ESCAPE '\\' OR activities.notes ILIKE ? ESCAPE '\\' OR "+relatedRecordNameMatch("activities"), args...)
 	}
 	return query
 }
@@ -111,9 +111,9 @@ func (h *ActivityHandler) listFeed(c *fiber.Ctx, relatedType, relatedID string, 
 			stages = stages.Where("audit_log_entries.entity_id = ?", relatedID)
 		}
 		if v := c.Query("search"); v != "" {
-			like := "%" + v + "%"
-			stages = stages.Where("audit_log_entries.after->>'stage' ILIKE ? OR audit_log_entries.before->>'stage' ILIKE ? OR "+
-				"EXISTS (SELECT 1 FROM deals r WHERE r.id = audit_log_entries.entity_id AND r.title ILIKE ?)", like, like, like)
+			like := utils.LikePattern(v)
+			stages = stages.Where("audit_log_entries.after->>'stage' ILIKE ? ESCAPE '\\' OR audit_log_entries.before->>'stage' ILIKE ? ESCAPE '\\' OR "+
+				"EXISTS (SELECT 1 FROM deals r WHERE r.id = audit_log_entries.entity_id AND r.title ILIKE ? ESCAPE '\\')", like, like, like)
 		}
 		parts = append(parts, stages)
 	}

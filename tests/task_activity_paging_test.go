@@ -119,6 +119,39 @@ func TestTasksList_ServerFilters(t *testing.T) {
 	})
 }
 
+// Search terms are matched literally: LIKE's % and _ wildcards (and the \
+// escape character) in the user's input must not act as wildcards.
+func TestTaskAndActivitySearch_EscapesLikeWildcards(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	env := taskEnv{app: app, admin: admin}
+	deal := seedDeal(t, db, nil)
+	due := time.Now().AddDate(0, 0, 1)
+
+	percent := createTask(t, db, models.Task{RelatedType: "deal", RelatedID: deal.ID, Title: "Offer 100% discount", DueDate: due})
+	createTask(t, db, models.Task{RelatedType: "deal", RelatedID: deal.ID, Title: "Offer 1000 discount", DueDate: due})
+	underscore := createTask(t, db, models.Task{RelatedType: "deal", RelatedID: deal.ID, Title: "Rename file_a", DueDate: due})
+	createTask(t, db, models.Task{RelatedType: "deal", RelatedID: deal.ID, Title: "Rename filexa", DueDate: due})
+	backslash := createTask(t, db, models.Task{RelatedType: "deal", RelatedID: deal.ID, Title: `Copy C:\share`, DueDate: due})
+
+	q := func(search string) string { return url.Values{"search": {search}}.Encode() }
+	assert.ElementsMatch(t, []uint{percent.ID}, taskIDs(listTasks(t, env, q("100%")).Data))
+	assert.ElementsMatch(t, []uint{underscore.ID}, taskIDs(listTasks(t, env, q("file_a")).Data))
+	assert.ElementsMatch(t, []uint{backslash.ID}, taskIDs(listTasks(t, env, q(`C:\share`)).Data))
+	assert.ElementsMatch(t, []uint{percent.ID}, taskIDs(listTasks(t, env, q("%")).Data), "a lone % matches only a literal %")
+
+	literal := &models.Activity{Type: models.ActivityTypeNote, Subject: "50% deposit", RelatedType: models.RelatedTypeDeal, RelatedID: deal.ID, CreatedByID: admin.ID}
+	require.NoError(t, db.Create(literal).Error)
+	require.NoError(t, db.Create(&models.Activity{Type: models.ActivityTypeNote, Subject: "500 deposit", RelatedType: models.RelatedTypeDeal, RelatedID: deal.ID, CreatedByID: admin.ID}).Error)
+	for _, extra := range []string{"", "&include_stage_changes=true"} {
+		var out pagedFeed
+		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/activities?"+q("50%")+extra, nil, admin.ID, admin.Role)
+		require.Equal(t, http.StatusOK, doJSON(t, app, req, &out).StatusCode)
+		require.Len(t, out.Data, 1, extra)
+		assert.Equal(t, literal.ID, out.Data[0].ID, extra)
+	}
+}
+
 type feedItem struct {
 	ID          uint   `json:"id"`
 	Kind        string `json:"kind"`

@@ -12,6 +12,8 @@ The frontend's Tasks and Activities list pages used to load one capped page (`pe
 
 **`GET /activities`**: `related_type` alone (a lone `related_id` is still a 400), `search` (subject/notes or the linked record's name), and `include_stage_changes=true`, which `UNION ALL`s Deal stage-change audit rows into the same filtered, counted, sorted and paged list (`internal/handlers/activity_feed.go`). Stage rows carry `kind`/`type` `stage_change`, `related_type` `deal`, `from_stage`/`to_stage`. The flag is ignored for roles outside the `/audit-log` gate.
 
+**Search is literal everywhere.** `%`, `_` and `\` in any list endpoint's `search` (these new ones and the pre-existing Companies/Contacts/Deals/Products/Leads/Prospects/Tags/Users/Trash/Overview Pipeline searches) are escaped (`utils.LikePattern`, `ILIKE ? ESCAPE '\'`) instead of acting as LIKE wildcards.
+
 **`GET /audit-log`** now honors `action` for every role (narrowing only). It was ignored, so `action=stage_changed` also returned other Deal audit rows, which the frontend rendered as an empty "Stage set:" row.
 
 Regression-guarded: `tests/task_activity_paging_test.go`. Spec: `api-system-spec.md` §7.2, §7.6, and the audit-log row.
