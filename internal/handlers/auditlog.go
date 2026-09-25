@@ -25,6 +25,7 @@ func NewAuditLogHandler(db *gorm.DB) *AuditLogHandler {
 // @Produce json
 // @Param entity_type query string false "Filter by entity type (Admin only — ignored for Sales Rep/Sales Manager, who are hard-restricted to entity_type=deal)"
 // @Param actor_id query string false "Filter by acting user ID (Admin only — ignored for Sales Rep/Sales Manager)"
+// @Param action query string false "Filter by action (e.g. stage_changed) — applies to all roles, narrowing within the role's visible slice"
 // @Param entity_id query string false "Filter by entity ID (e.g. a specific Deal ID) — applies to all roles"
 // @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on created_at"
 // @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on created_at"
@@ -51,6 +52,17 @@ func (h *AuditLogHandler) List(c *fiber.Ctx) error {
 		query = query.Where("entity_type = ? AND action IN ?", "deal", []string{"stage_changed", "reassigned", "bulk_reassigned"})
 	} else {
 		query = query.Where("entity_type = ? AND action = ?", "deal", "stage_changed")
+	}
+	// action narrows within whatever slice the role may see (for a non-Admin
+	// it can only ever narrow, never widen, since the role clause above is
+	// ANDed). It used to be ignored entirely, so the frontend's
+	// action=stage_changed call (useDealStageHistory, the Activities pages'
+	// "Stage set: …" rows) also got every other Deal audit row back for an
+	// Admin (created/updated/reassigned/…) and reassigned rows for a Sales
+	// Manager — none with an after.stage, which rendered as a bare "Stage
+	// set:" with nothing after the colon.
+	if v := c.Query("action"); v != "" {
+		query = query.Where("action = ?", v)
 	}
 	if v := c.Query("entity_id"); v != "" {
 		query = query.Where("entity_id = ?", v)
