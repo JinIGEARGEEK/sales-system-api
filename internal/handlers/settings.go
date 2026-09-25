@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"time"
+
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
@@ -9,7 +11,6 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
-	"time"
 )
 
 // SettingsHandler — Admin-only read/update of the AppSettings singleton row
@@ -70,7 +71,7 @@ func requireNonNegative(c *fiber.Ctx, field string, value *int64) bool {
 
 // Update godoc
 // @Summary Update app settings
-// @Description Admin-only. quarterly_sales_target and annual_revenue_goal are required on every PATCH (this is a singleton row, not a per-field partial-update resource); both must be non-negative. lead_scoring_mql_threshold and require_signed_contract_before_won are optional and left unchanged if omitted.
+// @Description Admin-only. quarterly_sales_target and annual_revenue_goal are required on every PATCH (this is a singleton row, not a per-field partial-update resource); both must be non-negative. lead_scoring_mql_threshold, require_signed_contract_before_won and weekly_digest_enabled are optional and left unchanged if omitted.
 // @Tags admin/settings
 // @Security BearerAuth
 // @Accept json
@@ -135,7 +136,7 @@ func (h *SettingsHandler) Update(c *fiber.Ctx) error {
 	changed := oldQuarterlyTarget != settings.QuarterlySalesTarget || oldAnnualGoal != settings.AnnualRevenueGoal ||
 		oldMqlThreshold != settings.LeadScoringMqlThreshold || oldRequireSignedContract != settings.RequireSignedContractBeforeWon ||
 		oldWeeklyDigest != settings.WeeklyDigestEnabled
-	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error { return tx.Save(&settings).Error },
+	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error { return tx.Omit("last_weekly_digest_at").Save(&settings).Error },
 		changed, "settings", settings.ID, "updated", before, after, middleware.CurrentUserID(c))
 	if err != nil {
 		return utils.Internal(c, "Failed to update settings")
@@ -174,8 +175,7 @@ func (h *SettingsHandler) WeeklyDigestPreview(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.Internal(c, "Failed to build weekly digest")
 	}
-	var settings models.AppSettings
-	h.DB.First(&settings)
+	settings := utils.GetAppSettings(h.DB)
 	return utils.OK(c, weeklyDigestPreview{
 		Subject: weekly.Subject, Body: weekly.Body, Recipients: weekly.Recipients,
 		WeekFrom: weekly.Week.From.Format("2006-01-02"), WeekTo: weekly.Week.To.AddDate(0, 0, -1).Format("2006-01-02"),

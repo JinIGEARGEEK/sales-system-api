@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
@@ -90,14 +91,33 @@ func keepSeedConfig(t *testing.T, db *gorm.DB) {
 	require.NoError(t, db.Unscoped().Find(&prospectStages).Error)
 	require.NoError(t, db.Find(&settings).Error)
 	t.Cleanup(func() {
-		for i := range stages {
-			db.Unscoped().Save(&stages[i])
-		}
-		for i := range prospectStages {
-			db.Unscoped().Save(&prospectStages[i])
-		}
+		restoreRows(t, db, &models.PipelineStage{}, stages, func(s models.PipelineStage) uint { return s.ID })
+		restoreRows(t, db, &models.ProspectStage{}, prospectStages, func(s models.ProspectStage) uint { return s.ID })
 		for i := range settings {
-			db.Save(&settings[i])
+			assert.NoError(t, db.Save(&settings[i]).Error, "restore app_settings")
 		}
 	})
+}
+
+// restoreRows puts a stage table back to snapshot: rows the test added are
+// deleted, and every snapshot row is first parked under a unique temporary
+// name so restoring swapped names can't trip the unique name index.
+func restoreRows[T any](t *testing.T, db *gorm.DB, model interface{}, snapshot []T, id func(T) uint) {
+	t.Helper()
+	ids := make([]uint, 0, len(snapshot))
+	for _, row := range snapshot {
+		ids = append(ids, id(row))
+	}
+	q := db.Unscoped()
+	if len(ids) > 0 {
+		q = q.Where("id NOT IN ?", ids)
+	} else {
+		q = q.Where("1 = 1")
+	}
+	assert.NoError(t, q.Delete(model).Error, "delete rows added by the test")
+	assert.NoError(t, db.Unscoped().Model(model).Where("id IN ?", ids).
+		UpdateColumn("name", gorm.Expr("'__restore_' || id")).Error, "park names")
+	for i := range snapshot {
+		assert.NoError(t, db.Unscoped().Save(&snapshot[i]).Error, "restore row")
+	}
 }

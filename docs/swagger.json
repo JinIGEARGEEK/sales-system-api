@@ -1616,7 +1616,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Admin-only. quarterly_sales_target and annual_revenue_goal are required on every PATCH (this is a singleton row, not a per-field partial-update resource); both must be non-negative. lead_scoring_mql_threshold and require_signed_contract_before_won are optional and left unchanged if omitted.",
+                "description": "Admin-only. quarterly_sales_target and annual_revenue_goal are required on every PATCH (this is a singleton row, not a per-field partial-update resource); both must be non-negative. lead_scoring_mql_threshold, require_signed_contract_before_won and weekly_digest_enabled are optional and left unchanged if omitted.",
                 "consumes": [
                     "application/json"
                 ],

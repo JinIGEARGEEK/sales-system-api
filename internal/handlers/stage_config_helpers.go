@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
+	"unicode/utf8"
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -50,4 +52,34 @@ func renameStageReferences(tx *gorm.DB, model interface{}, column, oldName, newN
 		return err
 	}
 	return tx.Model(model).Unscoped().Where("previous_stage = ?", oldName).UpdateColumn("previous_stage", newName).Error
+}
+
+// Records store their stage by name, in fixed-width columns: deals.stage is
+// varchar(64), prospects.status varchar(16). A longer stage name would fail
+// the rename cascade (and every later save onto that stage).
+const (
+	maxPipelineStageNameLen = 64
+	maxProspectStageNameLen = 16
+)
+
+// stageNameFields validates a (trimmed) stage name for create and update:
+// required, and short enough for the records' column.
+func stageNameFields(name string, maxLen int) (map[string][]string, string) {
+	if name == "" {
+		return map[string][]string{"name": {"required"}}, "name is required"
+	}
+	if utf8.RuneCountInString(name) > maxLen {
+		msg := fmt.Sprintf("must be at most %d characters", maxLen)
+		return map[string][]string{"name": {msg}}, "name " + msg
+	}
+	return nil, ""
+}
+
+// stageNameTaken reports whether a stage other than excludeID (0 on create)
+// already has name — checked up front so a clash is a 422, not the unique
+// index's 500. Unscoped: the index covers soft-deleted rows too.
+func stageNameTaken(db *gorm.DB, model interface{}, name string, excludeID uint) (bool, error) {
+	var count int64
+	err := db.Model(model).Unscoped().Where("name = ? AND id <> ?", name, excludeID).Count(&count).Error
+	return count > 0, err
 }

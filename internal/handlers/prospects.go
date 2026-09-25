@@ -139,7 +139,7 @@ func (h *ProspectHandler) Create(c *fiber.Ctx) error {
 		BusinessUnit: form.BusinessUnit, BusinessUnitItem: form.BusinessUnitItem,
 	}
 	if prospect.Status == "" {
-		prospect.Status = models.ProspectStatusNew
+		prospect.Status = utils.DefaultProspectStage(h.DB)
 	}
 	prospect.Position = prospectLanes.next(h.DB, prospect.Status)
 	if err := h.DB.Create(&prospect).Error; err != nil {

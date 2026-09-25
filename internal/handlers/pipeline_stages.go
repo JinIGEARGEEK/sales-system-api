@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"strings"
+
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
@@ -45,13 +47,11 @@ type pipelineStageForm struct {
 	IsLostStage bool   `json:"is_lost_stage"`
 }
 
-// validate enforces the one name rule shared by Create and Update: required.
-// Unlike ProspectStage, PipelineStage has no reserved system-set name.
-func (f pipelineStageForm) validate() (map[string][]string, string) {
-	if f.Name == "" {
-		return map[string][]string{"name": {"required"}}, "name is required"
-	}
-	return nil, ""
+// validate trims the name and applies the rules shared by Create and Update
+// (see stageNameFields). Unlike ProspectStage, no name is reserved.
+func (f *pipelineStageForm) validate() (map[string][]string, string) {
+	f.Name = strings.TrimSpace(f.Name)
+	return stageNameFields(f.Name, maxPipelineStageNameLen)
 }
 
 // clearOtherTerminalStages unsets is_won_stage/is_lost_stage on every other
@@ -96,6 +96,11 @@ func (h *PipelineStageHandler) Create(c *fiber.Ctx) error {
 	}
 	if fields, msg := form.validate(); fields != nil {
 		return utils.ValidationError(c, msg, fields)
+	}
+	if taken, err := stageNameTaken(h.DB, &models.PipelineStage{}, form.Name, 0); err != nil {
+		return utils.Internal(c, "Failed to check stage name")
+	} else if taken {
+		return utils.ValidationError(c, "Stage name already in use", map[string][]string{"name": {"Name is already in use"}})
 	}
 	staleDays, _, staleFields := staleDaysFromBody(c)
 	if staleFields != nil {
@@ -148,6 +153,11 @@ func (h *PipelineStageHandler) Update(c *fiber.Ctx) error {
 	}
 	if fields, msg := form.validate(); fields != nil {
 		return utils.ValidationError(c, msg, fields)
+	}
+	if taken, err := stageNameTaken(h.DB, &models.PipelineStage{}, form.Name, stage.ID); err != nil {
+		return utils.Internal(c, "Failed to check stage name")
+	} else if taken {
+		return utils.ValidationError(c, "Stage name already in use", map[string][]string{"name": {"Name is already in use"}})
 	}
 	staleDays, staleDaysSent, staleFields := staleDaysFromBody(c)
 	if staleFields != nil {
