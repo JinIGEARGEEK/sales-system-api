@@ -197,13 +197,22 @@ func (h *ReportHandler) OutstandingBalanceExport(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.Internal(c, "Failed to export outstanding balance")
 	}
-	header := []string{"Deal", "Company", "Deal Value", "Paid", "Outstanding", "Aging"}
+	// Original six columns first, unchanged, so an existing spreadsheet
+	// template keyed on column position keeps working; new ones appended.
+	header := []string{"Deal", "Company", "Deal Value", "Paid", "Outstanding", "Aging",
+		"Receivable", "Receivable Source", "WHT", "Oldest Overdue Due Date", "Days Overdue", "Aging Bucket"}
 	return streamCSV(c, "outstanding-balance.csv", header, func(w *csv.Writer) error {
 		for _, r := range rows {
+			oldest := ""
+			if r.OldestOverdueDueDate != nil {
+				oldest = r.OldestOverdueDueDate.Format("2006-01-02")
+			}
 			if err := writeCSVRow(w, []string{
 				r.DealTitle, r.CompanyName, strconv.FormatFloat(r.DealValue, 'f', 2, 64),
 				strconv.FormatFloat(r.PaidAmount, 'f', 2, 64), strconv.FormatFloat(r.OutstandingAmount, 'f', 2, 64),
 				r.Aging,
+				strconv.FormatFloat(r.ReceivableAmount, 'f', 2, 64), r.ReceivableSource,
+				strconv.FormatFloat(r.WhtAmount, 'f', 2, 64), oldest, strconv.Itoa(r.DaysOverdue), r.AgingBucket,
 			}); err != nil {
 				return err
 			}

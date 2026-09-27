@@ -62,3 +62,10 @@ func ComputeQuoteTotals(items []models.QuoteItem, discountTotal float64, vatEnab
 		GrandTotal:    taxable + vat - wht,
 	}
 }
+
+// ReceivableAmount is what the customer is invoiced for a Quote: the taxable
+// amount after discounts plus VAT — before withholding tax, because WHT is
+// still owed to us; the customer just pays that part to the Revenue
+// Department instead (recorded as Payment.WhtAmount). GrandTotal is the net
+// cash expected, so it would count WHT as never owed.
+func (t QuoteTotals) ReceivableAmount() float64 { return t.TaxableAmount + t.Vat }

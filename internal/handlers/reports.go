@@ -462,40 +462,62 @@ func (h *ReportHandler) StalledDeals(c *fiber.Ctx) error {
 }
 
 type outstandingBalanceRow struct {
-	DealID            uint    `json:"deal_id"`
-	DealTitle         string  `json:"deal_title"`
-	CompanyName       string  `json:"company_name"`
-	DealValue         float64 `json:"deal_value"`
-	PaidAmount        float64 `json:"paid_amount"`
+	DealID      uint    `json:"deal_id"`
+	DealTitle   string  `json:"deal_title"`
+	CompanyName string  `json:"company_name"`
+	DealValue   float64 `json:"deal_value"`
+	// ReceivableAmount is what the customer owes in total: the Deal's most
+	// recent Accepted Quote's taxable amount + VAT (before WHT — see
+	// utils.QuoteTotals.ReceivableAmount) when it has one, else DealValue.
+	// ReceivableSource says which ("quote" | "deal_value").
+	ReceivableAmount float64 `json:"receivable_amount"`
+	ReceivableSource string  `json:"receivable_source"`
+	// PaidAmount is Σ Payment.amount (cash received), unchanged meaning;
+	// WhtAmount is Σ Payment.wht_amount. Both settle the receivable.
+	PaidAmount float64 `json:"paid_amount"`
+	WhtAmount  float64 `json:"wht_amount"`
+	// OutstandingAmount = ReceivableAmount − (PaidAmount + WhtAmount).
 	OutstandingAmount float64 `json:"outstanding_amount"`
 	// Aging — "overdue"/"upcoming" when the Deal has a PaymentInstallment
-	// schedule defined (utils.ComputeInstallmentStatuses against PaidAmount
-	// above), "none" otherwise — a Deal with no schedule behaves exactly as
-	// before this field existed. See applyOutstandingBalanceAging below.
+	// schedule defined, "none" otherwise (kept for existing clients; the
+	// fields below are the finer-grained version).
 	Aging string `json:"aging"`
+	// OldestOverdueDueDate is the due date of the earliest unpaid installment
+	// past its due date (nil when none); DaysOverdue counts calendar days
+	// since it (0 when nil) and AgingBucket buckets that
+	// ("current"|"1_30"|"31_60"|"61_90"|"90_plus"). A Deal with no schedule,
+	// or nothing overdue, is "current".
+	OldestOverdueDueDate *time.Time `json:"oldest_overdue_due_date"`
+	DaysOverdue          int        `json:"days_overdue"`
+	AgingBucket          string     `json:"aging_bucket"`
 }
 
 const (
 	OutstandingBalanceAgingOverdue  = "overdue"
 	OutstandingBalanceAgingUpcoming = "upcoming"
 	OutstandingBalanceAgingNone     = "none"
+
+	ReceivableSourceQuote     = "quote"
+	ReceivableSourceDealValue = "deal_value"
 )
 
 // fetchOutstandingBalance — shared by OutstandingBalance (JSON) and its CSV
-// export. FR-CRM-095. Won Deals whose recorded Payments sum to less than the
-// Deal's value — every row is money still owed. Sorted by outstanding_amount
-// DESC so the largest amount owed leads.
+// export. FR-CRM-095. Won Deals that still have money owed: receivable
+// (latest Accepted Quote incl. VAT, else deals.value) minus settled (cash +
+// WHT). Deal value is typically entered pre-VAT, so measuring against it
+// alone made every VAT-registered customer look like it had paid ~7% too
+// much, and a WHT deduction look like an unpaid balance. Sorted by
+// outstanding_amount DESC so the largest amount owed leads.
+//
+// The SQL only narrows to Won Deals (+ filters); receivable/settled/aging are
+// computed in Go from three batched queries (quotes, payments, installments)
+// because a Quote's total is derived from its JSON line items.
 func (h *ReportHandler) fetchOutstandingBalance(c *fiber.Ctx) ([]outstandingBalanceRow, error) {
 	query := h.DB.Table("deals").
 		Select(`deals.id as deal_id, deals.title as deal_title, companies.name as company_name,
-			deals.value as deal_value, COALESCE(SUM(payments.amount), 0) as paid_amount,
-			deals.value - COALESCE(SUM(payments.amount), 0) as outstanding_amount`).
+			deals.value as deal_value`).
 		Joins("JOIN companies ON companies.id = deals.company_id").
-		Joins("LEFT JOIN payments ON payments.deal_id = deals.id").
-		Where("deals.status = ? AND deals.deleted_at IS NULL", models.DealStatusWon).
-		Group("deals.id, deals.title, companies.name, deals.value").
-		Having("deals.value - COALESCE(SUM(payments.amount), 0) > 0").
-		Order("outstanding_amount DESC")
+		Where("deals.status = ? AND deals.deleted_at IS NULL", models.DealStatusWon)
 
 	if v := c.Query("assigned_to"); v != "" {
 		query = query.Where("deals.assigned_to = ?", v)
@@ -504,65 +526,111 @@ func (h *ReportHandler) fetchOutstandingBalance(c *fiber.Ctx) ([]outstandingBala
 		query = query.Where("companies.tags && ARRAY[?]::text[]", v)
 	}
 
+	var candidates []outstandingBalanceRow
+	if err := query.Scan(&candidates).Error; err != nil {
+		return nil, err
+	}
 	// Non-nil starting slice — see the comment on fetchCustomersByProductStatus's
 	// identical `rows := []T{}` above for why this matters.
 	rows := []outstandingBalanceRow{}
-	if err := query.Scan(&rows).Error; err != nil {
-		return nil, err
+	if len(candidates) == 0 {
+		return rows, nil
 	}
-	if err := h.applyOutstandingBalanceAging(rows); err != nil {
-		return nil, err
-	}
-	return rows, nil
-}
-
-// applyOutstandingBalanceAging fills in each row's Aging field in place — a
-// Deal with no PaymentInstallment schedule defined gets "none" (identical to
-// this report's pre-aging behavior); otherwise "overdue" if any installment
-// is overdue per utils.ComputeInstallmentStatuses (using the row's own
-// PaidAmount as the waterfall's totalPaid — same total this query already
-// computed), else "upcoming". One query for every row's installments
-// (grouped in Go) rather than N+1 per-deal queries.
-func (h *ReportHandler) applyOutstandingBalanceAging(rows []outstandingBalanceRow) error {
-	if len(rows) == 0 {
-		return nil
-	}
-	dealIDs := make([]uint, len(rows))
-	for i, r := range rows {
+	dealIDs := make([]uint, len(candidates))
+	for i, r := range candidates {
 		dealIDs[i] = r.DealID
+	}
+
+	var quotes []models.Quote
+	if err := h.DB.Where("deal_id IN ? AND status = ?", dealIDs, models.QuoteStatusAccepted).
+		Order("deal_id, created_at DESC, id DESC").Find(&quotes).Error; err != nil {
+		return nil, err
+	}
+	latestAccepted := make(map[uint]models.Quote, len(quotes))
+	for _, q := range quotes {
+		if _, seen := latestAccepted[q.DealID]; !seen {
+			latestAccepted[q.DealID] = q
+		}
+	}
+
+	var payments []models.Payment
+	if err := h.DB.Where("deal_id IN ?", dealIDs).Find(&payments).Error; err != nil {
+		return nil, err
+	}
+	paymentsByDeal := make(map[uint][]models.Payment, len(candidates))
+	for _, p := range payments {
+		paymentsByDeal[p.DealID] = append(paymentsByDeal[p.DealID], p)
 	}
 
 	var installments []models.PaymentInstallment
 	if err := h.DB.Where("deal_id IN ?", dealIDs).Find(&installments).Error; err != nil {
-		return err
+		return nil, err
 	}
-	byDeal := make(map[uint][]models.PaymentInstallment, len(rows))
+	installmentsByDeal := make(map[uint][]models.PaymentInstallment, len(candidates))
 	for _, inst := range installments {
-		byDeal[inst.DealID] = append(byDeal[inst.DealID], inst)
+		installmentsByDeal[inst.DealID] = append(installmentsByDeal[inst.DealID], inst)
 	}
 
 	now := time.Now()
-	for i := range rows {
-		dealInstallments, ok := byDeal[rows[i].DealID]
-		if !ok {
-			rows[i].Aging = OutstandingBalanceAgingNone
-			continue
-		}
-		statuses := utils.ComputeInstallmentStatuses(dealInstallments, rows[i].PaidAmount, now)
-		rows[i].Aging = OutstandingBalanceAgingUpcoming
-		for _, s := range statuses {
-			if s.Status == utils.InstallmentStatusOverdue {
-				rows[i].Aging = OutstandingBalanceAgingOverdue
-				break
-			}
+	for _, r := range candidates {
+		quote, hasQuote := latestAccepted[r.DealID]
+		computeOutstandingRow(&r, quotePtr(quote, hasQuote), paymentsByDeal[r.DealID], installmentsByDeal[r.DealID], now)
+		if r.OutstandingAmount > outstandingEpsilon {
+			rows = append(rows, r)
 		}
 	}
-	return nil
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].OutstandingAmount > rows[j].OutstandingAmount })
+	return rows, nil
+}
+
+// outstandingEpsilon absorbs float rounding (e.g. 7% VAT on odd amounts), so
+// a Deal paid to the satang doesn't linger in the report owing 0.0000001.
+const outstandingEpsilon = 0.005
+
+func quotePtr(q models.Quote, ok bool) *models.Quote {
+	if !ok {
+		return nil
+	}
+	return &q
+}
+
+// computeOutstandingRow fills in one row's receivable/settled/aging fields
+// from the Deal's latest Accepted Quote (nil if none), Payments and
+// installment schedule. Pure — no DB — so the money math is unit-testable.
+func computeOutstandingRow(r *outstandingBalanceRow, acceptedQuote *models.Quote, payments []models.Payment, installments []models.PaymentInstallment, now time.Time) {
+	r.ReceivableAmount, r.ReceivableSource = r.DealValue, ReceivableSourceDealValue
+	if acceptedQuote != nil {
+		totals := utils.ComputeQuoteTotals(acceptedQuote.Items, acceptedQuote.DiscountTotal, acceptedQuote.VatEnabled, acceptedQuote.WhtEnabled, acceptedQuote.WhtRate)
+		r.ReceivableAmount, r.ReceivableSource = totals.ReceivableAmount(), ReceivableSourceQuote
+	}
+
+	r.PaidAmount, r.WhtAmount = 0, 0
+	for _, p := range payments {
+		r.PaidAmount += p.Amount
+		r.WhtAmount += p.WhtAmount
+	}
+	r.OutstandingAmount = r.ReceivableAmount - r.PaidAmount - r.WhtAmount
+
+	r.Aging, r.AgingBucket, r.DaysOverdue, r.OldestOverdueDueDate = OutstandingBalanceAgingNone, utils.AgingCurrent, 0, nil
+	if len(installments) == 0 {
+		return
+	}
+	statuses := utils.ComputeInstallmentStatusesFromPayments(installments, payments, now)
+	r.Aging = OutstandingBalanceAgingUpcoming
+	if oldest := utils.OldestOverdue(statuses); oldest != nil {
+		r.Aging = OutstandingBalanceAgingOverdue
+		due := oldest.DueDate
+		r.OldestOverdueDueDate = &due
+		if days := utils.DaysOverdue(due, now); days > 0 {
+			r.DaysOverdue = days
+		}
+		r.AgingBucket = utils.AgingBucket(r.DaysOverdue)
+	}
 }
 
 // OutstandingBalance godoc
 // @Summary Outstanding balance report (Admin/Sales Manager only)
-// @Description Won Deals whose recorded Payments sum to less than the Deal value, sorted by outstanding amount descending. FR-CRM-095. Admin/Sales Manager only.
+// @Description Won Deals with money still owed, sorted by outstanding_amount descending. receivable_amount = latest Accepted Quote's taxable amount + VAT (receivable_source "quote"), else the Deal value ("deal_value"); outstanding_amount = receivable_amount − paid_amount − wht_amount. Aging: oldest_overdue_due_date, days_overdue, aging_bucket (current|1_30|31_60|61_90|90_plus) from the oldest unpaid overdue installment; legacy aging (overdue|upcoming|none) kept. FR-CRM-095. Admin/Sales Manager only.
 // @Tags reports
 // @Security BearerAuth
 // @Produce json
