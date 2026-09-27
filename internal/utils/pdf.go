@@ -62,14 +62,6 @@ func branchLabel(code string) string {
 	}
 }
 
-// DerefString returns *s, or "" for nil.
-func DerefString(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
-}
-
 // RenderLineItemsTable draws the Description/Qty/Unit Price/Total header row,
 // one row per item, and a Grand Total row — used by Contract's PDF export
 // (unchanged from before the quotation-builder rebuild). Quote's own export

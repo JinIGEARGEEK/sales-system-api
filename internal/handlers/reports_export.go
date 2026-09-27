@@ -18,15 +18,6 @@ import (
 // these just write the same in-memory slice reports.go's JSON handlers
 // already compute, via the same streamCSV writer, in one pass.
 
-// derefUintStr renders a nullable uint id (e.g. Deal.AssignedTo) as a CSV
-// field — empty string when nil, rather than "0" or a literal <nil>.
-func derefUintStr(p *uint) string {
-	if p == nil {
-		return ""
-	}
-	return strconv.FormatUint(uint64(*p), 10)
-}
-
 // LeadSourceConversionExport godoc
 // @Summary Export lead source conversion report as CSV (Admin/Sales Manager only)
 // @Description CSV download of the lead source conversion report (see GET /reports/lead-source-conversion). FR-CRM-054, FR-CRM-055 (rep filter). Admin/Sales Manager only.
@@ -172,7 +163,7 @@ func (h *ReportHandler) StalledDealsExport(c *fiber.Ctx) error {
 		for _, r := range rows {
 			if err := writeCSVRow(w, []string{
 				r.Title, r.CompanyName, r.Stage, strconv.FormatFloat(r.Value, 'f', 2, 64),
-				derefUintStr(r.AssignedTo), r.LastActivityAt.Format("2006-01-02"), strconv.Itoa(r.DaysStalled),
+				utils.UintPtrString(r.AssignedTo), r.LastActivityAt.Format("2006-01-02"), strconv.Itoa(r.DaysStalled),
 			}); err != nil {
 				return err
 			}
@@ -304,7 +295,7 @@ func (h *ReportHandler) ContractsStuckExport(c *fiber.Ctx) error {
 	return streamCSV(c, "contracts-stuck.csv", header, func(w *csv.Writer) error {
 		for _, r := range rows {
 			if err := writeCSVRow(w, []string{
-				r.DealTitle, r.CompanyName, r.Status, derefUintStr(r.AssignedTo), strconv.Itoa(r.DaysInStatus),
+				r.DealTitle, r.CompanyName, r.Status, utils.UintPtrString(r.AssignedTo), strconv.Itoa(r.DaysInStatus),
 			}); err != nil {
 				return err
 			}
