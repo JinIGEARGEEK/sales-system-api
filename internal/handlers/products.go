@@ -263,16 +263,11 @@ func applyCustomerProductEndDate(c *fiber.Ctx, record *models.CustomerProduct, e
 // null clears price. Writes the 422 itself and returns false on failure.
 func applyRenewalFields(c *fiber.Ctx, record *models.CustomerProduct, renewalDate *string, billingCycle *models.BillingCycle, price *float64, present func(string) bool) bool {
 	if present("renewal_date") {
-		if renewalDate == nil || *renewalDate == "" {
-			record.RenewalDate = nil
-		} else {
-			d, err := utils.ParseCalendarDate(*renewalDate)
-			if err != nil {
-				_ = utils.ValidationError(c, "renewal_date is invalid", map[string][]string{"renewal_date": {err.Error()}})
-				return false
-			}
-			record.RenewalDate = &d
+		d, ok := parseOptionalCalendarDate(c, "renewal_date", renewalDate)
+		if !ok {
+			return false
 		}
+		record.RenewalDate = d
 	}
 	if present("billing_cycle") {
 		if billingCycle == nil || *billingCycle == "" {

@@ -52,17 +52,27 @@ func applyContractEndDate(c *fiber.Ctx, contract *models.Contract, endDate *stri
 	if !present {
 		return true
 	}
-	if endDate == nil || *endDate == "" {
-		contract.EndDate = nil
-		return true
+	d, ok := parseOptionalCalendarDate(c, "end_date", endDate)
+	if ok {
+		contract.EndDate = d
 	}
-	d, err := utils.ParseCalendarDate(*endDate)
+	return ok
+}
+
+// parseOptionalCalendarDate parses an optional date-column field (Contract
+// end_date, CustomerProduct renewal_date) with utils.ParseCalendarDate: nil
+// or "" is (nil, true) — clear it — and an unparseable value writes the 422
+// for field and returns ok=false.
+func parseOptionalCalendarDate(c *fiber.Ctx, field string, v *string) (*time.Time, bool) {
+	if v == nil || *v == "" {
+		return nil, true
+	}
+	d, err := utils.ParseCalendarDate(*v)
 	if err != nil {
-		_ = utils.ValidationError(c, "end_date is invalid", map[string][]string{"end_date": {err.Error()}})
-		return false
+		_ = utils.ValidationError(c, field+" is invalid", map[string][]string{field: {err.Error()}})
+		return nil, false
 	}
-	contract.EndDate = &d
-	return true
+	return &d, true
 }
 
 // validateContractForm checks status enum membership and, if quote_id is
