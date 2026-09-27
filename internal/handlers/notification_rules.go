@@ -80,21 +80,10 @@ func (h *NotificationRuleHandler) Create(c *fiber.Ctx) error {
 	}
 	rule.CreatedBy = &actorID
 	rule.UpdatedBy = &actorID
-	// is_active/create_task are NOT NULL DEFAULT true, and GORM leaves a
-	// zero-value (false) defaulted field out of the INSERT — and then reads
-	// the column default back into the struct — so an explicit false would
-	// silently become true. Remember the intent and write it afterwards.
-	isActive, createTask := rule.IsActive, rule.CreateTask
-	if err := h.DB.Create(&rule).Error; err != nil {
+	// is_active/create_task are NOT NULL DEFAULT true, which a plain Create
+	// would apply over an explicit false (see utils.CreateKeepingFalse).
+	if err := utils.CreateKeepingFalse(h.DB, &rule); err != nil {
 		return utils.ValidationError(c, "Rule name already in use", map[string][]string{"name": {"Name is already in use"}})
-	}
-	if !isActive || !createTask {
-		if err := h.DB.Model(&rule).UpdateColumns(map[string]interface{}{
-			"is_active": isActive, "create_task": createTask,
-		}).Error; err != nil {
-			return utils.Internal(c, "Failed to create notification rule")
-		}
-		rule.IsActive, rule.CreateTask = isActive, createTask
 	}
 	return utils.Created(c, rule)
 }

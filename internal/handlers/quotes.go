@@ -243,27 +243,15 @@ func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 }
 
 // createQuoteNumbered assigns the next QT number and inserts quote inside
-// tx. VatEnabled is NOT NULL DEFAULT true, and GORM omits a false defaulted
-// field from the INSERT (then reads the default back into the struct), so a
-// no-VAT quote used to be saved — and totalled — with 7% VAT. The intended
-// value is written explicitly afterwards.
+// tx. utils.CreateKeepingFalse, since VatEnabled is NOT NULL DEFAULT true
+// and a plain Create saved (and totalled) a no-VAT quote with 7% VAT.
 func createQuoteNumbered(tx *gorm.DB, quote *models.Quote, now time.Time) error {
 	number, err := utils.NextDocumentNumber(tx, "QT", now)
 	if err != nil {
 		return err
 	}
 	quote.Number = &number
-	vatEnabled := quote.VatEnabled
-	if err := tx.Create(quote).Error; err != nil {
-		return err
-	}
-	if !vatEnabled {
-		if err := tx.Model(quote).UpdateColumn("vat_enabled", false).Error; err != nil {
-			return err
-		}
-		quote.VatEnabled = false
-	}
-	return nil
+	return utils.CreateKeepingFalse(tx, quote)
 }
 
 // Upload — POST /deals/:dealId/quotes/upload. Uploads a PDF quote in place of
