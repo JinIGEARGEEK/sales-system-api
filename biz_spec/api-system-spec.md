@@ -320,7 +320,9 @@ interface Company {
   status: ActiveArchivedStatus
   legal_name: string | null   // registered legal entity name — used on Contract PDF exports
   address: string | null      // registered address — used on Contract PDF exports
-  tax_id: string | null       // used on Contract PDF exports
+  tax_id: string | null       // used on Contract PDF exports; exact-match ?tax_id= filter
+  branch_code: string | null  // 5 digits ("00000" = head office) — for full tax invoices. Added 2026-09-27
+  postal_code: string | null  // 5 digits, separate from address. Added 2026-09-27
   last_activity_at: string | null   // dormant-customer / upsell-targeting feature — see note below
   created_at: string
   updated_at: string
@@ -333,10 +335,10 @@ interface Company {
 
 | Method | Path | Status | Description |
 |---|---|---|---|
-| `GET` | `/companies` | 🟢 | Filters: `status`, `tag`, `industry`, `search` (name), `stale_days` (int — only companies whose `last_activity_at` is `null` or older than this many days), `has_won_deal` (`true`/`false` — only companies with/without at least one Deal at `status: 'won'`). Backs `pages/crm/companies/index.vue`. |
-| `POST` | `/companies` | 🟢 | Create. |
+| `GET` | `/companies` | 🟢 | Filters: `status`, `tag`, `industry`, `search` (name), `tax_id` / `branch_code` (exact match, surrounding spaces ignored; added 2026-09-27 for accounting integrations that identify a Company by tax ID + branch), `stale_days` (int — only companies whose `last_activity_at` is `null` or older than this many days), `has_won_deal` (`true`/`false` — only companies with/without at least one Deal at `status: 'won'`). Backs `pages/crm/companies/index.vue`. |
+| `POST` | `/companies` | 🟢 | Create. `branch_code`/`postal_code`, if non-blank, must be exactly 5 digits (`422`); they're trimmed, and blank is stored as `null`. `tax_id` is not format-checked or deduped. |
 | `GET` | `/companies/:id` | 🟢 | Single company — `pages/crm/companies/[id].vue`'s Overview tab. |
-| `PUT` | `/companies/:id` | 🟢 | Update. |
+| `PUT` | `/companies/:id` | 🟢 | Update (full replace). Exception: `branch_code`/`postal_code` keep their saved value when the key is absent from the body (explicit `null`/`""` clears), since they're newer than existing clients such as the staff Company form. Same rule as `stale_days` on the stage config resources. |
 | `DELETE` | `/companies/:id` | 🟢 | Sets `status: 'archived'` (soft delete, §1.6) — never a hard delete, since Deals/Contacts/Payments reference `company_id`. |
 | `POST` | `/companies/import` | 🟢 | Bulk import — see §6.2. `FR-CRM-014`. |
 

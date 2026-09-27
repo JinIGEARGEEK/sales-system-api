@@ -4,6 +4,22 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-09-27 — Company `branch_code`/`postal_code`, exact `tax_id` filter
+
+Requested by the IGG Finance accounting integration, which identifies a customer by its 13-digit tax ID plus branch number, and needs the buyer's branch on full tax invoices.
+
+**New Company fields** `branch_code` and `postal_code` (string | null, both returned on List/Get and accepted on Create/Update, staff and Open API). Each must be exactly 5 digits when set (`422` otherwise). Values are trimmed, and blank is stored as `null`.
+
+**Update keeps them when omitted.** `PUT /companies/:id` is otherwise a full replace, but the staff Company form and earlier integrations don't send these fields yet, so a body without the key leaves the saved value alone. Explicit `null` or `""` clears it. This is the same rule `stale_days` uses on the stage config resources.
+
+**New list filters** `tax_id` and `branch_code` on `GET /companies` (and so `/open/companies` and `/companies/export`): exact match, surrounding spaces ignored. `companies.tax_id` is now indexed. There is still no dedupe on `tax_id`, since one tax ID can have several branches. Integrations look up before creating.
+
+The Companies CSV export gains `Branch Code` and `Postal Code` columns after `Tax ID`.
+
+The 5-digit checks run before `industry` auto-registration, so a request rejected for a bad code doesn't leave a new industry option behind.
+
+Regression-guarded: `TestOpenAPI_CompanyTaxIDBranchCodeFilter`, `TestOpenAPI_CompanyBranchPostalCodes` (`tests/open_api_test.go`), `TestExport_CompaniesIncludesBranchAndPostalCode` (`tests/export_test.go`). Spec: `api-system-spec.md` §4. Guide: `docs/OPEN_API_GUIDE.md` §6, §12b, §13.
+
 ## 2026-09-25 — Server-side paging filters for Tasks/Activities; audit-log `action` filter
 
 The frontend's Tasks and Activities list pages used to load one capped page (`per_page=1000`, which `utils.Pagination` silently reset to 20, and `per_page=200`) and filter/page it client-side. They now page server-side, so the list endpoints gained the filters those pages need. Existing callers are unaffected: every addition is opt-in.

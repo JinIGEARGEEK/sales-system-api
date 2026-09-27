@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -108,13 +110,34 @@ func companyDomainConflictMessage(dup *models.Company, excludeID uint) string {
 // (Website's Domain, and Status normalized/defaulted) — since both handlers
 // otherwise ran the identical derivation a second time.
 type companyFormResult struct {
-	Domain string
-	Status models.ActiveArchivedStatus
+	Domain     string
+	Status     models.ActiveArchivedStatus
+	BranchCode *string
+	PostalCode *string
+}
+
+var fiveDigitCode = regexp.MustCompile(`^[0-9]{5}$`)
+
+// normalizeFiveDigitCode trims a branch_code/postal_code value and maps
+// blank to nil (cleared), reporting ok=false for anything but five digits.
+func normalizeFiveDigitCode(v *string) (*string, bool) {
+	if v == nil {
+		return nil, true
+	}
+	trimmed := strings.TrimSpace(*v)
+	if trimmed == "" {
+		return nil, true
+	}
+	if !fiveDigitCode.MatchString(trimmed) {
+		return nil, false
+	}
+	return &trimmed, true
 }
 
 // validateCompanyForm runs every check CompanyHandler.Create and Update
 // share — required name, website format, industry registration, active
-// size/revenue_size, status normalization, and domain-conflict dedupe.
+// size/revenue_size, status normalization, five-digit branch_code/
+// postal_code, and domain-conflict dedupe.
 // excludeID is the Company being updated (0 on Create, so nothing is
 // excluded from the dedupe check).
 //
@@ -132,6 +155,18 @@ func validateCompanyForm(c *fiber.Ctx, db *gorm.DB, form companyForm, excludeID 
 	domain := utils.ExtractDomain(form.Website)
 	if form.Website != "" && !utils.IsValidWebsiteDomain(domain) {
 		_ = utils.ValidationError(c, "website is not a valid domain/URL", map[string][]string{"website": {"invalid"}})
+		return companyFormResult{}, utils.ErrHandled
+	}
+	// Before EnsureActiveIndustry, which writes: a request rejected here
+	// mustn't have registered a new industry option first.
+	branchCode, ok := normalizeFiveDigitCode(form.BranchCode)
+	if !ok {
+		_ = utils.ValidationError(c, "branch_code must be 5 digits", map[string][]string{"branch_code": {"invalid"}})
+		return companyFormResult{}, utils.ErrHandled
+	}
+	postalCode, ok := normalizeFiveDigitCode(form.PostalCode)
+	if !ok {
+		_ = utils.ValidationError(c, "postal_code must be 5 digits", map[string][]string{"postal_code": {"invalid"}})
 		return companyFormResult{}, utils.ErrHandled
 	}
 	if err := utils.EnsureActiveIndustry(db, form.Industry); err != nil {
@@ -159,7 +194,7 @@ func validateCompanyForm(c *fiber.Ctx, db *gorm.DB, form companyForm, excludeID 
 		return companyFormResult{}, utils.ErrHandled
 	}
 
-	return companyFormResult{Domain: domain, Status: status}, nil
+	return companyFormResult{Domain: domain, Status: status, BranchCode: branchCode, PostalCode: postalCode}, nil
 }
 
 type CompanyHandler struct {
@@ -172,7 +207,7 @@ func NewCompanyHandler(db *gorm.DB) *CompanyHandler {
 
 // List godoc
 // @Summary List companies
-// @Description Paginated, filterable Company list, each row annotated with last_activity_at (from any company-scoped Activity). Filters: status, tag, industry, search (name), stale_days, has_won_deal.
+// @Description Paginated, filterable Company list, each row annotated with last_activity_at (from any company-scoped Activity). Filters: status, tag, industry, search (name), tax_id, branch_code, stale_days, has_won_deal.
 // @Tags companies
 // @Security BearerAuth
 // @Produce json
@@ -180,6 +215,8 @@ func NewCompanyHandler(db *gorm.DB) *CompanyHandler {
 // @Param tag query string false "Filter by Company tag"
 // @Param industry query string false "Filter by industry"
 // @Param search query string false "Search by name"
+// @Param tax_id query string false "Exact tax_id match"
+// @Param branch_code query string false "Exact branch_code match"
 // @Param stale_days query int false "Filter to companies with no activity in N days"
 // @Param has_won_deal query bool false "Filter to companies with (or without) a won Deal"
 // @Param sort query string false "Sort field, prefix - for descending (created_at, name, industry)"
@@ -216,6 +253,8 @@ type companyForm struct {
 	LegalName   *string  `json:"legal_name"`
 	Address     *string  `json:"address"`
 	TaxID       *string  `json:"tax_id"`
+	BranchCode  *string  `json:"branch_code"`
+	PostalCode  *string  `json:"postal_code"`
 }
 
 // Create godoc
@@ -246,6 +285,7 @@ func (h *CompanyHandler) Create(c *fiber.Ctx) error {
 		Tags:   pq.StringArray(normalizeTags(form.Tags)), Notes: form.Notes,
 		Status:    result.Status,
 		LegalName: form.LegalName, Address: form.Address, TaxID: form.TaxID,
+		BranchCode: result.BranchCode, PostalCode: result.PostalCode,
 	}
 	if company.Status == "" {
 		company.Status = models.StatusActive
@@ -287,7 +327,7 @@ func (h *CompanyHandler) Get(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Update a company
-// @Description Updates a Company. size/revenue_size must each match an active configured option; industry is free text and auto-registers a new active /admin/industries option if needed; domain is re-derived from website.
+// @Description Updates a Company (full replace). size/revenue_size must each match an active configured option; industry is free text and auto-registers a new active /admin/industries option if needed; domain is re-derived from website. branch_code/postal_code are kept when omitted from the body; send null or "" to clear them.
 // @Tags companies
 // @Security BearerAuth
 // @Accept json
@@ -318,6 +358,19 @@ func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 	company.Tags = pq.StringArray(normalizeTags(form.Tags))
 	company.Notes = form.Notes
 	company.LegalName, company.Address, company.TaxID = form.LegalName, form.Address, form.TaxID
+	// branch_code/postal_code are newer than every existing client (the staff
+	// Company form, earlier integrations), so a body that omits them keeps
+	// the saved values instead of clearing them — same rule as stale_days
+	// (staleDaysFromBody). Explicit null or "" still clears. A non-JSON body
+	// (BodyParser also accepts form encoding) leaves raw nil, so both keep.
+	var raw map[string]json.RawMessage
+	_ = json.Unmarshal(c.Body(), &raw)
+	if _, ok := raw["branch_code"]; ok {
+		company.BranchCode = result.BranchCode
+	}
+	if _, ok := raw["postal_code"]; ok {
+		company.PostalCode = result.PostalCode
+	}
 	if result.Status != "" {
 		company.Status = result.Status
 	}
