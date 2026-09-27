@@ -24,7 +24,9 @@ const taskReminderInterval = 15 * time.Minute
 // StartTaskDueReminders launches a background goroutine that periodically
 // emails the assignee of any open Task whose due date has passed and that
 // hasn't been notified yet. Safe to call even when SMTP isn't configured —
-// utils.SendMail no-ops (logs a warning) in that case rather than erroring.
+// utils.SendMail silently no-ops then, and the task is still stamped
+// NotifiedAt, so turning SMTP on later doesn't suddenly email a backlog of
+// long-past-due tasks. The task itself is the in-app alert either way.
 //
 // This is the only background job in the app; it runs on its own ticker
 // rather than piggybacking on the Fiber request lifecycle since due-date

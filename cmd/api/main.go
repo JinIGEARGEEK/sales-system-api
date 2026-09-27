@@ -128,8 +128,11 @@ func main() {
 
 	routes.Setup(app, db, cfg, storageBackend)
 
-	// Background job: emails a Task's assignee once its due date has passed.
-	// Safe to run even without SMTP configured — see internal/utils/mailer.go.
+	// Background jobs. All safe to run without SMTP configured (see
+	// internal/utils/mailer.go): their in-app work (rule-created Tasks,
+	// notification log, forecast snapshots) runs either way, and email is
+	// skipped silently — LogMailStatus says so once here instead.
+	utils.LogMailStatus(cfg)
 	notifier.StartTaskDueReminders(db, cfg)
 	notifier.StartWorkflowRuleReminders(db, cfg)
 	// Daily forecast-accuracy snapshot — see internal/notifier/forecast_snapshots.go.

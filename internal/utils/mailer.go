@@ -23,13 +23,14 @@ import (
 // requires and verifies STARTTLS (any other port, e.g. 587) and returns an
 // error rather than falling back to an unencrypted connection either way.
 //
-// If cfg.SMTPHost is empty (the default — no SMTP configured), this logs a
-// warning and returns nil instead of erroring, so features built on top of
-// this (e.g. the Task due-date reminder ticker) are safe to deploy before
-// real SMTP credentials exist.
+// If cfg.SMTPHost is empty (the default — no SMTP configured), this
+// silently returns nil: email is an optional extra on top of the in-app
+// alerts (rule-created Tasks, the notification log), and the company runs
+// without SMTP, so every background tick used to log one "skipping email"
+// line per recipient for a condition that is permanent and expected.
+// LogMailStatus says it once at startup instead.
 func SendMail(cfg *config.Config, to, subject, body string) error {
-	if cfg == nil || cfg.SMTPHost == "" {
-		log.Printf("mailer: SMTP_HOST not configured — skipping email to %s (subject: %q)", to, subject)
+	if !MailEnabled(cfg) {
 		return nil
 	}
 	if to == "" {
@@ -80,6 +81,25 @@ func SendMail(cfg *config.Config, to, subject, body string) error {
 		return fmt.Errorf("send mail to %s: %w", to, err)
 	}
 	return client.Quit()
+}
+
+// MailEnabled reports whether outbound email is configured (SMTP_HOST set).
+// Callers that only exist to send email can check it to skip building a
+// message nobody will receive; everything else should just call SendMail,
+// which no-ops when this is false.
+func MailEnabled(cfg *config.Config) bool {
+	return cfg != nil && cfg.SMTPHost != ""
+}
+
+// LogMailStatus logs, once at startup, whether email delivery is on — the
+// single place that says "email is off", in place of SendMail's old
+// per-message warning.
+func LogMailStatus(cfg *config.Config) {
+	if MailEnabled(cfg) {
+		log.Printf("mailer: email enabled via %s:%s", cfg.SMTPHost, cfg.SMTPPort)
+		return
+	}
+	log.Println("mailer: SMTP_HOST not set — email is disabled; alerts are delivered in-app only (rule-created Tasks, notification log)")
 }
 
 // dialSMTP connects and, for any port other than the well-known implicit-TLS
