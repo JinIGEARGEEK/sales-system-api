@@ -467,6 +467,10 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	authed.Put("/quotes/:id", quoteH.Update)
 	authed.Delete("/quotes/:id", quoteH.Delete)
 	authed.Get("/quotes/:id/export-pdf", quoteH.ExportPDF)
+	// Duplicate goes through salesPipelineRoles like the nested Create it
+	// mirrors (POST /deals/:dealId/quotes), not just authed.
+	authed.Post("/quotes/:id/duplicate", salesPipelineRoles, quoteH.Duplicate)
+	authed.Put("/payments/:id", paymentH.Update)
 	authed.Delete("/payments/:id", paymentH.Delete)
 	authed.Put("/payment-installments/:id", paymentInstallmentH.Update)
 	authed.Delete("/payment-installments/:id", paymentInstallmentH.Delete)
