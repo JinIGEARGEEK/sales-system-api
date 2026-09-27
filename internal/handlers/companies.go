@@ -317,7 +317,7 @@ func NewCompanyHandler(db *gorm.DB) *CompanyHandler {
 // @Param search query string false "Search by name, website or tax ID"
 // @Param tax_id query string false "Exact tax_id match (spaces/dashes ignored)"
 // @Param branch_code query string false "Exact branch_code match"
-// @Param updated_since query string false "Only companies updated at or after this RFC 3339 timestamp or YYYY-MM-DD date"
+// @Param updated_since query string false "Only companies updated at or after this RFC 3339 timestamp or YYYY-MM-DD date (server-local midnight)"
 // @Param stale_days query int false "Filter to companies with no activity in N days"
 // @Param has_won_deal query bool false "Filter to companies with (or without) a won Deal"
 // @Param sort query string false "Sort field, prefix - for descending (created_at, updated_at, name, industry)"

@@ -83,13 +83,6 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) (*gorm.DB, error) {
 	if v := strings.TrimSpace(c.Query("branch_code")); v != "" {
 		query = query.Where("branch_code = ?", v)
 	}
-	// stale_days — only companies with no company-scoped Activity (see
-	// company_activity.go's withLastActivityAt for the same "related_type =
-	// 'company'" definition) at or after the cutoff, i.e. last_activity_at is
-	// NULL or older than stale_days. Expressed as a NOT EXISTS rather than
-	// relying on withLastActivityAt's joined alias, so this filter works
-	// standalone here (and in ExportHandler.Companies, which shares this
-	// function but never joins the activity subquery itself).
 	// updated_since (inclusive, RFC 3339 or YYYY-MM-DD) — lets a sync pull
 	// only the Companies changed since its last run.
 	if v := c.Query("updated_since"); v != "" {
@@ -99,6 +92,13 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) (*gorm.DB, error) {
 		}
 		query = query.Where("companies.updated_at >= ?", t)
 	}
+	// stale_days — only companies with no company-scoped Activity (see
+	// company_activity.go's withLastActivityAt for the same "related_type =
+	// 'company'" definition) at or after the cutoff, i.e. last_activity_at is
+	// NULL or older than stale_days. Expressed as a NOT EXISTS rather than
+	// relying on withLastActivityAt's joined alias, so this filter works
+	// standalone here (and in ExportHandler.Companies, which shares this
+	// function but never joins the activity subquery itself).
 	if v := c.Query("stale_days"); v != "" {
 		if days, err := strconv.Atoi(v); err == nil {
 			cutoff := time.Now().AddDate(0, 0, -days)
@@ -212,13 +212,15 @@ func relatedRecordNameArgs(like string) []interface{} {
 
 // parseTimeBound accepts either a full RFC 3339 timestamp (what the Tasks
 // page sends: the viewer's local midnight, with offset, so "today" means the
-// viewer's today rather than the server's) or a bare YYYY-MM-DD date
-// (interpreted as UTC midnight).
+// viewer's today rather than the server's) or a bare YYYY-MM-DD date, read
+// as server-local midnight (TZ, Asia/Bangkok) — the same reading as the
+// reports' date_from/date_to (sourcePerformanceWindow). UTC midnight would
+// be 07:00 Bangkok, silently skipping the first seven hours of the day.
 func parseTimeBound(v string) (time.Time, error) {
 	if t, err := time.Parse(time.RFC3339, v); err == nil {
 		return t, nil
 	}
-	return time.Parse("2006-01-02", v)
+	return time.ParseInLocation("2006-01-02", v, time.Local)
 }
 
 // applyTaskFilters applies the GET /tasks filter block:
