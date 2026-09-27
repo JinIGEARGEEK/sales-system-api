@@ -28,9 +28,10 @@ const taskReminderInterval = 15 * time.Minute
 // NotifiedAt, so turning SMTP on later doesn't suddenly email a backlog of
 // long-past-due tasks. The task itself is the in-app alert either way.
 //
-// This is the only background job in the app; it runs on its own ticker
-// rather than piggybacking on the Fiber request lifecycle since due-date
-// checks aren't triggered by any specific HTTP request.
+// One of several background jobs (see also workflow_rules.go,
+// forecast_snapshots.go, weekly_digest.go, all started from cmd/api/main.go),
+// each on its own ticker rather than piggybacking on the Fiber request
+// lifecycle, since none is triggered by a specific HTTP request.
 func StartTaskDueReminders(db *gorm.DB, cfg *config.Config) {
 	ticker := time.NewTicker(taskReminderInterval)
 	go func() {

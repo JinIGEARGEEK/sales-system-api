@@ -575,17 +575,13 @@ func (h *ReportHandler) fetchOutstandingBalance(c *fiber.Ctx) ([]outstandingBala
 	for _, r := range candidates {
 		quote, hasQuote := latestAccepted[r.DealID]
 		computeOutstandingRow(&r, quotePtr(quote, hasQuote), paymentsByDeal[r.DealID], installmentsByDeal[r.DealID], now)
-		if r.OutstandingAmount > outstandingEpsilon {
+		if r.OutstandingAmount > utils.MoneyEpsilon {
 			rows = append(rows, r)
 		}
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].OutstandingAmount > rows[j].OutstandingAmount })
 	return rows, nil
 }
-
-// outstandingEpsilon absorbs float rounding (e.g. 7% VAT on odd amounts), so
-// a Deal paid to the satang doesn't linger in the report owing 0.0000001.
-const outstandingEpsilon = 0.005
 
 func quotePtr(q models.Quote, ok bool) *models.Quote {
 	if !ok {
@@ -601,7 +597,13 @@ func computeOutstandingRow(r *outstandingBalanceRow, acceptedQuote *models.Quote
 	r.ReceivableAmount, r.ReceivableSource = r.DealValue, ReceivableSourceDealValue
 	if acceptedQuote != nil {
 		totals := utils.ComputeQuoteTotals(acceptedQuote.Items, acceptedQuote.DiscountTotal, acceptedQuote.VatEnabled, acceptedQuote.WhtEnabled, acceptedQuote.WhtRate)
-		r.ReceivableAmount, r.ReceivableSource = totals.ReceivableAmount(), ReceivableSourceQuote
+		// Only a quote with priced line items says what the customer owes.
+		// An uploaded PDF whose extraction failed is Accepted with no items,
+		// and reading it as a 0 receivable dropped an unpaid Won Deal from
+		// the report entirely; the Deal value is the better figure then.
+		if totals.Subtotal > 0 {
+			r.ReceivableAmount, r.ReceivableSource = totals.ReceivableAmount(), ReceivableSourceQuote
+		}
 	}
 
 	r.PaidAmount, r.WhtAmount = 0, 0
@@ -621,7 +623,7 @@ func computeOutstandingRow(r *outstandingBalanceRow, acceptedQuote *models.Quote
 		r.Aging = OutstandingBalanceAgingOverdue
 		due := oldest.DueDate
 		r.OldestOverdueDueDate = &due
-		if days := utils.DaysOverdue(due, now); days > 0 {
+		if days := utils.LocalDaysBetween(due, now); days > 0 {
 			r.DaysOverdue = days
 		}
 		r.AgingBucket = utils.AgingBucket(r.DaysOverdue)
@@ -630,7 +632,7 @@ func computeOutstandingRow(r *outstandingBalanceRow, acceptedQuote *models.Quote
 
 // OutstandingBalance godoc
 // @Summary Outstanding balance report (Admin/Sales Manager only)
-// @Description Won Deals with money still owed, sorted by outstanding_amount descending. receivable_amount = latest Accepted Quote's taxable amount + VAT (receivable_source "quote"), else the Deal value ("deal_value"); outstanding_amount = receivable_amount − paid_amount − wht_amount. Aging: oldest_overdue_due_date, days_overdue, aging_bucket (current|1_30|31_60|61_90|90_plus) from the oldest unpaid overdue installment; legacy aging (overdue|upcoming|none) kept. FR-CRM-095. Admin/Sales Manager only.
+// @Description Won Deals with money still owed, sorted by outstanding_amount descending. receivable_amount = latest Accepted Quote's taxable amount + VAT when it has priced line items (receivable_source "quote"), else the Deal value ("deal_value") — including an Accepted uploaded PDF whose extraction found no items; outstanding_amount = receivable_amount − paid_amount − wht_amount. Aging: oldest_overdue_due_date, days_overdue, aging_bucket (current|1_30|31_60|61_90|90_plus) from the oldest unpaid overdue installment; legacy aging (overdue|upcoming|none) kept. FR-CRM-095. Admin/Sales Manager only.
 // @Tags reports
 // @Security BearerAuth
 // @Produce json

@@ -38,6 +38,16 @@ func CompanyPartyLines(company models.Company) []string {
 	return lines
 }
 
+// RenderPartyBlock prints the party heading (e.g. "Party: <legal name>")
+// and CompanyPartyLines under it, one 6mm line each, wrapping at the right
+// margin: a full Thai registered address plus postal code easily runs past
+// one A4 line, and a plain Cell clipped it mid-address. Caller sets the font.
+func RenderPartyBlock(pdf *fpdf.Fpdf, heading string, company models.Company) {
+	for _, line := range append([]string{heading}, CompanyPartyLines(company)...) {
+		pdf.MultiCell(0, 6, line, "", "L", false)
+	}
+}
+
 // branchLabel names a branch code the way a Thai tax document does:
 // "สำนักงานใหญ่" (head office) for 00000, else "สาขาที่ 00001". Blank for no
 // code.
@@ -50,14 +60,6 @@ func branchLabel(code string) string {
 	default:
 		return "สาขาที่ " + code
 	}
-}
-
-// DerefString returns *s, or "" for nil.
-func DerefString(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 // RenderLineItemsTable draws the Description/Qty/Unit Price/Total header row,

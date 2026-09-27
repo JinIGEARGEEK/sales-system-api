@@ -4,6 +4,27 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-09-27 — Post-release fixes: receivables, installment alerts, dates, PDFs
+
+Fixes found reviewing the release below, plus the cleanup around them.
+
+**Fixed.**
+- Outstanding balance: an Accepted quote with no priced items (an uploaded PDF whose extraction failed) made the receivable 0, so an unpaid Won Deal vanished from the report. Such a quote now falls back to the Deal value (`receivable_source: "deal_value"`).
+- Installments: cash + WHT summing a hair under the amount left an installment partial/overdue (and fired a High "Overdue payment" Task). Paid now allows 0.005 baht (`utils.MoneyEpsilon`, also the report's threshold).
+- Installments are overdue from the calendar day after `due_date`, not on the due date itself — matching `days_overdue`/`aging_bucket`.
+- `payment_installment` rule: the due-soon firing used up the only dedupe key, so the overdue alert never came. It now fires once per state (`context` `due_soon`/`overdue`); a one-time migration (`BackfillInstallmentAlertContexts`) re-keys existing log rows so nothing re-alerts on deploy.
+- Rule Tasks/emails went to deactivated owners. An inactive owner now counts as no owner (logged only if someone else, e.g. managers, was alerted).
+- Notification-rule Create wrote explicit `false` flags in a second, untransacted statement, so a failure could leave the rule active after a 500. Now one transaction (`utils.CreateKeepingFalse`, also used for a quote's `vat_enabled`).
+- Bare `YYYY-MM-DD` for `updated_since`/`due_from`/`due_before` was UTC midnight (07:00 Bangkok); now server-local midnight.
+- Customer-product `end_date`: an unparseable value is a `422` (was silently dropped with a `200`), and Create applies it (was ignored). RFC 3339 is stored as sent; a bare date is local midnight.
+- Quote/Contract PDFs wrap long party lines (e.g. a full Thai address) instead of clipping them.
+
+**Behaviour changes.** Alert titles ("Deal idle N days") count local calendar days. Renewal/contract-expiry checkers filter their window in SQL. Every rule checker takes the tick's `now`.
+
+**Cleanup.** One set of calendar-day helpers (`utils.DaysUntil`/`LocalDaysBetween`; `DaysOverdue` and `notifier.daysSince` removed), one body-key helper (`bodyKeys`/`bodyHas`), `parseOptionalCalendarDate`, pointer helpers in `utils/ptr.go`; removed `recordNotified`, `fireRule`'s unused result and `utils.ComputeInstallmentStatuses`. Swagger now documents `/admin/notification-rules`.
+
+Regression-guarded: `internal/handlers/{receivables,filters}_internal_test.go`, `internal/utils/{payment_schedule,pdf}_test.go`, `internal/notifier/{payment_installment_rule,rule_tasks}_test.go`, `tests/{create_keeping_false,installment_alert_context_migration}_test.go`, `TestCustomerProduct_EndDate`.
+
 ## 2026-09-27 — In-app alerts without SMTP, payment tax fields, receivables, renewals, Thai PDFs
 
 The company runs without SMTP, so alerts now arrive in-app, and payments carry what Thai accounting needs.
@@ -40,7 +61,7 @@ Follow-ups so the accounting sync can match Companies reliably.
 
 **Search covers tax IDs.** `?search=` also matches `tax_id`, with the term's spaces/dashes dropped. A term with nothing left after that ("-") skips the tax ID column rather than matching every row.
 
-**PDFs.** Quote and Contract PDFs append `postal_code` to the address line and print the branch with the tax ID ("Tax ID: 0105555555555 (Head office)", "(Branch 00001)"). Both now share `utils.CompanyPartyLines` instead of duplicating the block, and `handlers.derefStr` is replaced by the shared `utils.DerefString`.
+**PDFs.** Quote and Contract PDFs append `postal_code` to the address line and print the branch with the tax ID ("Tax ID: 0105555555555 (สำนักงานใหญ่)", "(สาขาที่ 00001)", the wording on Thai tax documents). Both now share `utils.CompanyPartyLines` instead of duplicating the block, and `handlers.derefStr` is replaced by the shared `utils.DerefString`.
 
 **Swagger.** `docs/swagger.json`/`.yaml` are regenerated, which also picks up earlier annotation changes never regenerated. Company Create/Update now document their `409`/`422` responses (the old `400` note wrongly listed a missing name, which is a `422`). `cmd/api/main.go` now defines the `ApiKeyAuth` (`X-API-Key`) scheme the Open API routes were already tagged with. `docs/embed.go`'s regen steps note to delete the `docs/docs.go` swag also writes.
 

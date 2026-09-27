@@ -10,6 +10,7 @@ import (
 
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/testutil"
+	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
 // testutil.Config() has no SMTP_HOST, so every test here also exercises the
@@ -52,8 +53,8 @@ func TestDealIdleRule_CreatesOneTaskForOwner(t *testing.T) {
 	}).Error)
 	rule := seedRule(t, db, models.NotificationEntityDeal, 14, true)
 
-	checkDealIdleRule(db, testutil.Config(), rule)
-	checkDealIdleRule(db, testutil.Config(), rule)
+	checkDealIdleRule(db, testutil.Config(), rule, time.Now())
+	checkDealIdleRule(db, testutil.Config(), rule, time.Now())
 
 	tasks := tasksFor(t, db)
 	require.Len(t, tasks, 1, "second tick must not duplicate the task")
@@ -75,20 +76,44 @@ func TestDealIdleRule_CreatesOneTaskForOwner(t *testing.T) {
 	assert.EqualValues(t, 1, logs)
 }
 
+// A deactivated owner gets no Task (it used to be assigned to them, since
+// the owner check didn't look at is_active) and, with nobody else to alert,
+// nothing is logged — so reassigning to an active rep still alerts them.
+func TestDealIdleRule_InactiveOwnerGetsNoTask(t *testing.T) {
+	_, db := testutil.App(t)
+	gone := testutil.CreateUser(t, db, models.RoleSalesRep)
+	require.NoError(t, db.Model(&models.User{}).Where("id = ?", gone.ID).Update("is_active", false).Error)
+	deal := seedDealForNotifier(t, db, &gone.ID)
+	require.NoError(t, db.Model(deal).UpdateColumns(map[string]interface{}{
+		"status": models.DealStatusOpen, "created_at": time.Now().AddDate(0, 0, -20),
+	}).Error)
+	rule := seedRule(t, db, models.NotificationEntityDeal, 14, true)
+
+	checkDealIdleRule(db, testutil.Config(), rule, time.Now())
+	assert.Empty(t, tasksFor(t, db), "no Task for a deactivated rep")
+	assert.False(t, alreadyNotified(db, rule.ID, deal.ID, string(deal.Stage)), "nothing logged: nobody was alerted")
+
+	successor := testutil.CreateUser(t, db, models.RoleSalesRep)
+	require.NoError(t, db.Model(deal).UpdateColumn("assigned_to", successor.ID).Error)
+	checkDealIdleRule(db, testutil.Config(), rule, time.Now())
+	tasks := tasksFor(t, db)
+	require.Len(t, tasks, 1)
+	assert.Equal(t, successor.ID, *tasks[0].AssignedTo)
+}
+
 // The dedupe key is the NotificationLog insert: if another tick (or
 // instance) already wrote it, fireRule creates no Task.
 func TestFireRule_NoTaskWhenLogAlreadyWritten(t *testing.T) {
 	_, db := testutil.App(t)
 	owner := testutil.CreateUser(t, db, models.RoleSalesRep)
 	rule := seedRule(t, db, models.NotificationEntityDeal, 14, true)
-	require.NoError(t, recordNotified(db, rule.ID, 42, "Lead"))
+	require.NoError(t, db.Create(&models.NotificationLog{RuleID: rule.ID, EntityID: 42, Context: "Lead", NotifiedAt: time.Now()}).Error)
 
-	fired := fireRule(db, testutil.Config(), rule, ruleFiring{
+	fireRule(db, testutil.Config(), rule, ruleFiring{
 		EntityID: 42, Context: "Lead", OwnerID: &owner.ID, TaskTitle: "x",
 		RelatedType: models.RelatedTypeDeal, RelatedID: 42,
 	}, time.Now())
 
-	assert.False(t, fired)
 	assert.Empty(t, tasksFor(t, db))
 }
 
@@ -97,13 +122,12 @@ func TestFireRule_CreateTaskFalseStillLogs(t *testing.T) {
 	owner := testutil.CreateUser(t, db, models.RoleSalesRep)
 	rule := seedRule(t, db, models.NotificationEntityDeal, 14, false)
 
-	fired := fireRule(db, testutil.Config(), rule, ruleFiring{
+	fireRule(db, testutil.Config(), rule, ruleFiring{
 		EntityID: 7, OwnerID: &owner.ID, TaskTitle: "x", RelatedType: models.RelatedTypeDeal, RelatedID: 7,
 	}, time.Now())
 
-	assert.True(t, fired, "the email/log path still fires")
 	assert.Empty(t, tasksFor(t, db), "create_task=false makes no Task")
-	assert.True(t, alreadyNotified(db, rule.ID, 7, ""))
+	assert.True(t, alreadyNotified(db, rule.ID, 7, ""), "the email/log path still fires")
 }
 
 // With no owner and no recipient at all, nothing is recorded, so the entity
@@ -114,8 +138,7 @@ func TestFireRule_NobodyToAlertRecordsNothing(t *testing.T) {
 	require.NoError(t, db.Model(&rule).UpdateColumn("recipient_role", models.NotificationRecipientOwner).Error)
 	rule.RecipientRole = models.NotificationRecipientOwner
 
-	fired := fireRule(db, testutil.Config(), rule, ruleFiring{EntityID: 9, TaskTitle: "x"}, time.Now())
-	assert.False(t, fired)
+	fireRule(db, testutil.Config(), rule, ruleFiring{EntityID: 9, TaskTitle: "x"}, time.Now())
 	assert.False(t, alreadyNotified(db, rule.ID, 9, ""))
 }
 
@@ -136,7 +159,7 @@ func TestPaymentInstallmentRule_TaskTitleAndPriority(t *testing.T) {
 		Method: models.PaymentMethodTransfer, InstallmentID: &first.ID}).Error)
 
 	rule := seedRule(t, db, models.NotificationEntityPaymentInstallment, 7, true)
-	checkPaymentInstallmentDueRule(db, testutil.Config(), rule)
+	checkPaymentInstallmentDueRule(db, testutil.Config(), rule, time.Now())
 
 	tasks := tasksFor(t, db)
 	byTitle := map[string]models.Task{}
@@ -154,17 +177,34 @@ func TestPaymentInstallmentRule_TaskTitleAndPriority(t *testing.T) {
 	assert.Equal(t, models.TaskPriorityMedium, upcoming.Priority)
 }
 
-func TestInRenewalWindow(t *testing.T) {
+// The window is RenewalGraceDays back to threshold ahead, inclusive, by
+// server-local calendar date — late in the evening included — and the SQL
+// filter keeps exactly those rows.
+func TestRenewalWindow(t *testing.T) {
 	now := time.Date(2026, 9, 27, 22, 30, 0, 0, time.Local)
-	day := func(offset int) time.Time { return time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC).AddDate(0, 0, offset) }
-	cases := []struct {
-		offset int
-		want   bool
-	}{{31, false}, {30, true}, {0, true}, {-1, true}, {-30, true}, {-31, false}}
-	for _, tc := range cases {
-		days, ok := inRenewalWindow(day(tc.offset), now, 30)
-		assert.Equal(t, tc.want, ok, "offset %d", tc.offset)
-		assert.Equal(t, tc.offset, days)
+	from, to := renewalWindow(now, 30)
+	assert.Equal(t, "2026-08-28", from)
+	assert.Equal(t, "2026-10-27", to)
+
+	_, db := testutil.App(t)
+	deal := seedDealForNotifier(t, db, nil)
+	today := utils.Today(time.Now())
+	want := map[int]bool{31: false, 30: true, 0: true, -1: true, -30: true, -31: false}
+	ids := map[uint]int{}
+	for offset := range want {
+		end := today.AddDate(0, 0, offset)
+		c := &models.Contract{DealID: deal.ID, Status: models.ContractStatusSigned, EndDate: &end}
+		require.NoError(t, db.Create(c).Error)
+		ids[c.ID] = offset
+	}
+	var got []models.Contract
+	require.NoError(t, db.Scopes(dateInRenewalWindow("end_date", time.Now(), 30)).Find(&got).Error)
+	in := map[int]bool{}
+	for _, c := range got {
+		in[ids[c.ID]] = true
+	}
+	for offset, w := range want {
+		assert.Equal(t, w, in[offset], "offset %d", offset)
 	}
 }
 

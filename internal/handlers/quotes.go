@@ -243,27 +243,15 @@ func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 }
 
 // createQuoteNumbered assigns the next QT number and inserts quote inside
-// tx. VatEnabled is NOT NULL DEFAULT true, and GORM omits a false defaulted
-// field from the INSERT (then reads the default back into the struct), so a
-// no-VAT quote used to be saved — and totalled — with 7% VAT. The intended
-// value is written explicitly afterwards.
+// tx. utils.CreateKeepingFalse, since VatEnabled is NOT NULL DEFAULT true
+// and a plain Create saved (and totalled) a no-VAT quote with 7% VAT.
 func createQuoteNumbered(tx *gorm.DB, quote *models.Quote, now time.Time) error {
 	number, err := utils.NextDocumentNumber(tx, "QT", now)
 	if err != nil {
 		return err
 	}
 	quote.Number = &number
-	vatEnabled := quote.VatEnabled
-	if err := tx.Create(quote).Error; err != nil {
-		return err
-	}
-	if !vatEnabled {
-		if err := tx.Model(quote).UpdateColumn("vat_enabled", false).Error; err != nil {
-			return err
-		}
-		quote.VatEnabled = false
-	}
-	return nil
+	return utils.CreateKeepingFalse(tx, quote)
 }
 
 // Upload — POST /deals/:dealId/quotes/upload. Uploads a PDF quote in place of
@@ -457,9 +445,7 @@ func duplicateQuoteDates(src models.Quote, now time.Time) (issue string, validit
 	days := -1
 	if from, ok := models.ParseFlexDate(src.IssueDate); ok {
 		if until, ok := models.ParseFlexDate(src.ValidityDate); ok {
-			fromDay := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, time.UTC)
-			untilDay := time.Date(until.Year(), until.Month(), until.Day(), 0, 0, 0, 0, time.UTC)
-			if d := int(untilDay.Sub(fromDay).Hours() / 24); d >= 0 {
+			if d := utils.DaysUntil(from, until); d >= 0 {
 				days = d
 			}
 		}
@@ -583,12 +569,7 @@ func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 	// Same party-info block Contract's export already renders (name/address/
 	// tax ID) — previously missing here, closing that gap as part of this
 	// rebuild rather than leaving Quote's PDF thinner than Contract's.
-	pdf.Cell(0, 6, fmt.Sprintf("Company: %s", strOrDefault(company.LegalName, company.Name)))
-	pdf.Ln(6)
-	for _, line := range utils.CompanyPartyLines(company) {
-		pdf.Cell(0, 6, line)
-		pdf.Ln(6)
-	}
+	utils.RenderPartyBlock(pdf, fmt.Sprintf("Company: %s", utils.StringOrDefault(company.LegalName, company.Name)), company)
 	pdf.Cell(0, 6, fmt.Sprintf("Contact: %s", contact.Name))
 	pdf.Ln(6)
 	if quote.ReferenceNumber != nil && *quote.ReferenceNumber != "" {

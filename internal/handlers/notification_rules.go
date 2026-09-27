@@ -23,6 +23,14 @@ func NewNotificationRuleHandler(db *gorm.DB) *NotificationRuleHandler {
 
 // List — GET /admin/notification-rules. Always returns every row (active +
 // inactive) — the admin config page needs to manage both.
+// List godoc
+// @Summary List notification rules (Admin only)
+// @Description Every workflow notification rule, active and inactive, ordered by id. FR-CRM-100/101/102.
+// @Tags admin/notification-rules
+// @Security BearerAuth
+// @Produce json
+// @Success 200 {array} models.NotificationRule
+// @Router /admin/notification-rules [get]
 func (h *NotificationRuleHandler) List(c *fiber.Ctx) error {
 	var rules []models.NotificationRule
 	if err := h.DB.Order("id ASC").Find(&rules).Error; err != nil {
@@ -63,6 +71,18 @@ func validateNotificationRuleForm(c *fiber.Ctx, form notificationRuleForm) bool 
 }
 
 // Create — POST /admin/notification-rules.
+// Create godoc
+// @Summary Create a notification rule (Admin only)
+// @Description name, entity_type (deal|quote|contract|prospect|company|payment_installment|customer_product_renewal|contract_expiry), threshold_days (> 0) and recipient_role (owner|owner_and_managers) are required. is_active and create_task are optional and default to true; an explicit false is kept. create_task makes each firing also create a Task for the record's active owner (the in-app alert; the only one when SMTP is off).
+// @Tags admin/notification-rules
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body notificationRuleForm true "Rule fields"
+// @Success 201 {object} models.NotificationRule
+// @Failure 400 {object} map[string]interface{} "Invalid request body"
+// @Failure 422 {object} map[string]interface{} "Missing/invalid field, or rule name already in use"
+// @Router /admin/notification-rules [post]
 func (h *NotificationRuleHandler) Create(c *fiber.Ctx) error {
 	var form notificationRuleForm
 	if err := c.BodyParser(&form); err != nil {
@@ -80,26 +100,29 @@ func (h *NotificationRuleHandler) Create(c *fiber.Ctx) error {
 	}
 	rule.CreatedBy = &actorID
 	rule.UpdatedBy = &actorID
-	// is_active/create_task are NOT NULL DEFAULT true, and GORM leaves a
-	// zero-value (false) defaulted field out of the INSERT — and then reads
-	// the column default back into the struct — so an explicit false would
-	// silently become true. Remember the intent and write it afterwards.
-	isActive, createTask := rule.IsActive, rule.CreateTask
-	if err := h.DB.Create(&rule).Error; err != nil {
+	// is_active/create_task are NOT NULL DEFAULT true, which a plain Create
+	// would apply over an explicit false (see utils.CreateKeepingFalse).
+	if err := utils.CreateKeepingFalse(h.DB, &rule); err != nil {
 		return utils.ValidationError(c, "Rule name already in use", map[string][]string{"name": {"Name is already in use"}})
-	}
-	if !isActive || !createTask {
-		if err := h.DB.Model(&rule).UpdateColumns(map[string]interface{}{
-			"is_active": isActive, "create_task": createTask,
-		}).Error; err != nil {
-			return utils.Internal(c, "Failed to create notification rule")
-		}
-		rule.IsActive, rule.CreateTask = isActive, createTask
 	}
 	return utils.Created(c, rule)
 }
 
 // Update — PATCH /admin/notification-rules/:id.
+// Update godoc
+// @Summary Update a notification rule (Admin only)
+// @Description Despite PATCH, name/entity_type/threshold_days/recipient_role are validated as on Create and always replaced; is_active and create_task keep their stored value when omitted.
+// @Tags admin/notification-rules
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path int true "Rule ID"
+// @Param body body notificationRuleForm true "Rule fields"
+// @Success 200 {object} models.NotificationRule
+// @Failure 400 {object} map[string]interface{} "Invalid request body"
+// @Failure 404 {object} map[string]interface{} "Notification rule not found"
+// @Failure 422 {object} map[string]interface{} "Missing/invalid field"
+// @Router /admin/notification-rules/{id} [patch]
 func (h *NotificationRuleHandler) Update(c *fiber.Ctx) error {
 	var rule models.NotificationRule
 	if err := utils.FindByID(c, h.DB, &rule, "Notification rule not found"); err != nil {
@@ -132,6 +155,15 @@ func (h *NotificationRuleHandler) Update(c *fiber.Ctx) error {
 
 // Delete — DELETE /admin/notification-rules/:id. Soft-delete (is_active:
 // false) rather than a hard row delete, same convention as PipelineStage.
+// Delete godoc
+// @Summary Deactivate a notification rule (Admin only)
+// @Description Sets is_active false; the row and its notification log are kept.
+// @Tags admin/notification-rules
+// @Security BearerAuth
+// @Param id path int true "Rule ID"
+// @Success 204
+// @Failure 404 {object} map[string]interface{} "Notification rule not found"
+// @Router /admin/notification-rules/{id} [delete]
 func (h *NotificationRuleHandler) Delete(c *fiber.Ctx) error {
 	var rule models.NotificationRule
 	if err := utils.FindByID(c, h.DB, &rule, "Notification rule not found"); err != nil {

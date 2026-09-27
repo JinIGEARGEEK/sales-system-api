@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -197,14 +196,6 @@ func sameOptionalString(a, b *string) bool {
 	return *a == *b
 }
 
-// jsonBodyKeys returns the top-level keys of a JSON request body. A non-JSON
-// body (BodyParser also accepts form encoding) gives an empty map.
-func jsonBodyKeys(c *fiber.Ctx) map[string]json.RawMessage {
-	var raw map[string]json.RawMessage
-	_ = json.Unmarshal(c.Body(), &raw)
-	return raw
-}
-
 // validateCompanyForm runs every check CompanyHandler.Create and Update
 // share: required name, website format, five-digit branch_code/postal_code,
 // active size/revenue_size, status, and the website and tax-ID-plus-branch
@@ -248,11 +239,11 @@ func validateCompanyForm(c *fiber.Ctx, db *gorm.DB, form companyForm, current *m
 		return companyFormResult{}, utils.ErrHandled
 	}
 	if current != nil {
-		keys := jsonBodyKeys(c)
-		if _, sent := keys["branch_code"]; !sent {
+		keys, _ := bodyKeys(c)
+		if !keys.has("branch_code") {
 			branchCode = current.BranchCode
 		}
-		if _, sent := keys["postal_code"]; !sent {
+		if !keys.has("postal_code") {
 			postalCode = current.PostalCode
 		}
 	}
@@ -317,7 +308,7 @@ func NewCompanyHandler(db *gorm.DB) *CompanyHandler {
 // @Param search query string false "Search by name, website or tax ID"
 // @Param tax_id query string false "Exact tax_id match (spaces/dashes ignored)"
 // @Param branch_code query string false "Exact branch_code match"
-// @Param updated_since query string false "Only companies updated at or after this RFC 3339 timestamp or YYYY-MM-DD date"
+// @Param updated_since query string false "Only companies updated at or after this RFC 3339 timestamp or YYYY-MM-DD date (server-local midnight)"
 // @Param stale_days query int false "Filter to companies with no activity in N days"
 // @Param has_won_deal query bool false "Filter to companies with (or without) a won Deal"
 // @Param sort query string false "Sort field, prefix - for descending (created_at, updated_at, name, industry)"

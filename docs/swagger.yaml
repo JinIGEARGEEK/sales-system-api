@@ -637,6 +637,72 @@ definitions:
     - LostReasonCompetitor
     - LostReasonNoBudget
     - LostReasonOther
+  github_com_igeargeek_sales-system-api_internal_models.NotificationEntityType:
+    enum:
+    - deal
+    - quote
+    - contract
+    - prospect
+    - company
+    - payment_installment
+    - customer_product_renewal
+    - contract_expiry
+    type: string
+    x-enum-varnames:
+    - NotificationEntityDeal
+    - NotificationEntityQuote
+    - NotificationEntityContract
+    - NotificationEntityProspect
+    - NotificationEntityCompany
+    - NotificationEntityPaymentInstallment
+    - NotificationEntityCustomerProductRenewal
+    - NotificationEntityContractExpiry
+  github_com_igeargeek_sales-system-api_internal_models.NotificationRecipientRole:
+    enum:
+    - owner
+    - owner_and_managers
+    type: string
+    x-enum-varnames:
+    - NotificationRecipientOwner
+    - NotificationRecipientOwnerAndManagers
+  github_com_igeargeek_sales-system-api_internal_models.NotificationRule:
+    properties:
+      create_task:
+        description: |-
+          CreateTask — AutoMigrate adds this NOT NULL DEFAULT true, which also
+          backfills every pre-existing rule to true. Create must write an
+          explicit false itself (GORM omits zero values for defaulted columns).
+        type: boolean
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      entity_type:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.NotificationEntityType'
+        description: |-
+          varchar(32), not (16) — "payment_installment" (20 chars) needs the
+          extra room; widened rather than shortening the value once RecipientRole
+          on this same struct already uses varchar(32).
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      name:
+        type: string
+      recipient_role:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.NotificationRecipientRole'
+      threshold_days:
+        type: integer
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+    type: object
   github_com_igeargeek_sales-system-api_internal_models.Payment:
     properties:
       amount:
@@ -1292,8 +1358,8 @@ definitions:
       covered:
         description: |-
           Covered is how much of this installment's Amount has been paid,
-          cumulatively — see ComputeInstallmentStatuses's own doc for the
-          waterfall allocation this comes from.
+          cumulatively — see ComputeInstallmentStatusesFromPayments's doc for
+          the waterfall allocation this comes from.
         type: number
       installment:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.PaymentInstallment'
@@ -1678,6 +1744,24 @@ definitions:
         type: number
       status:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadStatus'
+    type: object
+  internal_handlers.notificationRuleForm:
+    properties:
+      create_task:
+        description: |-
+          CreateTask — optional; defaults to true on Create, unchanged on Update
+          when omitted.
+        type: boolean
+      entity_type:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.NotificationEntityType'
+      is_active:
+        type: boolean
+      name:
+        type: string
+      recipient_role:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.NotificationRecipientRole'
+      threshold_days:
+        type: integer
     type: object
   internal_handlers.openOptions:
     properties:
@@ -2554,6 +2638,128 @@ paths:
       summary: Update a lead source
       tags:
       - admin/lead-sources
+  /admin/notification-rules:
+    get:
+      description: Every workflow notification rule, active and inactive, ordered
+        by id. FR-CRM-100/101/102.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.NotificationRule'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List notification rules (Admin only)
+      tags:
+      - admin/notification-rules
+    post:
+      consumes:
+      - application/json
+      description: name, entity_type (deal|quote|contract|prospect|company|payment_installment|customer_product_renewal|contract_expiry),
+        threshold_days (> 0) and recipient_role (owner|owner_and_managers) are required.
+        is_active and create_task are optional and default to true; an explicit false
+        is kept. create_task makes each firing also create a Task for the record's
+        active owner (the in-app alert; the only one when SMTP is off).
+      parameters:
+      - description: Rule fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.notificationRuleForm'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.NotificationRule'
+        "400":
+          description: Invalid request body
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Missing/invalid field, or rule name already in use
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a notification rule (Admin only)
+      tags:
+      - admin/notification-rules
+  /admin/notification-rules/{id}:
+    delete:
+      description: Sets is_active false; the row and its notification log are kept.
+      parameters:
+      - description: Rule ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Notification rule not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Deactivate a notification rule (Admin only)
+      tags:
+      - admin/notification-rules
+    patch:
+      consumes:
+      - application/json
+      description: Despite PATCH, name/entity_type/threshold_days/recipient_role are
+        validated as on Create and always replaced; is_active and create_task keep
+        their stored value when omitted.
+      parameters:
+      - description: Rule ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Rule fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.notificationRuleForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.NotificationRule'
+        "400":
+          description: Invalid request body
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Notification rule not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Missing/invalid field
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a notification rule (Admin only)
+      tags:
+      - admin/notification-rules
   /admin/pipeline-stages:
     get:
       description: Returns every configured pipeline stage (active + inactive), ordered
@@ -3226,7 +3432,7 @@ paths:
         name: branch_code
         type: string
       - description: Only companies updated at or after this RFC 3339 timestamp or
-          YYYY-MM-DD date
+          YYYY-MM-DD date (server-local midnight)
         in: query
         name: updated_since
         type: string
@@ -3338,10 +3544,11 @@ paths:
       description: 'Manually adds a Customer-Product record (a Product linked to a
         Company as a customer), or changes its status, independent of a Deal. FR-CRM-065.
         source_deal_id, if given, must reference a Deal belonging to this Company.
-        start_date defaults to now when omitted; status defaults to "Interested".
-        Optional renewal fields: renewal_date (YYYY-MM-DD or RFC 3339; stored as a
-        date), billing_cycle (monthly|yearly|one_time), price (>= 0) — renewal_date
-        drives the customer_product_renewal notification rule.'
+        start_date defaults to now when omitted; end_date is optional (RFC 3339 or
+        YYYY-MM-DD, 422 if unparseable); status defaults to "Interested". Optional
+        renewal fields: renewal_date (YYYY-MM-DD or RFC 3339; stored as a date), billing_cycle
+        (monthly|yearly|one_time), price (>= 0) — renewal_date drives the customer_product_renewal
+        notification rule.'
       parameters:
       - description: Company ID
         in: path
@@ -4064,10 +4271,11 @@ paths:
       - application/json
       description: 'Updates a Customer-Product record — the Company/Product link created
         via AddForCompany (or auto-created when a Deal is won, FR-CRM-064). company_id/product_id
-        are immutable after creation; status, end_date (e.g. when moving to Churned)
-        and the renewal fields (renewal_date, billing_cycle, price — partial merge:
-        only keys present change, null clears) can change. Writes an audit-log entry
-        when status changes (FR-CRM-082).'
+        are immutable after creation; status, end_date (e.g. when moving to Churned;
+        RFC 3339 timestamp stored as that instant, or YYYY-MM-DD = server-local midnight;
+        null clears; anything else is a 422) and the renewal fields (renewal_date,
+        billing_cycle, price — partial merge: only keys present change, null clears)
+        can change. Writes an audit-log entry when status changes (FR-CRM-082).'
       parameters:
       - description: Customer-Product ID
         in: path
@@ -4094,6 +4302,11 @@ paths:
             type: object
         "404":
           description: Customer product not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Invalid end_date, renewal_date, billing_cycle or price
           schema:
             additionalProperties: true
             type: object
@@ -4349,11 +4562,11 @@ paths:
   /deals/{dealId}/payment-installments:
     get:
       description: Returns each planned installment with its derived paid/partial/overdue/upcoming
-        status (utils.ComputeInstallmentStatuses), ordered by due_date. Backs the
-        Deal detail page's Payment Schedule section, and is also served read-only
-        to API keys at /open/deals/{dealId}/payment-installments. Sales Rep/Marketing
-        callers only see Deals assigned to them or unassigned; Admin/Sales Manager
-        see every Deal. api-system-spec.md §7.5a.
+        status (utils.ComputeInstallmentStatusesFromPayments), ordered by due_date.
+        Backs the Deal detail page's Payment Schedule section, and is also served
+        read-only to API keys at /open/deals/{dealId}/payment-installments. Sales
+        Rep/Marketing callers only see Deals assigned to them or unassigned; Admin/Sales
+        Manager see every Deal. api-system-spec.md §7.5a.
       parameters:
       - description: Deal ID
         in: path
@@ -5514,11 +5727,11 @@ paths:
   /open/deals/{dealId}/payment-installments:
     get:
       description: Returns each planned installment with its derived paid/partial/overdue/upcoming
-        status (utils.ComputeInstallmentStatuses), ordered by due_date. Backs the
-        Deal detail page's Payment Schedule section, and is also served read-only
-        to API keys at /open/deals/{dealId}/payment-installments. Sales Rep/Marketing
-        callers only see Deals assigned to them or unassigned; Admin/Sales Manager
-        see every Deal. api-system-spec.md §7.5a.
+        status (utils.ComputeInstallmentStatusesFromPayments), ordered by due_date.
+        Backs the Deal detail page's Payment Schedule section, and is also served
+        read-only to API keys at /open/deals/{dealId}/payment-installments. Sales
+        Rep/Marketing callers only see Deals assigned to them or unassigned; Admin/Sales
+        Manager see every Deal. api-system-spec.md §7.5a.
       parameters:
       - description: Deal ID
         in: path
@@ -6928,11 +7141,12 @@ paths:
     get:
       description: 'Won Deals with money still owed, sorted by outstanding_amount
         descending. receivable_amount = latest Accepted Quote''s taxable amount +
-        VAT (receivable_source "quote"), else the Deal value ("deal_value"); outstanding_amount
-        = receivable_amount − paid_amount − wht_amount. Aging: oldest_overdue_due_date,
-        days_overdue, aging_bucket (current|1_30|31_60|61_90|90_plus) from the oldest
-        unpaid overdue installment; legacy aging (overdue|upcoming|none) kept. FR-CRM-095.
-        Admin/Sales Manager only.'
+        VAT when it has priced line items (receivable_source "quote"), else the Deal
+        value ("deal_value") — including an Accepted uploaded PDF whose extraction
+        found no items; outstanding_amount = receivable_amount − paid_amount − wht_amount.
+        Aging: oldest_overdue_due_date, days_overdue, aging_bucket (current|1_30|31_60|61_90|90_plus)
+        from the oldest unpaid overdue installment; legacy aging (overdue|upcoming|none)
+        kept. FR-CRM-095. Admin/Sales Manager only.'
       parameters:
       - description: Filter by assigned Sales Rep user ID
         in: query

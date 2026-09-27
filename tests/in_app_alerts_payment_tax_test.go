@@ -416,6 +416,49 @@ func TestContractEndDateAndCustomerProductRenewalFields(t *testing.T) {
 	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 }
 
+// Customer-product end_date: a bad value is a 422 (it used to be dropped
+// silently with a 200), the frontend's toISOString instant is stored as
+// sent, a bare date is Bangkok midnight, null clears, and Create applies it
+// (it used to ignore end_date altogether).
+func TestCustomerProduct_EndDate(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	company := seedCompany(t, db)
+	product := &models.Product{Name: "CRM Cloud", Price: 1000, IsActive: true}
+	require.NoError(t, db.Create(product).Error)
+	var cp struct {
+		Data models.CustomerProduct `json:"data"`
+	}
+
+	// 1 Oct 2026 00:00 Bangkok, as the frontend serializes it.
+	resp := doJSON(t, app, testutil.AuthRequest(t, http.MethodPost, "/api/v1/companies/"+itoa(company.ID)+"/products", map[string]interface{}{
+		"product_id": product.ID, "status": "Active", "end_date": "2026-09-30T17:00:00.000Z",
+	}, admin.ID, admin.Role), &cp)
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	require.NotNil(t, cp.Data.EndDate, "Create applies end_date")
+	assert.True(t, cp.Data.EndDate.Equal(time.Date(2026, 9, 30, 17, 0, 0, 0, time.UTC)), "stored as the instant sent, got %s", cp.Data.EndDate)
+
+	resp = doJSON(t, app, testutil.AuthRequest(t, http.MethodPost, "/api/v1/companies/"+itoa(company.ID)+"/products", map[string]interface{}{
+		"product_id": product.ID, "status": "Active", "end_date": "soon",
+	}, admin.ID, admin.Role), nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+
+	patch := func(body map[string]interface{}) int {
+		return doJSON(t, app, testutil.AuthRequest(t, http.MethodPatch, "/api/v1/customer-products/"+itoa(cp.Data.ID), body, admin.ID, admin.Role), &cp).StatusCode
+	}
+	assert.Equal(t, http.StatusUnprocessableEntity, patch(map[string]interface{}{"status": "Churned", "end_date": "31/12/2026"}))
+	var stored models.CustomerProduct
+	require.NoError(t, db.First(&stored, cp.Data.ID).Error)
+	assert.Equal(t, models.CustomerProductActive, stored.Status, "a rejected PATCH changes nothing")
+
+	require.Equal(t, http.StatusOK, patch(map[string]interface{}{"status": "Churned", "end_date": "2026-12-31"}))
+	require.NotNil(t, cp.Data.EndDate)
+	assert.True(t, cp.Data.EndDate.Equal(time.Date(2026, 12, 31, 0, 0, 0, 0, time.Local)), "got %s", cp.Data.EndDate)
+
+	require.Equal(t, http.StatusOK, patch(map[string]interface{}{"status": "Churned", "end_date": nil}))
+	assert.Nil(t, cp.Data.EndDate)
+}
+
 // Rule-created Tasks show up in-app: the notification log lists the new
 // entity types resolved to their Deal/Company.
 func TestNotificationLog_ResolvesInstallmentAndRenewalFirings(t *testing.T) {

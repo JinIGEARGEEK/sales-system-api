@@ -6,7 +6,7 @@ import "time"
 // defined before money actually arrives (unlike Payment, which only records
 // money already received — see payment.go). No status is stored here: it's
 // always derived by comparing the schedule against actual Payment totals
-// (utils.ComputeInstallmentStatuses, a cumulative "waterfall" allocation —
+// (utils.ComputeInstallmentStatusesFromPayments, a cumulative "waterfall" allocation —
 // no explicit link to which Payment satisfies which installment), so
 // editing/reordering installments never leaves stale state. api-system-spec.md §7.5a.
 type PaymentInstallment struct {

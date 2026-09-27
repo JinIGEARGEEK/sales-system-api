@@ -108,7 +108,7 @@ func TestCheckProspectStaleRule_DisqualifiedRenameGap(t *testing.T) {
 	active := seedTestProspect(t, db, models.ProspectStatusEngaging, &owner.ID)
 	ageProspect(t, db, active.ID, 10*24*time.Hour)
 
-	checkProspectStaleRule(db, testutil.Config(), rule)
+	checkProspectStaleRule(db, testutil.Config(), rule, time.Now())
 
 	require.False(t, alreadyNotified(db, rule.ID, disqualified.ID, renamedTo),
 		"a Prospect in the renamed disqualified stage must not be notified")
@@ -135,7 +135,7 @@ func TestCheckProspectStaleRule_FallsBackToLiteralWhenNoStageFlagged(t *testing.
 	disqualified := seedTestProspect(t, db, models.ProspectStatusDisqualified, &owner.ID)
 	ageProspect(t, db, disqualified.ID, 10*24*time.Hour)
 
-	checkProspectStaleRule(db, testutil.Config(), rule)
+	checkProspectStaleRule(db, testutil.Config(), rule, time.Now())
 
 	require.False(t, alreadyNotified(db, rule.ID, disqualified.ID, string(models.ProspectStatusDisqualified)),
 		"with no ProspectStage flagged, the literal 'Disqualified' fallback must still exclude it")
@@ -176,7 +176,7 @@ func TestCheckProspectStaleRule_ExactlyOneFlaggedStageWins(t *testing.T) {
 	staleUnderFlaggedName := seedTestProspect(t, db, models.ProspectStatus(customName), &owner.ID)
 	ageProspect(t, db, staleUnderFlaggedName.ID, 10*24*time.Hour)
 
-	checkProspectStaleRule(db, testutil.Config(), rule)
+	checkProspectStaleRule(db, testutil.Config(), rule, time.Now())
 
 	require.True(t, alreadyNotified(db, rule.ID, staleUnderOldLiteral.ID, string(models.ProspectStatusDisqualified)),
 		"a Prospect merely sharing the old literal name text is not the flagged stage and should be notified")
@@ -184,9 +184,9 @@ func TestCheckProspectStaleRule_ExactlyOneFlaggedStageWins(t *testing.T) {
 		"a Prospect in the currently-flagged stage must be excluded regardless of its name")
 }
 
-// --- alreadyNotified / recordNotified dedup logic ---
+// --- alreadyNotified dedup logic ---
 
-func TestAlreadyNotifiedAndRecordNotified(t *testing.T) {
+func TestAlreadyNotified(t *testing.T) {
 	_, db := testutil.App(t)
 
 	rule := seedProspectRule(t, db, 5, models.NotificationRecipientOwner)
@@ -195,7 +195,7 @@ func TestAlreadyNotifiedAndRecordNotified(t *testing.T) {
 
 	require.False(t, alreadyNotified(db, rule.ID, entityID, context), "nothing recorded yet")
 
-	require.NoError(t, recordNotified(db, rule.ID, entityID, context))
+	require.NoError(t, db.Create(&models.NotificationLog{RuleID: rule.ID, EntityID: entityID, Context: context, NotifiedAt: time.Now()}).Error)
 	require.True(t, alreadyNotified(db, rule.ID, entityID, context), "must dedup within the same context")
 
 	// A different context (e.g. the entity moved to a new stage/status) is a
@@ -219,7 +219,7 @@ func TestRecipientEmails_OwnerOnly(t *testing.T) {
 	manager := testutil.CreateUser(t, db, models.RoleSalesManager)
 	_ = manager
 
-	emails := recipientEmails(db, &owner.ID, models.NotificationRecipientOwner)
+	emails := recipientEmails(db, activeOwner(db, &owner.ID), models.NotificationRecipientOwner)
 	require.Equal(t, []string{owner.Email}, emails, "owner role must not include managers")
 }
 
@@ -231,7 +231,7 @@ func TestRecipientEmails_OwnerAndManagers(t *testing.T) {
 	inactiveManager := testutil.CreateUser(t, db, models.RoleSalesManager)
 	require.NoError(t, db.Model(&models.User{}).Where("id = ?", inactiveManager.ID).Update("is_active", false).Error)
 
-	emails := recipientEmails(db, &owner.ID, models.NotificationRecipientOwnerAndManagers)
+	emails := recipientEmails(db, activeOwner(db, &owner.ID), models.NotificationRecipientOwnerAndManagers)
 	require.Contains(t, emails, owner.Email)
 	require.Contains(t, emails, manager.Email)
 	require.NotContains(t, emails, inactiveManager.Email, "a deactivated manager must not be broadcast to")
@@ -252,6 +252,6 @@ func TestRecipientEmails_DedupsOwnerWhoIsAlsoAManager(t *testing.T) {
 
 	ownerManager := testutil.CreateUser(t, db, models.RoleSalesManager)
 
-	emails := recipientEmails(db, &ownerManager.ID, models.NotificationRecipientOwnerAndManagers)
+	emails := recipientEmails(db, activeOwner(db, &ownerManager.ID), models.NotificationRecipientOwnerAndManagers)
 	require.Equal(t, []string{ownerManager.Email}, emails, "the same address must not be listed twice")
 }

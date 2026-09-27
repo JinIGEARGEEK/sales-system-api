@@ -39,7 +39,7 @@ func (h *PaymentInstallmentHandler) installmentStatuses(dealID uint) ([]utils.In
 
 // List godoc
 // @Summary List a deal's payment installment schedule (Admin/Sales Rep/Sales Manager/Marketing)
-// @Description Returns each planned installment with its derived paid/partial/overdue/upcoming status (utils.ComputeInstallmentStatuses), ordered by due_date. Backs the Deal detail page's Payment Schedule section, and is also served read-only to API keys at /open/deals/{dealId}/payment-installments. Sales Rep/Marketing callers only see Deals assigned to them or unassigned; Admin/Sales Manager see every Deal. api-system-spec.md §7.5a.
+// @Description Returns each planned installment with its derived paid/partial/overdue/upcoming status (utils.ComputeInstallmentStatusesFromPayments), ordered by due_date. Backs the Deal detail page's Payment Schedule section, and is also served read-only to API keys at /open/deals/{dealId}/payment-installments. Sales Rep/Marketing callers only see Deals assigned to them or unassigned; Admin/Sales Manager see every Deal. api-system-spec.md §7.5a.
 // @Tags payment-installments
 // @Security BearerAuth
 // @Security ApiKeyAuth

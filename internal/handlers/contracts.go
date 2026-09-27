@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -53,28 +52,27 @@ func applyContractEndDate(c *fiber.Ctx, contract *models.Contract, endDate *stri
 	if !present {
 		return true
 	}
-	if endDate == nil || *endDate == "" {
-		contract.EndDate = nil
-		return true
+	d, ok := parseOptionalCalendarDate(c, "end_date", endDate)
+	if ok {
+		contract.EndDate = d
 	}
-	d, err := utils.ParseCalendarDate(*endDate)
-	if err != nil {
-		_ = utils.ValidationError(c, "end_date is invalid", map[string][]string{"end_date": {err.Error()}})
-		return false
-	}
-	contract.EndDate = &d
-	return true
+	return ok
 }
 
-// bodyHasKey reports whether the JSON body has key at the top level, so a
-// handler can tell an omitted field from an explicit null.
-func bodyHasKey(c *fiber.Ctx, key string) bool {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(c.Body(), &raw); err != nil {
-		return false
+// parseOptionalCalendarDate parses an optional date-column field (Contract
+// end_date, CustomerProduct renewal_date) with utils.ParseCalendarDate: nil
+// or "" is (nil, true) — clear it — and an unparseable value writes the 422
+// for field and returns ok=false.
+func parseOptionalCalendarDate(c *fiber.Ctx, field string, v *string) (*time.Time, bool) {
+	if v == nil || *v == "" {
+		return nil, true
 	}
-	_, ok := raw[key]
-	return ok
+	d, err := utils.ParseCalendarDate(*v)
+	if err != nil {
+		_ = utils.ValidationError(c, field+" is invalid", map[string][]string{field: {err.Error()}})
+		return nil, false
+	}
+	return &d, true
 }
 
 // validateContractForm checks status enum membership and, if quote_id is
@@ -178,7 +176,7 @@ func (h *ContractHandler) Update(c *fiber.Ctx) error {
 	if form.QuoteID != nil {
 		contract.QuoteID = form.QuoteID
 	}
-	if !applyContractEndDate(c, &contract, form.EndDate, bodyHasKey(c, "end_date")) {
+	if !applyContractEndDate(c, &contract, form.EndDate, bodyHas(c, "end_date")) {
 		return nil
 	}
 
@@ -274,12 +272,7 @@ func (h *ContractHandler) ExportPDF(c *fiber.Ctx) error {
 	pdf.SetFont(utils.PDFFont, "", 11)
 	pdf.Cell(0, 6, fmt.Sprintf("Deal: %s", deal.Title))
 	pdf.Ln(6)
-	pdf.Cell(0, 6, fmt.Sprintf("Party: %s", strOrDefault(company.LegalName, company.Name)))
-	pdf.Ln(6)
-	for _, line := range utils.CompanyPartyLines(company) {
-		pdf.Cell(0, 6, line)
-		pdf.Ln(6)
-	}
+	utils.RenderPartyBlock(pdf, fmt.Sprintf("Party: %s", utils.StringOrDefault(company.LegalName, company.Name)), company)
 	pdf.Cell(0, 6, fmt.Sprintf("Contact: %s (%s)", contact.Name, contact.RoleTitle))
 	pdf.Ln(6)
 	pdf.Cell(0, 6, fmt.Sprintf("Status: %s", contract.Status))
@@ -328,12 +321,4 @@ func (h *ContractHandler) ExportPDF(c *fiber.Ctx) error {
 	c.Set("Content-Type", "application/pdf")
 	c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="contract-%d.pdf"`, contract.ID))
 	return c.Send(buf.Bytes())
-}
-
-// strOrDefault returns *s if non-nil and non-empty, else def.
-func strOrDefault(s *string, def string) string {
-	if s != nil && *s != "" {
-		return *s
-	}
-	return def
 }
