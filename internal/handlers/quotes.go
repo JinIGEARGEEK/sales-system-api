@@ -6,7 +6,6 @@ import (
 	"io"
 	"time"
 
-	"github.com/go-pdf/fpdf"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
@@ -478,17 +477,17 @@ func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 	var contact models.Contact
 	h.DB.First(&contact, deal.ContactID)
 
-	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf := utils.NewPDF()
 	pdf.AddPage()
 
-	pdf.SetFont("Arial", "B", 16)
+	pdf.SetFont(utils.PDFFont, "B", 16)
 	pdf.Cell(0, 10, "Quotation")
 	if quote.Number != nil {
 		pdf.Cell(0, 10, fmt.Sprintf("  %s", *quote.Number))
 	}
 	pdf.Ln(12)
 
-	pdf.SetFont("Arial", "", 11)
+	pdf.SetFont(utils.PDFFont, "", 11)
 	pdf.Cell(0, 6, fmt.Sprintf("Deal: %s", deal.Title))
 	pdf.Ln(6)
 	// Same party-info block Contract's export already renders (name/address/
@@ -528,10 +527,10 @@ func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 	pdf.Ln(10)
 
 	if quote.ScopeOfWork != "" {
-		pdf.SetFont("Arial", "B", 11)
+		pdf.SetFont(utils.PDFFont, "B", 11)
 		pdf.Cell(0, 6, "Scope of Work")
 		pdf.Ln(7)
-		pdf.SetFont("Arial", "", 10)
+		pdf.SetFont(utils.PDFFont, "", 10)
 		pdf.MultiCell(0, 5, quote.ScopeOfWork, "", "L", false)
 		pdf.Ln(4)
 	}
@@ -542,7 +541,7 @@ func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 	// utils.ComputeQuoteTotals so this PDF and the edit page's live totals
 	// never disagree.
 	totals := utils.ComputeQuoteTotals(quote.Items, quote.DiscountTotal, quote.VatEnabled, quote.WhtEnabled, quote.WhtRate)
-	pdf.SetFont("Arial", "", 10)
+	pdf.SetFont(utils.PDFFont, "", 10)
 	if quote.DiscountTotal > 0 {
 		pdf.Ln(1)
 		pdf.CellFormat(165, 7, "Discount", "0", 0, "R", false, 0, "")
@@ -556,17 +555,17 @@ func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 		pdf.CellFormat(165, 7, fmt.Sprintf("Withholding Tax (%.1f%%)", quote.WhtRate), "0", 0, "R", false, 0, "")
 		pdf.CellFormat(30, 7, fmt.Sprintf("-%.2f", totals.Wht), "0", 1, "R", false, 0, "")
 	}
-	pdf.SetFont("Arial", "B", 11)
+	pdf.SetFont(utils.PDFFont, "B", 11)
 	pdf.CellFormat(165, 8, "Grand Total", "0", 0, "R", false, 0, "")
 	pdf.CellFormat(30, 8, fmt.Sprintf("%.2f", totals.GrandTotal), "0", 1, "R", false, 0, "")
 	pdf.Ln(6)
 
 	// Notes prints; InternalNotes deliberately never reaches this PDF.
 	if quote.Notes != nil && *quote.Notes != "" {
-		pdf.SetFont("Arial", "B", 10)
+		pdf.SetFont(utils.PDFFont, "B", 10)
 		pdf.Cell(0, 6, "Notes")
 		pdf.Ln(6)
-		pdf.SetFont("Arial", "", 10)
+		pdf.SetFont(utils.PDFFont, "", 10)
 		pdf.MultiCell(0, 5, *quote.Notes, "", "L", false)
 	}
 

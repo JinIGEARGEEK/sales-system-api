@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/go-pdf/fpdf"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
@@ -225,14 +224,14 @@ func (h *ContractHandler) ExportPDF(c *fiber.Ctx) error {
 		}
 	}
 
-	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf := utils.NewPDF()
 	pdf.AddPage()
 
-	pdf.SetFont("Arial", "B", 16)
+	pdf.SetFont(utils.PDFFont, "B", 16)
 	pdf.Cell(0, 10, "Contract")
 	pdf.Ln(12)
 
-	pdf.SetFont("Arial", "", 11)
+	pdf.SetFont(utils.PDFFont, "", 11)
 	pdf.Cell(0, 6, fmt.Sprintf("Deal: %s", deal.Title))
 	pdf.Ln(6)
 	pdf.Cell(0, 6, fmt.Sprintf("Party: %s", strOrDefault(company.LegalName, company.Name)))
@@ -253,22 +252,22 @@ func (h *ContractHandler) ExportPDF(c *fiber.Ctx) error {
 
 	if quote != nil {
 		if quote.ScopeOfWork != "" {
-			pdf.SetFont("Arial", "B", 11)
+			pdf.SetFont(utils.PDFFont, "B", 11)
 			pdf.Cell(0, 6, "Scope of Work")
 			pdf.Ln(7)
-			pdf.SetFont("Arial", "", 10)
+			pdf.SetFont(utils.PDFFont, "", 10)
 			pdf.MultiCell(0, 5, quote.ScopeOfWork, "", "L", false)
 			pdf.Ln(4)
 		}
 		utils.RenderLineItemsTable(pdf, quote.Items)
 		pdf.Ln(16)
 	} else {
-		pdf.SetFont("Arial", "I", 10)
+		pdf.SetFont(utils.PDFFont, "I", 10)
 		pdf.Cell(0, 6, "No linked quote — pricing not included.")
 		pdf.Ln(16)
 	}
 
-	pdf.SetFont("Arial", "", 10)
+	pdf.SetFont(utils.PDFFont, "", 10)
 	pdf.Cell(85, 6, "___________________________")
 	pdf.Cell(10, 6, "")
 	pdf.Cell(85, 6, "___________________________")
