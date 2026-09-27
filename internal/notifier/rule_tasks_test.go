@@ -75,6 +75,31 @@ func TestDealIdleRule_CreatesOneTaskForOwner(t *testing.T) {
 	assert.EqualValues(t, 1, logs)
 }
 
+// A deactivated owner gets no Task (it used to be assigned to them, since
+// the owner check didn't look at is_active) and, with nobody else to alert,
+// nothing is logged — so reassigning to an active rep still alerts them.
+func TestDealIdleRule_InactiveOwnerGetsNoTask(t *testing.T) {
+	_, db := testutil.App(t)
+	gone := testutil.CreateUser(t, db, models.RoleSalesRep)
+	require.NoError(t, db.Model(&models.User{}).Where("id = ?", gone.ID).Update("is_active", false).Error)
+	deal := seedDealForNotifier(t, db, &gone.ID)
+	require.NoError(t, db.Model(deal).UpdateColumns(map[string]interface{}{
+		"status": models.DealStatusOpen, "created_at": time.Now().AddDate(0, 0, -20),
+	}).Error)
+	rule := seedRule(t, db, models.NotificationEntityDeal, 14, true)
+
+	checkDealIdleRule(db, testutil.Config(), rule)
+	assert.Empty(t, tasksFor(t, db), "no Task for a deactivated rep")
+	assert.False(t, alreadyNotified(db, rule.ID, deal.ID, string(deal.Stage)), "nothing logged: nobody was alerted")
+
+	successor := testutil.CreateUser(t, db, models.RoleSalesRep)
+	require.NoError(t, db.Model(deal).UpdateColumn("assigned_to", successor.ID).Error)
+	checkDealIdleRule(db, testutil.Config(), rule)
+	tasks := tasksFor(t, db)
+	require.Len(t, tasks, 1)
+	assert.Equal(t, successor.ID, *tasks[0].AssignedTo)
+}
+
 // The dedupe key is the NotificationLog insert: if another tick (or
 // instance) already wrote it, fireRule creates no Task.
 func TestFireRule_NoTaskWhenLogAlreadyWritten(t *testing.T) {

@@ -219,7 +219,7 @@ func TestRecipientEmails_OwnerOnly(t *testing.T) {
 	manager := testutil.CreateUser(t, db, models.RoleSalesManager)
 	_ = manager
 
-	emails := recipientEmails(db, &owner.ID, models.NotificationRecipientOwner)
+	emails := recipientEmails(db, activeOwner(db, &owner.ID), models.NotificationRecipientOwner)
 	require.Equal(t, []string{owner.Email}, emails, "owner role must not include managers")
 }
 
@@ -231,7 +231,7 @@ func TestRecipientEmails_OwnerAndManagers(t *testing.T) {
 	inactiveManager := testutil.CreateUser(t, db, models.RoleSalesManager)
 	require.NoError(t, db.Model(&models.User{}).Where("id = ?", inactiveManager.ID).Update("is_active", false).Error)
 
-	emails := recipientEmails(db, &owner.ID, models.NotificationRecipientOwnerAndManagers)
+	emails := recipientEmails(db, activeOwner(db, &owner.ID), models.NotificationRecipientOwnerAndManagers)
 	require.Contains(t, emails, owner.Email)
 	require.Contains(t, emails, manager.Email)
 	require.NotContains(t, emails, inactiveManager.Email, "a deactivated manager must not be broadcast to")
@@ -252,6 +252,6 @@ func TestRecipientEmails_DedupsOwnerWhoIsAlsoAManager(t *testing.T) {
 
 	ownerManager := testutil.CreateUser(t, db, models.RoleSalesManager)
 
-	emails := recipientEmails(db, &ownerManager.ID, models.NotificationRecipientOwnerAndManagers)
+	emails := recipientEmails(db, activeOwner(db, &ownerManager.ID), models.NotificationRecipientOwnerAndManagers)
 	require.Equal(t, []string{ownerManager.Email}, emails, "the same address must not be listed twice")
 }

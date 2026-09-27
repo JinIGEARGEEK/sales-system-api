@@ -82,11 +82,26 @@ func recordNotified(db *gorm.DB, ruleID, entityID uint, context string) error {
 	return db.Create(&models.NotificationLog{RuleID: ruleID, EntityID: entityID, Context: context, NotifiedAt: time.Now()}).Error
 }
 
+// activeOwner loads the entity owner if they're an active user, else nil.
+// A deactivated rep (someone who left) gets neither the Task nor the email:
+// the firing behaves exactly as if the entity had no owner.
+func activeOwner(db *gorm.DB, ownerID *uint) *models.User {
+	if ownerID == nil {
+		return nil
+	}
+	var owner models.User
+	if err := db.Where("id = ? AND is_active = ?", *ownerID, true).First(&owner).Error; err != nil {
+		return nil
+	}
+	return &owner
+}
+
 // recipientEmails resolves who to email for a Deal-owned entity (Deal/Quote/
 // Contract all ultimately hang off a Deal owner) per the rule's
-// RecipientRole. There's no per-rep manager hierarchy in this schema, so
-// "and managers" means every active Sales Manager, not one specific manager.
-func recipientEmails(db *gorm.DB, ownerID *uint, role models.NotificationRecipientRole) []string {
+// RecipientRole. owner is activeOwner's result (nil = none). There's no
+// per-rep manager hierarchy in this schema, so "and managers" means every
+// active Sales Manager, not one specific manager.
+func recipientEmails(db *gorm.DB, owner *models.User, role models.NotificationRecipientRole) []string {
 	emails := []string{}
 	seen := map[string]bool{}
 	add := func(email string) {
@@ -96,11 +111,8 @@ func recipientEmails(db *gorm.DB, ownerID *uint, role models.NotificationRecipie
 		}
 	}
 
-	if ownerID != nil {
-		var owner models.User
-		if err := db.First(&owner, *ownerID).Error; err == nil {
-			add(owner.Email)
-		}
+	if owner != nil {
+		add(owner.Email)
 	}
 
 	if role == models.NotificationRecipientOwnerAndManagers {
@@ -150,23 +162,25 @@ type ruleFiring struct {
 // both create one, and a failed Task insert rolls the log row back so the
 // next tick retries. Emails go out after commit, best-effort as before.
 //
-// When there is nobody to alert at all (no recipient email and no Task
-// assignee) nothing is recorded, so the firing happens later once the entity
-// gets an owner — the same "skip, don't record" the email-only version did.
+// The owner is loaded once and only counts while active (activeOwner): a
+// deactivated or deleted owner gets no Task and no email, same as an
+// unowned entity. When there is then nobody to alert at all (no recipient
+// email and no Task assignee) nothing is recorded, so the firing happens
+// later once the entity is reassigned to an active rep — the same "skip,
+// don't record" the email-only version did. With owner_and_managers the
+// managers' emails still count as recipients, so the firing is logged and
+// won't produce a Task after a later reassignment.
 //
 // The Task is due today (end of day, server-local) and is stamped
 // NotifiedAt so task_reminders.go doesn't send a second "task due" email
 // for an alert the rule email already covered.
 func fireRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, f ruleFiring, now time.Time) bool {
-	emails := recipientEmails(db, f.OwnerID, rule.RecipientRole)
+	owner := activeOwner(db, f.OwnerID)
+	emails := recipientEmails(db, owner, rule.RecipientRole)
 
 	var assignee *uint
-	if rule.CreateTask && f.OwnerID != nil {
-		var count int64
-		db.Model(&models.User{}).Where("id = ?", *f.OwnerID).Count(&count)
-		if count > 0 {
-			assignee = f.OwnerID
-		}
+	if rule.CreateTask && owner != nil {
+		assignee = &owner.ID
 	}
 	if len(emails) == 0 && assignee == nil {
 		return false
