@@ -48,6 +48,19 @@ func TestComputeOutstandingRow_FallsBackToDealValue(t *testing.T) {
 	assert.InDelta(t, 4000, r.OutstandingAmount, 0.001)
 }
 
+// An Accepted quote that's an upload whose extraction failed has no items;
+// it must not zero the receivable and hide an unpaid Won Deal.
+func TestComputeOutstandingRow_UnpricedAcceptedQuoteFallsBackToDealValue(t *testing.T) {
+	failed := "failed"
+	file := "quote.pdf"
+	quote := &models.Quote{FileName: &file, ExtractionStatus: &failed, VatEnabled: true}
+	r := outstandingBalanceRow{DealValue: 80000}
+	computeOutstandingRow(&r, quote, []models.Payment{{Amount: 30000}}, nil, time.Now())
+	assert.Equal(t, ReceivableSourceDealValue, r.ReceivableSource)
+	assert.InDelta(t, 80000, r.ReceivableAmount, 0.001)
+	assert.InDelta(t, 50000, r.OutstandingAmount, 0.001)
+}
+
 // Aging uses the oldest unpaid overdue installment, after allocation.
 func TestComputeOutstandingRow_AgingBuckets(t *testing.T) {
 	now := time.Date(2026, 9, 27, 10, 0, 0, 0, time.Local)
