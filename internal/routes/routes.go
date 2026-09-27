@@ -531,6 +531,8 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	reports := authed.Group("/reports", middleware.RequireRoles(models.RoleAdmin, models.RoleSalesManager))
 	reports.Get("/lead-source-conversion", reportH.LeadSourceConversion)
 	reports.Get("/lead-source-conversion/export", reportH.LeadSourceConversionExport)
+	reports.Get("/source-performance", reportH.SourcePerformance)
+	reports.Get("/source-performance/export", reportH.SourcePerformanceExport)
 	reports.Get("/top-referrers", reportH.TopReferrers)
 	reports.Get("/top-referrers/export", reportH.TopReferrersExport)
 	reports.Get("/customers-by-product-status", reportH.CustomersByProductStatus)
