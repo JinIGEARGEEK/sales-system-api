@@ -60,3 +60,39 @@ func TestNewPDF_RendersThai(t *testing.T) {
 		t.Error("output PDF does not embed the Sarabun font")
 	}
 }
+
+// A long Thai address wraps onto extra lines instead of being clipped, and
+// short party lines keep the old one-line-each layout.
+func TestRenderPartyBlock_WrapsLongAddress(t *testing.T) {
+	str := func(s string) *string { return &s }
+	render := func(company models.Company) (lines float64, err error) {
+		pdf := NewPDF()
+		pdf.AddPage()
+		pdf.SetFont(PDFFont, "", 11)
+		_, y0 := pdf.GetXY()
+		RenderPartyBlock(pdf, "Party: บริษัท ตัวอย่าง จำกัด", company)
+		_, y1 := pdf.GetXY()
+		var buf bytes.Buffer
+		return (y1 - y0) / 6, pdf.Output(&buf)
+	}
+
+	short, err := render(models.Company{Address: str("1 Silom Rd"), PostalCode: str("10500"), TaxID: str("0105555555555"), BranchCode: str("00000")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if short != 3 {
+		t.Errorf("short party block: %v lines, want 3 (heading, address, tax ID)", short)
+	}
+
+	long := models.Company{
+		Address:    str("เลขที่ 999/99 อาคารสำนักงานตัวอย่างทาวเวอร์ ชั้น 25 ห้อง 2501-2505 ถนนพระรามที่ 4 แขวงคลองเตย เขตคลองเตย กรุงเทพมหานคร"),
+		PostalCode: str("10110"), TaxID: str("0105555555555"), BranchCode: str("00001"),
+	}
+	got, err := render(long)
+	if err != nil {
+		t.Fatalf("long Thai address failed to render: %v", err)
+	}
+	if got < 4 {
+		t.Errorf("long address took %v lines in total, want it wrapped (>= 4)", got)
+	}
+}

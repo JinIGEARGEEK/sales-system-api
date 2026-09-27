@@ -274,12 +274,7 @@ func (h *ContractHandler) ExportPDF(c *fiber.Ctx) error {
 	pdf.SetFont(utils.PDFFont, "", 11)
 	pdf.Cell(0, 6, fmt.Sprintf("Deal: %s", deal.Title))
 	pdf.Ln(6)
-	pdf.Cell(0, 6, fmt.Sprintf("Party: %s", strOrDefault(company.LegalName, company.Name)))
-	pdf.Ln(6)
-	for _, line := range utils.CompanyPartyLines(company) {
-		pdf.Cell(0, 6, line)
-		pdf.Ln(6)
-	}
+	utils.RenderPartyBlock(pdf, fmt.Sprintf("Party: %s", strOrDefault(company.LegalName, company.Name)), company)
 	pdf.Cell(0, 6, fmt.Sprintf("Contact: %s (%s)", contact.Name, contact.RoleTitle))
 	pdf.Ln(6)
 	pdf.Cell(0, 6, fmt.Sprintf("Status: %s", contract.Status))

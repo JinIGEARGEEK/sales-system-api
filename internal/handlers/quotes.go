@@ -571,12 +571,7 @@ func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 	// Same party-info block Contract's export already renders (name/address/
 	// tax ID) — previously missing here, closing that gap as part of this
 	// rebuild rather than leaving Quote's PDF thinner than Contract's.
-	pdf.Cell(0, 6, fmt.Sprintf("Company: %s", strOrDefault(company.LegalName, company.Name)))
-	pdf.Ln(6)
-	for _, line := range utils.CompanyPartyLines(company) {
-		pdf.Cell(0, 6, line)
-		pdf.Ln(6)
-	}
+	utils.RenderPartyBlock(pdf, fmt.Sprintf("Company: %s", strOrDefault(company.LegalName, company.Name)), company)
 	pdf.Cell(0, 6, fmt.Sprintf("Contact: %s", contact.Name))
 	pdf.Ln(6)
 	if quote.ReferenceNumber != nil && *quote.ReferenceNumber != "" {
