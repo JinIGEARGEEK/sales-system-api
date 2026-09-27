@@ -226,11 +226,6 @@ func fireRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, f r
 	return true
 }
 
-// daysSince is whole elapsed days, for alert titles ("idle 14 days").
-func daysSince(t, now time.Time) int {
-	return int(now.Sub(t).Hours() / 24)
-}
-
 // checkDealIdleRule — FR-CRM-100. An open Deal (not yet Won/Lost) whose
 // current stage has held for at least rule.ThresholdDays, measured from its
 // most recent "stage_changed" audit entry (deals.go's UpdateStage — the only
@@ -284,7 +279,7 @@ func checkDealIdleRule(db *gorm.DB, cfg *config.Config, rule models.Notification
 				"Reminder: the following deal has been in stage \"%s\" for %d+ days.\n\nDeal: %s\nStage: %s\n",
 				deal.Stage, rule.ThresholdDays, deal.Title, deal.Stage,
 			),
-			TaskTitle:   fmt.Sprintf("Deal idle %d days: %s", daysSince(since, now), deal.Title),
+			TaskTitle:   fmt.Sprintf("Deal idle %d days: %s", utils.LocalDaysBetween(since, now), deal.Title),
 			RelatedType: models.RelatedTypeDeal, RelatedID: deal.ID,
 		}, now)
 	}
@@ -366,7 +361,7 @@ func checkContractStuckRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 				"Reminder: a contract on the following deal has been unsigned for %d+ days.\n\nDeal: %s\nStatus: %s\n",
 				rule.ThresholdDays, deal.Title, contract.Status,
 			),
-			TaskTitle:   fmt.Sprintf("Contract unsigned %d days: %s", daysSince(contract.CreatedAt, now), deal.Title),
+			TaskTitle:   fmt.Sprintf("Contract unsigned %d days: %s", utils.LocalDaysBetween(contract.CreatedAt, now), deal.Title),
 			RelatedType: models.RelatedTypeDeal, RelatedID: deal.ID,
 		}, now)
 	}
@@ -537,7 +532,7 @@ func checkProspectStaleRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 				"Reminder: the following prospect has had no updates in %d+ days.\n\nProspect: %s\nStatus: %s\n",
 				rule.ThresholdDays, prospect.Name, prospect.Status,
 			),
-			TaskTitle:   fmt.Sprintf("Prospect stale %d days: %s", daysSince(prospect.UpdatedAt, now), prospect.Name),
+			TaskTitle:   fmt.Sprintf("Prospect stale %d days: %s", utils.LocalDaysBetween(prospect.UpdatedAt, now), prospect.Name),
 			RelatedType: models.RelatedTypeProspect, RelatedID: prospect.ID,
 		}, now)
 	}

@@ -445,9 +445,7 @@ func duplicateQuoteDates(src models.Quote, now time.Time) (issue string, validit
 	days := -1
 	if from, ok := models.ParseFlexDate(src.IssueDate); ok {
 		if until, ok := models.ParseFlexDate(src.ValidityDate); ok {
-			fromDay := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, time.UTC)
-			untilDay := time.Date(until.Year(), until.Month(), until.Day(), 0, 0, 0, 0, time.UTC)
-			if d := int(untilDay.Sub(fromDay).Hours() / 24); d >= 0 {
+			if d := utils.DaysUntil(from, until); d >= 0 {
 				days = d
 			}
 		}

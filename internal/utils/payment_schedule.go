@@ -101,9 +101,9 @@ func allocateInstallments(installments []models.PaymentInstallment, linked map[u
 		}
 
 		// Overdue from the day after the due date, by calendar day — the
-		// same count DaysOverdue/AgingBucket use, so an installment isn't
+		// same count the report's days_overdue/AgingBucket use, so an installment isn't
 		// "overdue" on its own due date while its aging says current.
-		isOverdue := DaysOverdue(inst.DueDate, now) > 0
+		isOverdue := LocalDaysBetween(inst.DueDate, now) > 0
 		var status string
 		switch {
 		// Within MoneyEpsilon: cash + WHT from a percentage lands a hair
@@ -153,17 +153,6 @@ func AgingBucket(daysOverdue int) string {
 	default:
 		return Aging90Plus
 	}
-}
-
-// DaysOverdue counts whole calendar days (server-local) from due to now —
-// 0 on the due date itself, negative before it. Calendar days rather than
-// elapsed hours, so a due date stored as UTC midnight doesn't flip buckets
-// at 07:00 Bangkok time.
-func DaysOverdue(due, now time.Time) int {
-	due, now = due.In(time.Local), now.In(time.Local)
-	d := time.Date(due.Year(), due.Month(), due.Day(), 0, 0, 0, 0, time.UTC)
-	n := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	return int(n.Sub(d).Hours() / 24)
 }
 
 // OldestOverdue returns the earliest-due installment that is overdue per

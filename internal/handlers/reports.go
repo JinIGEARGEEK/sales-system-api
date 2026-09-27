@@ -623,7 +623,7 @@ func computeOutstandingRow(r *outstandingBalanceRow, acceptedQuote *models.Quote
 		r.Aging = OutstandingBalanceAgingOverdue
 		due := oldest.DueDate
 		r.OldestOverdueDueDate = &due
-		if days := utils.DaysOverdue(due, now); days > 0 {
+		if days := utils.LocalDaysBetween(due, now); days > 0 {
 			r.DaysOverdue = days
 		}
 		r.AgingBucket = utils.AgingBucket(r.DaysOverdue)
