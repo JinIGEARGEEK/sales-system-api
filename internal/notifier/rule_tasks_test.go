@@ -106,14 +106,13 @@ func TestFireRule_NoTaskWhenLogAlreadyWritten(t *testing.T) {
 	_, db := testutil.App(t)
 	owner := testutil.CreateUser(t, db, models.RoleSalesRep)
 	rule := seedRule(t, db, models.NotificationEntityDeal, 14, true)
-	require.NoError(t, recordNotified(db, rule.ID, 42, "Lead"))
+	require.NoError(t, db.Create(&models.NotificationLog{RuleID: rule.ID, EntityID: 42, Context: "Lead", NotifiedAt: time.Now()}).Error)
 
-	fired := fireRule(db, testutil.Config(), rule, ruleFiring{
+	fireRule(db, testutil.Config(), rule, ruleFiring{
 		EntityID: 42, Context: "Lead", OwnerID: &owner.ID, TaskTitle: "x",
 		RelatedType: models.RelatedTypeDeal, RelatedID: 42,
 	}, time.Now())
 
-	assert.False(t, fired)
 	assert.Empty(t, tasksFor(t, db))
 }
 
@@ -122,13 +121,12 @@ func TestFireRule_CreateTaskFalseStillLogs(t *testing.T) {
 	owner := testutil.CreateUser(t, db, models.RoleSalesRep)
 	rule := seedRule(t, db, models.NotificationEntityDeal, 14, false)
 
-	fired := fireRule(db, testutil.Config(), rule, ruleFiring{
+	fireRule(db, testutil.Config(), rule, ruleFiring{
 		EntityID: 7, OwnerID: &owner.ID, TaskTitle: "x", RelatedType: models.RelatedTypeDeal, RelatedID: 7,
 	}, time.Now())
 
-	assert.True(t, fired, "the email/log path still fires")
 	assert.Empty(t, tasksFor(t, db), "create_task=false makes no Task")
-	assert.True(t, alreadyNotified(db, rule.ID, 7, ""))
+	assert.True(t, alreadyNotified(db, rule.ID, 7, ""), "the email/log path still fires")
 }
 
 // With no owner and no recipient at all, nothing is recorded, so the entity
@@ -139,8 +137,7 @@ func TestFireRule_NobodyToAlertRecordsNothing(t *testing.T) {
 	require.NoError(t, db.Model(&rule).UpdateColumn("recipient_role", models.NotificationRecipientOwner).Error)
 	rule.RecipientRole = models.NotificationRecipientOwner
 
-	fired := fireRule(db, testutil.Config(), rule, ruleFiring{EntityID: 9, TaskTitle: "x"}, time.Now())
-	assert.False(t, fired)
+	fireRule(db, testutil.Config(), rule, ruleFiring{EntityID: 9, TaskTitle: "x"}, time.Now())
 	assert.False(t, alreadyNotified(db, rule.ID, 9, ""))
 }
 

@@ -83,7 +83,7 @@ func IsValidNotificationRecipientRole(v NotificationRecipientRole) bool {
 //   - "company": an active Company with no Activity logged directly against
 //     it in at least ThresholdDays.
 //   - "payment_installment": a PaymentInstallment not yet fully paid (per
-//     utils.ComputeInstallmentStatuses' waterfall allocation) whose due date
+//     utils.ComputeInstallmentStatusesFromPayments' waterfall allocation) whose due date
 //     is within ThresholdDays from now (covers both "coming due soon" and
 //     "already overdue" in one condition, same single-direction-per-type
 //     shape every other rule above uses) — added alongside the payment

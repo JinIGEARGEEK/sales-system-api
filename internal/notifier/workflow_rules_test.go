@@ -184,9 +184,9 @@ func TestCheckProspectStaleRule_ExactlyOneFlaggedStageWins(t *testing.T) {
 		"a Prospect in the currently-flagged stage must be excluded regardless of its name")
 }
 
-// --- alreadyNotified / recordNotified dedup logic ---
+// --- alreadyNotified dedup logic ---
 
-func TestAlreadyNotifiedAndRecordNotified(t *testing.T) {
+func TestAlreadyNotified(t *testing.T) {
 	_, db := testutil.App(t)
 
 	rule := seedProspectRule(t, db, 5, models.NotificationRecipientOwner)
@@ -195,7 +195,7 @@ func TestAlreadyNotifiedAndRecordNotified(t *testing.T) {
 
 	require.False(t, alreadyNotified(db, rule.ID, entityID, context), "nothing recorded yet")
 
-	require.NoError(t, recordNotified(db, rule.ID, entityID, context))
+	require.NoError(t, db.Create(&models.NotificationLog{RuleID: rule.ID, EntityID: entityID, Context: context, NotifiedAt: time.Now()}).Error)
 	require.True(t, alreadyNotified(db, rule.ID, entityID, context), "must dedup within the same context")
 
 	// A different context (e.g. the entity moved to a new stage/status) is a

@@ -63,7 +63,7 @@ func checkWorkflowRules(db *gorm.DB, cfg *config.Config) {
 	}
 }
 
-// alreadyNotified/recordNotified — the (rule_id, entity_id, context)
+// alreadyNotified — the (rule_id, entity_id, context)
 // idempotency check shared by every condition type. alreadyNotified is a
 // cheap pre-check that skips building a firing; the authoritative dedupe is
 // fireRule's conflict-safe insert. See
@@ -76,10 +76,6 @@ func alreadyNotified(db *gorm.DB, ruleID, entityID uint, context string) bool {
 		Where("rule_id = ? AND entity_id = ? AND context = ?", ruleID, entityID, context).
 		Count(&count)
 	return count > 0
-}
-
-func recordNotified(db *gorm.DB, ruleID, entityID uint, context string) error {
-	return db.Create(&models.NotificationLog{RuleID: ruleID, EntityID: entityID, Context: context, NotifiedAt: time.Now()}).Error
 }
 
 // activeOwner loads the entity owner if they're an active user, else nil.
@@ -174,7 +170,7 @@ type ruleFiring struct {
 // The Task is due today (end of day, server-local) and is stamped
 // NotifiedAt so task_reminders.go doesn't send a second "task due" email
 // for an alert the rule email already covered.
-func fireRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, f ruleFiring, now time.Time) bool {
+func fireRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, f ruleFiring, now time.Time) {
 	owner := activeOwner(db, f.OwnerID)
 	emails := recipientEmails(db, owner, rule.RecipientRole)
 
@@ -183,7 +179,7 @@ func fireRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, f r
 		assignee = &owner.ID
 	}
 	if len(emails) == 0 && assignee == nil {
-		return false
+		return
 	}
 
 	fired := false
@@ -217,13 +213,11 @@ func fireRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, f r
 	})
 	if err != nil {
 		log.Printf("notifier: failed to record rule %d firing for entity %d: %v", rule.ID, f.EntityID, err)
-		return false
+		return
 	}
-	if !fired {
-		return false
+	if fired {
+		sendRuleNotification(cfg, emails, f.Subject, f.Body)
 	}
-	sendRuleNotification(cfg, emails, f.Subject, f.Body)
-	return true
 }
 
 // checkDealIdleRule — FR-CRM-100. An open Deal (not yet Won/Lost) whose
@@ -390,7 +384,7 @@ func installmentAlertContext(status string) string {
 // see NotificationRule's own doc comment): at most once while it's due soon
 // and once more when it becomes overdue (installmentAlertContext). Status is derived the same way
 // the Payment Schedule UI and the Outstanding Balance report do
-// (utils.ComputeInstallmentStatuses), grouped by Deal since the waterfall
+// (utils.ComputeInstallmentStatusesFromPayments), grouped by Deal since the waterfall
 // allocation needs each Deal's own running total-paid.
 func checkPaymentInstallmentDueRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, now time.Time) {
 	var installments []models.PaymentInstallment

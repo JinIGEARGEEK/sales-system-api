@@ -13,8 +13,8 @@ import (
 type InstallmentStatus struct {
 	Installment models.PaymentInstallment `json:"installment"`
 	// Covered is how much of this installment's Amount has been paid,
-	// cumulatively — see ComputeInstallmentStatuses's own doc for the
-	// waterfall allocation this comes from.
+	// cumulatively — see ComputeInstallmentStatusesFromPayments's doc for
+	// the waterfall allocation this comes from.
 	Covered float64 `json:"covered"`
 	Status  string  `json:"status"` // "paid" | "partial" | "overdue" | "upcoming"
 }
@@ -26,31 +26,21 @@ const (
 	InstallmentStatusUpcoming = "upcoming"
 )
 
-// ComputeInstallmentStatuses derives each installment's status from a
-// Deal's total actual Payments, via a cumulative "waterfall" allocation —
-// confirmed with the business owner as the reconciliation model. Installments
-// are sorted by DueDate ascending and money is applied to the earliest ones
-// first: an installment is "paid" once fully covered, "overdue" if due-dated
-// in the past and not fully covered (even partially), "partial" if not fully
-// covered but not yet due, "upcoming" if nothing has been applied to it yet
-// and it isn't overdue.
+// ComputeInstallmentStatusesFromPayments derives each installment's status
+// from a Deal's actual Payments, via a cumulative "waterfall" allocation —
+// confirmed with the business owner as the reconciliation model.
+// Installments are sorted by DueDate ascending and money is applied to the
+// earliest ones first: an installment is "paid" once fully covered,
+// "overdue" if its due date has passed and it isn't fully covered (even
+// partially), "partial" if not fully covered but not yet due, "upcoming" if
+// nothing has been applied to it yet and it isn't overdue.
 //
-// Callers holding the Payment rows themselves should use
-// ComputeInstallmentStatusesFromPayments instead, which also honors
-// Payment.InstallmentID links and counts withholding tax as settled.
-func ComputeInstallmentStatuses(installments []models.PaymentInstallment, totalPaid float64, now time.Time) []InstallmentStatus {
-	return allocateInstallments(installments, nil, totalPaid, now)
-}
-
-// ComputeInstallmentStatusesFromPayments is ComputeInstallmentStatuses for a
-// Deal's actual Payment rows. Each payment settles SettledAmount() (cash +
-// WHT deducted). A payment linked to one of these installments
+// Each payment settles SettledAmount() (cash + WHT deducted). A payment linked to one of these installments
 // (Payment.InstallmentID) is credited to that installment first — so paying
 // installment #2 early marks #2 paid rather than #1 — and any excess over
 // that installment's amount joins the unlinked money, which waterfalls
 // across whatever is still uncovered in due-date order exactly as before.
-// With no linked payments the result is identical to
-// ComputeInstallmentStatuses(installments, Σ SettledAmount, now).
+// With no linked payments only the total settled matters.
 func ComputeInstallmentStatusesFromPayments(installments []models.PaymentInstallment, payments []models.Payment, now time.Time) []InstallmentStatus {
 	known := make(map[uint]bool, len(installments))
 	for _, inst := range installments {

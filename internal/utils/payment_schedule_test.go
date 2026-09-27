@@ -9,6 +9,12 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/models"
 )
 
+// statusesForTotal allocates a plain total paid (no installment links, no
+// WHT split) — the shape most of these cases are easiest to state in.
+func statusesForTotal(installments []models.PaymentInstallment, totalPaid float64, now time.Time) []InstallmentStatus {
+	return ComputeInstallmentStatusesFromPayments(installments, []models.Payment{{Amount: totalPaid}}, now)
+}
+
 func daysFromNow(now time.Time, days int) time.Time { return now.AddDate(0, 0, days) }
 
 // TestComputeInstallmentStatuses_Waterfall reproduces the worked example
@@ -23,7 +29,7 @@ func TestComputeInstallmentStatuses_Waterfall(t *testing.T) {
 		{Amount: 30000, DueDate: daysFromNow(now, 40)},
 	}
 
-	statuses := ComputeInstallmentStatuses(installments, 50000, now)
+	statuses := statusesForTotal(installments, 50000, now)
 
 	assert.Equal(t, InstallmentStatusPaid, statuses[0].Status)
 	assert.InDelta(t, 30000.0, statuses[0].Covered, 0.001)
@@ -44,7 +50,7 @@ func TestComputeInstallmentStatuses_Overdue(t *testing.T) {
 		{Amount: 30000, DueDate: daysFromNow(now, -5)},
 	}
 
-	statuses := ComputeInstallmentStatuses(installments, 0, now)
+	statuses := statusesForTotal(installments, 0, now)
 
 	assert.Equal(t, InstallmentStatusOverdue, statuses[0].Status)
 }
@@ -58,7 +64,7 @@ func TestComputeInstallmentStatuses_SortsByDueDate(t *testing.T) {
 		{Amount: 10000, DueDate: daysFromNow(now, -10)},
 	}
 
-	statuses := ComputeInstallmentStatuses(installments, 10000, now)
+	statuses := statusesForTotal(installments, 10000, now)
 
 	// Earliest due date (was second in the input) is paid first.
 	assert.InDelta(t, -10.0, statuses[0].Installment.DueDate.Sub(now).Hours()/24, 0.01)
@@ -75,7 +81,7 @@ func TestComputeInstallmentStatuses_FullyPaidNotOverdue(t *testing.T) {
 		{Amount: 10000, DueDate: daysFromNow(now, -30)},
 	}
 
-	statuses := ComputeInstallmentStatuses(installments, 10000, now)
+	statuses := statusesForTotal(installments, 10000, now)
 
 	assert.Equal(t, InstallmentStatusPaid, statuses[0].Status)
 }
@@ -122,7 +128,7 @@ func TestComputeInstallmentStatusesFromPayments_ExcessWhtAndStaleLink(t *testing
 
 	// No links at all: identical to the legacy total-paid form.
 	plain := []models.Payment{{Amount: 9700, WhtAmount: 300}, {Amount: 5000}}
-	assert.Equal(t, ComputeInstallmentStatuses(installments, 15000, now), ComputeInstallmentStatusesFromPayments(installments, plain, now))
+	assert.Equal(t, statusesForTotal(installments, 15000, now), ComputeInstallmentStatusesFromPayments(installments, plain, now))
 }
 
 func TestAgingBucketAndLocalDaysBetween(t *testing.T) {
@@ -149,7 +155,7 @@ func TestComputeInstallmentStatuses_FloatShortfallIsPaid(t *testing.T) {
 	assert.Equal(t, InstallmentStatusPaid, statuses[0].Status)
 
 	short := []models.PaymentInstallment{{Amount: 10000, DueDate: daysFromNow(now, -5)}}
-	statuses = ComputeInstallmentStatuses(short, 9999.999999, now)
+	statuses = statusesForTotal(short, 9999.999999, now)
 	assert.Equal(t, InstallmentStatusPaid, statuses[0].Status)
 }
 
@@ -159,7 +165,7 @@ func TestComputeInstallmentStatuses_DueTodayIsNotOverdue(t *testing.T) {
 	due := time.Date(2026, 9, 27, 0, 0, 0, 0, time.Local)
 	inst := []models.PaymentInstallment{{Amount: 1000, DueDate: due}}
 
-	assert.Equal(t, InstallmentStatusUpcoming, ComputeInstallmentStatuses(inst, 0, time.Date(2026, 9, 27, 16, 0, 0, 0, time.Local))[0].Status)
-	assert.Equal(t, InstallmentStatusPartial, ComputeInstallmentStatuses(inst, 400, time.Date(2026, 9, 27, 16, 0, 0, 0, time.Local))[0].Status)
-	assert.Equal(t, InstallmentStatusOverdue, ComputeInstallmentStatuses(inst, 0, time.Date(2026, 9, 28, 0, 30, 0, 0, time.Local))[0].Status)
+	assert.Equal(t, InstallmentStatusUpcoming, statusesForTotal(inst, 0, time.Date(2026, 9, 27, 16, 0, 0, 0, time.Local))[0].Status)
+	assert.Equal(t, InstallmentStatusPartial, statusesForTotal(inst, 400, time.Date(2026, 9, 27, 16, 0, 0, 0, time.Local))[0].Status)
+	assert.Equal(t, InstallmentStatusOverdue, statusesForTotal(inst, 0, time.Date(2026, 9, 28, 0, 30, 0, 0, time.Local))[0].Status)
 }
