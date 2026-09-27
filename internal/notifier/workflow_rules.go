@@ -41,24 +41,26 @@ func checkWorkflowRules(db *gorm.DB, cfg *config.Config) {
 		log.Printf("notifier: failed to query notification rules: %v", err)
 		return
 	}
+	// One clock reading per tick, passed to every checker (tests pass their own).
+	now := time.Now()
 	for _, rule := range rules {
 		switch rule.EntityType {
 		case models.NotificationEntityDeal:
-			checkDealIdleRule(db, cfg, rule)
+			checkDealIdleRule(db, cfg, rule, now)
 		case models.NotificationEntityQuote:
-			checkQuoteExpiringRule(db, cfg, rule)
+			checkQuoteExpiringRule(db, cfg, rule, now)
 		case models.NotificationEntityContract:
-			checkContractStuckRule(db, cfg, rule)
+			checkContractStuckRule(db, cfg, rule, now)
 		case models.NotificationEntityProspect:
-			checkProspectStaleRule(db, cfg, rule)
+			checkProspectStaleRule(db, cfg, rule, now)
 		case models.NotificationEntityCompany:
-			checkCompanyDormantRule(db, cfg, rule)
+			checkCompanyDormantRule(db, cfg, rule, now)
 		case models.NotificationEntityPaymentInstallment:
-			checkPaymentInstallmentDueRule(db, cfg, rule, time.Now())
+			checkPaymentInstallmentDueRule(db, cfg, rule, now)
 		case models.NotificationEntityCustomerProductRenewal:
-			checkCustomerProductRenewalRule(db, cfg, rule, time.Now())
+			checkCustomerProductRenewalRule(db, cfg, rule, now)
 		case models.NotificationEntityContractExpiry:
-			checkContractExpiryRule(db, cfg, rule, time.Now())
+			checkContractExpiryRule(db, cfg, rule, now)
 		}
 	}
 }
@@ -143,6 +145,7 @@ type ruleFiring struct {
 
 	Subject, Body string
 
+	// TaskTitle defaults to Subject when empty.
 	TaskTitle    string
 	TaskPriority models.TaskPriority
 	RelatedType  models.TaskRelatedType
@@ -209,6 +212,9 @@ func fireRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, f r
 		if task.Priority == "" {
 			task.Priority = models.TaskPriorityMedium
 		}
+		if task.Title == "" {
+			task.Title = f.Subject
+		}
 		return tx.Create(&task).Error
 	})
 	if err != nil {
@@ -224,7 +230,7 @@ func fireRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, f r
 // current stage has held for at least rule.ThresholdDays, measured from its
 // most recent "stage_changed" audit entry (deals.go's UpdateStage — the only
 // writer of that action) or Deal.CreatedAt if it never changed stage.
-func checkDealIdleRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule) {
+func checkDealIdleRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, now time.Time) {
 	var deals []models.Deal
 	if err := db.Where("status = ?", models.DealStatusOpen).Find(&deals).Error; err != nil {
 		log.Printf("notifier: failed to query deals for rule %d: %v", rule.ID, err)
@@ -250,8 +256,6 @@ func checkDealIdleRule(db *gorm.DB, cfg *config.Config, rule models.Notification
 	}
 
 	threshold := time.Duration(rule.ThresholdDays) * 24 * time.Hour
-	now := time.Now()
-
 	for _, deal := range deals {
 		since := deal.CreatedAt
 		if t, ok := lastChangeByDeal[deal.ID]; ok {
@@ -282,14 +286,13 @@ func checkDealIdleRule(db *gorm.DB, cfg *config.Config, rule models.Notification
 // checkQuoteExpiringRule — FR-CRM-101, same definition as the Quotes
 // Expiring Soon report (FR-CRM-096): a Sent Quote whose validity_date falls
 // within rule.ThresholdDays from now.
-func checkQuoteExpiringRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule) {
+func checkQuoteExpiringRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, now time.Time) {
 	var quotes []models.Quote
 	if err := db.Where("status = ?", models.QuoteStatusSent).Find(&quotes).Error; err != nil {
 		log.Printf("notifier: failed to query quotes for rule %d: %v", rule.ID, err)
 		return
 	}
 
-	now := time.Now()
 	cutoff := now.Add(time.Duration(rule.ThresholdDays) * 24 * time.Hour)
 
 	for _, quote := range quotes {
@@ -325,7 +328,7 @@ func checkQuoteExpiringRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 // checkContractStuckRule — FR-CRM-101, same definition as the Contracts
 // Stuck report (FR-CRM-097): a Draft/Sent Contract unsigned for at least
 // rule.ThresholdDays since creation.
-func checkContractStuckRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule) {
+func checkContractStuckRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, now time.Time) {
 	var contracts []models.Contract
 	if err := db.Where("status IN ?", []models.ContractStatus{models.ContractStatusDraft, models.ContractStatusSent}).
 		Find(&contracts).Error; err != nil {
@@ -334,8 +337,6 @@ func checkContractStuckRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 	}
 
 	threshold := time.Duration(rule.ThresholdDays) * 24 * time.Hour
-	now := time.Now()
-
 	for _, contract := range contracts {
 		if now.Sub(contract.CreatedAt) < threshold {
 			continue
@@ -488,7 +489,7 @@ func checkPaymentInstallmentDueRule(db *gorm.DB, cfg *config.Config, rule models
 // utils.IsWonStage/IsLostStage use for Deal stages. "Converted" stays a
 // literal check — it's deliberately never a ProspectStage row (see
 // ProspectStatusConverted's own doc).
-func checkProspectStaleRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule) {
+func checkProspectStaleRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, now time.Time) {
 	disqualifiedStageName := string(models.ProspectStatusDisqualified)
 	var disqualifiedStage models.ProspectStage
 	if err := db.Where("is_disqualified_stage = ?", true).First(&disqualifiedStage).Error; err == nil {
@@ -503,8 +504,6 @@ func checkProspectStaleRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 	}
 
 	threshold := time.Duration(rule.ThresholdDays) * 24 * time.Hour
-	now := time.Now()
-
 	for _, prospect := range prospects {
 		if now.Sub(prospect.UpdatedAt) < threshold {
 			continue
@@ -562,7 +561,7 @@ var companyDormantTiers = []int{60, 90, 120}
 // logged a notification — same reasoning as checkDealIdleRule's stage-as-
 // context. A Company with no Activity at all is always treated as the most
 // stale tier (120).
-func checkCompanyDormantRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule) {
+func checkCompanyDormantRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, now time.Time) {
 	var rows []struct {
 		ID             uint
 		Name           string
@@ -576,8 +575,6 @@ func checkCompanyDormantRule(db *gorm.DB, cfg *config.Config, rule models.Notifi
 		log.Printf("notifier: failed to query companies for rule %d: %v", rule.ID, err)
 		return
 	}
-
-	now := time.Now()
 
 	for _, row := range rows {
 		var daysSince int

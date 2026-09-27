@@ -16,13 +16,24 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
-// inRenewalWindow reports whether a calendar date `date` is due for a
-// renewal-style alert today: no more than thresholdDays ahead and no more
-// than models.RenewalGraceDays behind. Returns the day offset too (negative
-// = already past) for the alert wording.
-func inRenewalWindow(date, now time.Time, thresholdDays int) (int, bool) {
-	days := utils.DaysUntil(utils.Today(now), date)
-	return days, days <= thresholdDays && days >= -models.RenewalGraceDays
+// renewalWindow is the inclusive range of calendar dates a renewal-style
+// rule alerts on today (server-local): at most thresholdDays ahead and at
+// most models.RenewalGraceDays behind, as YYYY-MM-DD.
+func renewalWindow(now time.Time, thresholdDays int) (from, to string) {
+	today := utils.Today(now)
+	return today.AddDate(0, 0, -models.RenewalGraceDays).Format("2006-01-02"),
+		today.AddDate(0, 0, thresholdDays).Format("2006-01-02")
+}
+
+// dateInRenewalWindow filters a `type:date` column to renewalWindow in SQL,
+// so the checkers load only the rows due today rather than every one with
+// a date set. Bound as ::date strings: a time.Time would go over as a
+// timestamptz and be compared in the session's time zone.
+func dateInRenewalWindow(column string, now time.Time, thresholdDays int) func(*gorm.DB) *gorm.DB {
+	from, to := renewalWindow(now, thresholdDays)
+	return func(q *gorm.DB) *gorm.DB {
+		return q.Where(column+" BETWEEN ?::date AND ?::date", from, to)
+	}
 }
 
 // renewalContext is the NotificationLog context for a date-driven rule: the
@@ -50,23 +61,20 @@ func whenLabel(days int) string {
 }
 
 // checkCustomerProductRenewalRule — Active CustomerProducts whose
-// renewal_date is inside the window (inRenewalWindow). The owner is the
+// renewal_date is inside the window (renewalWindow). The owner is the
 // source Deal's assignee when source_deal_id is set, else the Company's most
 // recent Deal's assignee (the same fallback checkCompanyDormantRule uses).
 // The Task relates to the Company, the customer the product belongs to.
 func checkCustomerProductRenewalRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, now time.Time) {
 	var records []models.CustomerProduct
-	if err := db.Where("status = ? AND renewal_date IS NOT NULL", models.CustomerProductActive).
-		Find(&records).Error; err != nil {
+	if err := db.Scopes(dateInRenewalWindow("renewal_date", now, rule.ThresholdDays)).
+		Where("status = ?", models.CustomerProductActive).Find(&records).Error; err != nil {
 		log.Printf("notifier: failed to query customer products for rule %d: %v", rule.ID, err)
 		return
 	}
 
 	for _, cp := range records {
-		days, due := inRenewalWindow(*cp.RenewalDate, now, rule.ThresholdDays)
-		if !due {
-			continue
-		}
+		days := utils.DaysUntil(utils.Today(now), *cp.RenewalDate)
 		context := renewalContext(*cp.RenewalDate)
 		if alreadyNotified(db, rule.ID, cp.ID, context) {
 			continue
@@ -109,7 +117,6 @@ func checkCustomerProductRenewalRule(db *gorm.DB, cfg *config.Config, rule model
 			EntityID: cp.ID, Context: context, OwnerID: ownerID,
 			Subject:     fmt.Sprintf("Renewal due %s: %s — %s", context, productName, company.Name),
 			Body:        body,
-			TaskTitle:   fmt.Sprintf("Renewal due %s: %s — %s", context, productName, company.Name),
 			RelatedType: models.RelatedTypeCompany, RelatedID: company.ID,
 		}, now)
 	}
@@ -119,17 +126,14 @@ func checkCustomerProductRenewalRule(db *gorm.DB, cfg *config.Config, rule model
 // window. Owned by the Deal's assignee; the Task relates to the Deal.
 func checkContractExpiryRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, now time.Time) {
 	var contracts []models.Contract
-	if err := db.Where("status = ? AND end_date IS NOT NULL", models.ContractStatusSigned).
-		Find(&contracts).Error; err != nil {
+	if err := db.Scopes(dateInRenewalWindow("end_date", now, rule.ThresholdDays)).
+		Where("status = ?", models.ContractStatusSigned).Find(&contracts).Error; err != nil {
 		log.Printf("notifier: failed to query contracts for rule %d: %v", rule.ID, err)
 		return
 	}
 
 	for _, contract := range contracts {
-		days, due := inRenewalWindow(*contract.EndDate, now, rule.ThresholdDays)
-		if !due {
-			continue
-		}
+		days := utils.DaysUntil(utils.Today(now), *contract.EndDate)
 		context := renewalContext(*contract.EndDate)
 		if alreadyNotified(db, rule.ID, contract.ID, context) {
 			continue
@@ -148,7 +152,6 @@ func checkContractExpiryRule(db *gorm.DB, cfg *config.Config, rule models.Notifi
 			Subject: fmt.Sprintf("Contract %s %s: %s", verb, context, deal.Title),
 			Body: fmt.Sprintf("Reminder: a signed contract %s %s — time to talk renewal.\n\nDeal: %s\nEnd date: %s\n",
 				verb, whenLabel(days), deal.Title, context),
-			TaskTitle:   fmt.Sprintf("Contract %s %s: %s", verb, context, deal.Title),
 			RelatedType: models.RelatedTypeDeal, RelatedID: deal.ID,
 		}, now)
 	}

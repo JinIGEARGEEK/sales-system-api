@@ -108,7 +108,7 @@ func TestCheckProspectStaleRule_DisqualifiedRenameGap(t *testing.T) {
 	active := seedTestProspect(t, db, models.ProspectStatusEngaging, &owner.ID)
 	ageProspect(t, db, active.ID, 10*24*time.Hour)
 
-	checkProspectStaleRule(db, testutil.Config(), rule)
+	checkProspectStaleRule(db, testutil.Config(), rule, time.Now())
 
 	require.False(t, alreadyNotified(db, rule.ID, disqualified.ID, renamedTo),
 		"a Prospect in the renamed disqualified stage must not be notified")
@@ -135,7 +135,7 @@ func TestCheckProspectStaleRule_FallsBackToLiteralWhenNoStageFlagged(t *testing.
 	disqualified := seedTestProspect(t, db, models.ProspectStatusDisqualified, &owner.ID)
 	ageProspect(t, db, disqualified.ID, 10*24*time.Hour)
 
-	checkProspectStaleRule(db, testutil.Config(), rule)
+	checkProspectStaleRule(db, testutil.Config(), rule, time.Now())
 
 	require.False(t, alreadyNotified(db, rule.ID, disqualified.ID, string(models.ProspectStatusDisqualified)),
 		"with no ProspectStage flagged, the literal 'Disqualified' fallback must still exclude it")
@@ -176,7 +176,7 @@ func TestCheckProspectStaleRule_ExactlyOneFlaggedStageWins(t *testing.T) {
 	staleUnderFlaggedName := seedTestProspect(t, db, models.ProspectStatus(customName), &owner.ID)
 	ageProspect(t, db, staleUnderFlaggedName.ID, 10*24*time.Hour)
 
-	checkProspectStaleRule(db, testutil.Config(), rule)
+	checkProspectStaleRule(db, testutil.Config(), rule, time.Now())
 
 	require.True(t, alreadyNotified(db, rule.ID, staleUnderOldLiteral.ID, string(models.ProspectStatusDisqualified)),
 		"a Prospect merely sharing the old literal name text is not the flagged stage and should be notified")

@@ -10,6 +10,7 @@ import (
 
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/testutil"
+	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
 // testutil.Config() has no SMTP_HOST, so every test here also exercises the
@@ -52,8 +53,8 @@ func TestDealIdleRule_CreatesOneTaskForOwner(t *testing.T) {
 	}).Error)
 	rule := seedRule(t, db, models.NotificationEntityDeal, 14, true)
 
-	checkDealIdleRule(db, testutil.Config(), rule)
-	checkDealIdleRule(db, testutil.Config(), rule)
+	checkDealIdleRule(db, testutil.Config(), rule, time.Now())
+	checkDealIdleRule(db, testutil.Config(), rule, time.Now())
 
 	tasks := tasksFor(t, db)
 	require.Len(t, tasks, 1, "second tick must not duplicate the task")
@@ -88,13 +89,13 @@ func TestDealIdleRule_InactiveOwnerGetsNoTask(t *testing.T) {
 	}).Error)
 	rule := seedRule(t, db, models.NotificationEntityDeal, 14, true)
 
-	checkDealIdleRule(db, testutil.Config(), rule)
+	checkDealIdleRule(db, testutil.Config(), rule, time.Now())
 	assert.Empty(t, tasksFor(t, db), "no Task for a deactivated rep")
 	assert.False(t, alreadyNotified(db, rule.ID, deal.ID, string(deal.Stage)), "nothing logged: nobody was alerted")
 
 	successor := testutil.CreateUser(t, db, models.RoleSalesRep)
 	require.NoError(t, db.Model(deal).UpdateColumn("assigned_to", successor.ID).Error)
-	checkDealIdleRule(db, testutil.Config(), rule)
+	checkDealIdleRule(db, testutil.Config(), rule, time.Now())
 	tasks := tasksFor(t, db)
 	require.Len(t, tasks, 1)
 	assert.Equal(t, successor.ID, *tasks[0].AssignedTo)
@@ -176,17 +177,34 @@ func TestPaymentInstallmentRule_TaskTitleAndPriority(t *testing.T) {
 	assert.Equal(t, models.TaskPriorityMedium, upcoming.Priority)
 }
 
-func TestInRenewalWindow(t *testing.T) {
+// The window is RenewalGraceDays back to threshold ahead, inclusive, by
+// server-local calendar date — late in the evening included — and the SQL
+// filter keeps exactly those rows.
+func TestRenewalWindow(t *testing.T) {
 	now := time.Date(2026, 9, 27, 22, 30, 0, 0, time.Local)
-	day := func(offset int) time.Time { return time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC).AddDate(0, 0, offset) }
-	cases := []struct {
-		offset int
-		want   bool
-	}{{31, false}, {30, true}, {0, true}, {-1, true}, {-30, true}, {-31, false}}
-	for _, tc := range cases {
-		days, ok := inRenewalWindow(day(tc.offset), now, 30)
-		assert.Equal(t, tc.want, ok, "offset %d", tc.offset)
-		assert.Equal(t, tc.offset, days)
+	from, to := renewalWindow(now, 30)
+	assert.Equal(t, "2026-08-28", from)
+	assert.Equal(t, "2026-10-27", to)
+
+	_, db := testutil.App(t)
+	deal := seedDealForNotifier(t, db, nil)
+	today := utils.Today(time.Now())
+	want := map[int]bool{31: false, 30: true, 0: true, -1: true, -30: true, -31: false}
+	ids := map[uint]int{}
+	for offset := range want {
+		end := today.AddDate(0, 0, offset)
+		c := &models.Contract{DealID: deal.ID, Status: models.ContractStatusSigned, EndDate: &end}
+		require.NoError(t, db.Create(c).Error)
+		ids[c.ID] = offset
+	}
+	var got []models.Contract
+	require.NoError(t, db.Scopes(dateInRenewalWindow("end_date", time.Now(), 30)).Find(&got).Error)
+	in := map[int]bool{}
+	for _, c := range got {
+		in[ids[c.ID]] = true
+	}
+	for offset, w := range want {
+		assert.Equal(t, w, in[offset], "offset %d", offset)
 	}
 }
 
