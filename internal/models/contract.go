@@ -41,6 +41,10 @@ type Contract struct {
 	Status        ContractStatus `gorm:"type:varchar(16);default:'draft'" json:"status"`
 	SignedFileURL *string        `json:"signed_file_url"`
 	SignedDate    *time.Time     `json:"signed_date"`
+	// EndDate is when the signed contract's term ends (a calendar date).
+	// The contract_expiry NotificationRule warns ThresholdDays ahead, once
+	// per EndDate value. Optional; nil never fires.
+	EndDate *time.Time `gorm:"type:date;index" json:"end_date"`
 }
 
 func (Contract) TableName() string { return "contracts" }

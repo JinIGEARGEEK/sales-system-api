@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -41,6 +42,39 @@ func (h *ContractHandler) List(c *fiber.Ctx) error {
 type contractForm struct {
 	Status  models.ContractStatus `json:"status"`
 	QuoteID *uint                 `json:"quote_id"`
+	// EndDate — the term's end, YYYY-MM-DD or RFC 3339, stored as a date.
+	// On Update, omitted keeps the stored value and null/"" clears it.
+	EndDate *string `json:"end_date"`
+}
+
+// applyContractEndDate parses form.EndDate onto contract when the body had
+// an end_date key. Writes the 422 itself and returns false on failure.
+func applyContractEndDate(c *fiber.Ctx, contract *models.Contract, endDate *string, present bool) bool {
+	if !present {
+		return true
+	}
+	if endDate == nil || *endDate == "" {
+		contract.EndDate = nil
+		return true
+	}
+	d, err := utils.ParseCalendarDate(*endDate)
+	if err != nil {
+		_ = utils.ValidationError(c, "end_date is invalid", map[string][]string{"end_date": {err.Error()}})
+		return false
+	}
+	contract.EndDate = &d
+	return true
+}
+
+// bodyHasKey reports whether the JSON body has key at the top level, so a
+// handler can tell an omitted field from an explicit null.
+func bodyHasKey(c *fiber.Ctx, key string) bool {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(c.Body(), &raw); err != nil {
+		return false
+	}
+	_, ok := raw[key]
+	return ok
 }
 
 // validateContractForm checks status enum membership and, if quote_id is
@@ -69,7 +103,7 @@ func validateContractForm(c *fiber.Ctx, db *gorm.DB, dealID uint, form contractF
 
 // Create godoc
 // @Summary Create a contract (Admin/Sales Rep/Sales Manager)
-// @Description Creates a Contract on a Deal, optionally linked to a Quote (quote_id) for PDF line items. status defaults to draft. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §8.1.
+// @Description Creates a Contract on a Deal, optionally linked to a Quote (quote_id) for PDF line items, with an optional end_date (YYYY-MM-DD). status defaults to draft. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §8.1.
 // @Tags contracts
 // @Security BearerAuth
 // @Accept json
@@ -99,6 +133,9 @@ func (h *ContractHandler) Create(c *fiber.Ctx) error {
 	if contract.Status == "" {
 		contract.Status = models.ContractStatusDraft
 	}
+	if !applyContractEndDate(c, &contract, form.EndDate, true) {
+		return nil
+	}
 	if err := h.DB.Create(&contract).Error; err != nil {
 		return utils.Internal(c, "Failed to create contract")
 	}
@@ -107,7 +144,7 @@ func (h *ContractHandler) Create(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Update a contract
-// @Description Updates status and/or quote_id. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §8.1.
+// @Description Updates status, quote_id and/or end_date (YYYY-MM-DD; omitted keeps it, null clears it — drives the contract_expiry notification rule). Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §8.1.
 // @Tags contracts
 // @Security BearerAuth
 // @Accept json
@@ -140,6 +177,9 @@ func (h *ContractHandler) Update(c *fiber.Ctx) error {
 	}
 	if form.QuoteID != nil {
 		contract.QuoteID = form.QuoteID
+	}
+	if !applyContractEndDate(c, &contract, form.EndDate, bodyHasKey(c, "end_date")) {
+		return nil
 	}
 
 	if err := h.DB.Save(&contract).Error; err != nil {
@@ -246,6 +286,10 @@ func (h *ContractHandler) ExportPDF(c *fiber.Ctx) error {
 	pdf.Ln(6)
 	if contract.SignedDate != nil {
 		pdf.Cell(0, 6, fmt.Sprintf("Signed Date: %s", contract.SignedDate.Format("2006-01-02")))
+		pdf.Ln(6)
+	}
+	if contract.EndDate != nil {
+		pdf.Cell(0, 6, fmt.Sprintf("End Date: %s", contract.EndDate.Format("2006-01-02")))
 		pdf.Ln(6)
 	}
 	pdf.Ln(4)

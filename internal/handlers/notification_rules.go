@@ -37,6 +37,9 @@ type notificationRuleForm struct {
 	ThresholdDays int                              `json:"threshold_days"`
 	RecipientRole models.NotificationRecipientRole `json:"recipient_role"`
 	IsActive      *bool                            `json:"is_active"`
+	// CreateTask — optional; defaults to true on Create, unchanged on Update
+	// when omitted.
+	CreateTask *bool `json:"create_task"`
 }
 
 func validateNotificationRuleForm(c *fiber.Ctx, form notificationRuleForm) bool {
@@ -73,11 +76,25 @@ func (h *NotificationRuleHandler) Create(c *fiber.Ctx) error {
 	rule := models.NotificationRule{
 		Name: form.Name, EntityType: form.EntityType, ThresholdDays: form.ThresholdDays,
 		RecipientRole: form.RecipientRole, IsActive: form.IsActive == nil || *form.IsActive,
+		CreateTask: form.CreateTask == nil || *form.CreateTask,
 	}
 	rule.CreatedBy = &actorID
 	rule.UpdatedBy = &actorID
+	// is_active/create_task are NOT NULL DEFAULT true, and GORM leaves a
+	// zero-value (false) defaulted field out of the INSERT — and then reads
+	// the column default back into the struct — so an explicit false would
+	// silently become true. Remember the intent and write it afterwards.
+	isActive, createTask := rule.IsActive, rule.CreateTask
 	if err := h.DB.Create(&rule).Error; err != nil {
 		return utils.ValidationError(c, "Rule name already in use", map[string][]string{"name": {"Name is already in use"}})
+	}
+	if !isActive || !createTask {
+		if err := h.DB.Model(&rule).UpdateColumns(map[string]interface{}{
+			"is_active": isActive, "create_task": createTask,
+		}).Error; err != nil {
+			return utils.Internal(c, "Failed to create notification rule")
+		}
+		rule.IsActive, rule.CreateTask = isActive, createTask
 	}
 	return utils.Created(c, rule)
 }
@@ -100,6 +117,9 @@ func (h *NotificationRuleHandler) Update(c *fiber.Ctx) error {
 	rule.Name, rule.EntityType, rule.ThresholdDays, rule.RecipientRole = form.Name, form.EntityType, form.ThresholdDays, form.RecipientRole
 	if form.IsActive != nil {
 		rule.IsActive = *form.IsActive
+	}
+	if form.CreateTask != nil {
+		rule.CreateTask = *form.CreateTask
 	}
 	actorID := middleware.CurrentUserID(c)
 	rule.UpdatedBy = &actorID

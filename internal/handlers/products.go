@@ -228,11 +228,53 @@ type customerProductForm struct {
 	StartDate    *string                      `json:"start_date"`
 	EndDate      *string                      `json:"end_date"`
 	SourceDealID *uint                        `json:"source_deal_id"`
+	RenewalDate  *string                      `json:"renewal_date"`
+	BillingCycle *models.BillingCycle         `json:"billing_cycle"`
+	Price        *float64                     `json:"price"`
+}
+
+// applyRenewalFields validates and writes renewal_date/billing_cycle/price —
+// shared by AddForCompany and UpdateCustomerProduct. present reports which
+// keys the body actually contained (Update merges; Create passes every key
+// as present). An explicit null or "" clears renewal_date/billing_cycle, and
+// null clears price. Writes the 422 itself and returns false on failure.
+func applyRenewalFields(c *fiber.Ctx, record *models.CustomerProduct, renewalDate *string, billingCycle *models.BillingCycle, price *float64, present func(string) bool) bool {
+	if present("renewal_date") {
+		if renewalDate == nil || *renewalDate == "" {
+			record.RenewalDate = nil
+		} else {
+			d, err := utils.ParseCalendarDate(*renewalDate)
+			if err != nil {
+				_ = utils.ValidationError(c, "renewal_date is invalid", map[string][]string{"renewal_date": {err.Error()}})
+				return false
+			}
+			record.RenewalDate = &d
+		}
+	}
+	if present("billing_cycle") {
+		if billingCycle == nil || *billingCycle == "" {
+			record.BillingCycle = nil
+		} else if !models.IsValidBillingCycle(*billingCycle) {
+			_ = utils.ValidationError(c, "billing_cycle is invalid", map[string][]string{"billing_cycle": {"must be monthly, yearly or one_time"}})
+			return false
+		} else {
+			bc := *billingCycle
+			record.BillingCycle = &bc
+		}
+	}
+	if present("price") {
+		if price != nil && *price < 0 {
+			_ = utils.ValidationError(c, "price must be non-negative", map[string][]string{"price": {"must be >= 0"}})
+			return false
+		}
+		record.Price = price
+	}
+	return true
 }
 
 // AddForCompany godoc
 // @Summary Add/link a Product to a Company
-// @Description Manually adds a Customer-Product record (a Product linked to a Company as a customer), or changes its status, independent of a Deal. FR-CRM-065. source_deal_id, if given, must reference a Deal belonging to this Company. start_date defaults to now when omitted; status defaults to "Interested".
+// @Description Manually adds a Customer-Product record (a Product linked to a Company as a customer), or changes its status, independent of a Deal. FR-CRM-065. source_deal_id, if given, must reference a Deal belonging to this Company. start_date defaults to now when omitted; status defaults to "Interested". Optional renewal fields: renewal_date (YYYY-MM-DD or RFC 3339; stored as a date), billing_cycle (monthly|yearly|one_time), price (>= 0) — renewal_date drives the customer_product_renewal notification rule.
 // @Tags products
 // @Security BearerAuth
 // @Accept json
@@ -292,6 +334,9 @@ func (h *ProductHandler) AddForCompany(c *fiber.Ctx) error {
 	} else {
 		return utils.ValidationError(c, "start_date is invalid", map[string][]string{"start_date": {"invalid"}})
 	}
+	if !applyRenewalFields(c, &record, form.RenewalDate, form.BillingCycle, form.Price, func(string) bool { return true }) {
+		return nil
+	}
 	record.CreatedBy = &actorID
 	record.UpdatedBy = &actorID
 	if err := h.DB.Create(&record).Error; err != nil {
@@ -301,13 +346,16 @@ func (h *ProductHandler) AddForCompany(c *fiber.Ctx) error {
 }
 
 type customerProductUpdateForm struct {
-	Status  models.CustomerProductStatus `json:"status"`
-	EndDate *string                      `json:"end_date"`
+	Status       models.CustomerProductStatus `json:"status"`
+	EndDate      *string                      `json:"end_date"`
+	RenewalDate  *string                      `json:"renewal_date"`
+	BillingCycle *models.BillingCycle         `json:"billing_cycle"`
+	Price        *float64                     `json:"price"`
 }
 
 // UpdateCustomerProduct godoc
 // @Summary Update a Customer-Product's status
-// @Description Updates a Customer-Product record — the Company/Product link created via AddForCompany (or auto-created when a Deal is won, FR-CRM-064). company_id/product_id are immutable after creation; only status (and end_date, e.g. when moving to Churned) can change. Writes an audit-log entry when status changes (FR-CRM-082).
+// @Description Updates a Customer-Product record — the Company/Product link created via AddForCompany (or auto-created when a Deal is won, FR-CRM-064). company_id/product_id are immutable after creation; status, end_date (e.g. when moving to Churned) and the renewal fields (renewal_date, billing_cycle, price — partial merge: only keys present change, null clears) can change. Writes an audit-log entry when status changes (FR-CRM-082).
 // @Tags products
 // @Security BearerAuth
 // @Accept json
@@ -346,6 +394,10 @@ func (h *ProductHandler) UpdateCustomerProduct(c *fiber.Ctx) error {
 		} else if parsed, err := time.Parse(time.RFC3339, *form.EndDate); err == nil {
 			record.EndDate = &parsed
 		}
+	}
+
+	if !applyRenewalFields(c, &record, form.RenewalDate, form.BillingCycle, form.Price, func(k string) bool { _, ok := raw[k]; return ok }) {
+		return nil
 	}
 
 	actorID := middleware.CurrentUserID(c)

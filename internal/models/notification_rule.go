@@ -16,11 +16,17 @@ const (
 	// itself (the payment schedule feature). See NotificationRule's doc
 	// comment below.
 	NotificationEntityPaymentInstallment NotificationEntityType = "payment_installment"
+	// NotificationEntityCustomerProductRenewal / NotificationEntityContractExpiry
+	// — the renewal reminders for packaged Products (charged via Contracts).
+	// See NotificationRule's doc comment below.
+	NotificationEntityCustomerProductRenewal NotificationEntityType = "customer_product_renewal"
+	NotificationEntityContractExpiry         NotificationEntityType = "contract_expiry"
 )
 
 var ValidNotificationEntityTypes = []NotificationEntityType{
 	NotificationEntityDeal, NotificationEntityQuote, NotificationEntityContract, NotificationEntityProspect,
 	NotificationEntityCompany, NotificationEntityPaymentInstallment,
+	NotificationEntityCustomerProductRenewal, NotificationEntityContractExpiry,
 }
 
 func IsValidNotificationEntityType(v NotificationEntityType) bool {
@@ -82,6 +88,17 @@ func IsValidNotificationRecipientRole(v NotificationRecipientRole) bool {
 //     "already overdue" in one condition, same single-direction-per-type
 //     shape every other rule above uses) — added alongside the payment
 //     schedule feature.
+//   - "customer_product_renewal": an Active CustomerProduct whose
+//     renewal_date is at most ThresholdDays ahead and at most
+//     RenewalGraceDays behind today (so a renewal entered late, or missed
+//     while the server was down, still gets one alert, but a long-stale date
+//     doesn't). Fires once per renewal_date value — the log context is the
+//     date — so rolling renewal_date forward a year re-arms it.
+//   - "contract_expiry": a Signed Contract whose end_date falls in the same
+//     window, once per end_date value.
+//
+// CreateTask (default true) also creates a Task for the entity's owner on
+// every firing — the in-app alert, and the only one when SMTP is off.
 type NotificationRule struct {
 	AuditedModel
 	Name string `gorm:"not null;uniqueIndex" json:"name"`
@@ -92,6 +109,26 @@ type NotificationRule struct {
 	ThresholdDays int                       `gorm:"not null" json:"threshold_days"`
 	RecipientRole NotificationRecipientRole `gorm:"type:varchar(32);not null;default:'owner'" json:"recipient_role"`
 	IsActive      bool                      `gorm:"not null;default:true;index" json:"is_active"`
+	// CreateTask — AutoMigrate adds this NOT NULL DEFAULT true, which also
+	// backfills every pre-existing rule to true. Create must write an
+	// explicit false itself (GORM omits zero values for defaulted columns).
+	CreateTask bool `gorm:"not null;default:true" json:"create_task"`
+}
+
+// RenewalGraceDays is how far past a renewal_date/end_date the
+// customer_product_renewal and contract_expiry rules still fire.
+const RenewalGraceDays = 30
+
+// DefaultNotificationRules are seeded (cmd/api/main.go) when no rule of
+// their entity type exists yet. Only the renewal pair: every other type
+// predates seeding and existing deployments already configured theirs.
+// Active by default — they only match records with renewal_date/end_date
+// set, which nothing has until someone enters one.
+var DefaultNotificationRules = []NotificationRule{
+	{Name: "Product renewal coming up", EntityType: NotificationEntityCustomerProductRenewal, ThresholdDays: 30,
+		RecipientRole: NotificationRecipientOwner, IsActive: true, CreateTask: true},
+	{Name: "Contract ending soon", EntityType: NotificationEntityContractExpiry, ThresholdDays: 30,
+		RecipientRole: NotificationRecipientOwner, IsActive: true, CreateTask: true},
 }
 
 func (NotificationRule) TableName() string { return "notification_rules" }
