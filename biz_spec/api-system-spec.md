@@ -731,8 +731,8 @@ interface CustomerProduct {
 | `PATCH` | `/products/:id` | Update `name`/`category`/`description` (Admin only, same 2026-09-10 fix as `POST` above — this row was previously undocumented here as well as unguarded). |
 | `PATCH` | `/products/:id/deactivate` | Sets `is_active: false` rather than deleting (Admin only, same 2026-09-10 fix). |
 | `GET` | `/companies/:companyId/products` | List a Company's Customer-Product records — powers the Company profile's "Products in use" section (`FR-CRM-066`). |
-| `POST` | `/companies/:companyId/products` | Manually add/change status independent of a Deal (`FR-CRM-065`). |
-| `PATCH` | `/customer-products/:id` | Update a Customer-Product's own `status`/`end_date` after creation (e.g. Interested → Trial → Active → Churned) — `company_id`/`product_id` are immutable. Writes a `customer_product`/`status_changed` audit entry (§8.5) when `status` actually changes. |
+| `POST` | `/companies/:companyId/products` | Manually add/change status independent of a Deal (`FR-CRM-065`). **2026-09-27:** `end_date` is now applied on create (it was silently ignored before), same parsing as `PATCH` below. |
+| `PATCH` | `/customer-products/:id` | Update a Customer-Product's own `status`/`end_date` after creation (e.g. Interested → Trial → Active → Churned) — `company_id`/`product_id` are immutable. Writes a `customer_product`/`status_changed` audit entry (§8.5) when `status` actually changes. `end_date` is a timestamp: an RFC 3339 value is stored as that instant (the frontend's `toISOString()`), a bare `YYYY-MM-DD` is Asia/Bangkok midnight, `null`/`""` clears; **since 2026-09-27** anything else is a `422` (it used to be dropped silently with a `200`). |
 | **Side effect, not a separate endpoint** | — | When `PATCH /deals/:id/stage` (§7.1) sets `stage: 'Won'`, the backend must auto-create/update a `CustomerProduct` (`status: 'Active'`) for each Product on that Deal's accepted Quote (`FR-CRM-064`). Implement inside that same transaction, not as a client-triggered follow-up call. Still not implemented — deferred until Quotes have a real "accepted" flow. |
 
 ### 8.3 Projects (`FR-CRM-067`–`071`)
