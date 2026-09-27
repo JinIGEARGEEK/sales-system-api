@@ -187,12 +187,12 @@ func derefStr(s *string) string {
 func (h *ExportHandler) Companies(c *fiber.Ctx) error {
 	query := applyCompanyFilters(h.DB.Model(&models.Company{}), c).Order("created_at DESC")
 
-	header := []string{"Name", "Industry", "Size", "Website", "Tags", "Status", "Legal Name", "Address", "Tax ID", "Notes", "Created Date"}
+	header := []string{"Name", "Industry", "Size", "Website", "Tags", "Status", "Legal Name", "Address", "Tax ID", "Branch Code", "Postal Code", "Notes", "Created Date"}
 	return exportStream(c, query, "companies.csv", header, func(w *csv.Writer, batch []models.Company) error {
 		for _, co := range batch {
 			if err := writeCSVRow(w, []string{
 				co.Name, co.Industry, co.Size, co.Website, joinTags(co.Tags), string(co.Status),
-				derefStr(co.LegalName), derefStr(co.Address), derefStr(co.TaxID), co.Notes,
+				derefStr(co.LegalName), derefStr(co.Address), derefStr(co.TaxID), derefStr(co.BranchCode), derefStr(co.PostalCode), co.Notes,
 				co.CreatedAt.Format("2006-01-02"),
 			}); err != nil {
 				return err

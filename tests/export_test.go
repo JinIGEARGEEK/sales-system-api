@@ -128,3 +128,37 @@ func TestExport_NegativeNumbersNotSanitized(t *testing.T) {
 	}
 	require.True(t, found)
 }
+
+// TestExport_CompaniesIncludesBranchAndPostalCode guards the Branch Code /
+// Postal Code columns the accounting sync added, placed right after Tax ID.
+func TestExport_CompaniesIncludesBranchAndPostalCode(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	taxID, branch, postal := "0105555555555", "00001", "10110"
+	require.NoError(t, db.Create(&models.Company{
+		Name: "Acme Corp", Status: models.StatusActive, TaxID: &taxID, BranchCode: &branch, PostalCode: &postal,
+	}).Error)
+
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/companies/export?tax_id="+taxID, nil, admin.ID, models.RoleAdmin)
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
+
+	rows, err := csv.NewReader(resp.Body).ReadAll()
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	header := rows[0]
+	col := func(name string) int {
+		for i, h := range header {
+			if h == name {
+				return i
+			}
+		}
+		t.Fatalf("missing column %q in %v", name, header)
+		return -1
+	}
+	require.Equal(t, col("Tax ID")+1, col("Branch Code"))
+	require.Equal(t, col("Branch Code")+1, col("Postal Code"))
+	require.Equal(t, branch, rows[1][col("Branch Code")])
+	require.Equal(t, postal, rows[1][col("Postal Code")])
+}

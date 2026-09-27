@@ -57,6 +57,14 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 		like := utils.LikePattern(v)
 		query = query.Where("name ILIKE ? ESCAPE '\\' OR website ILIKE ? ESCAPE '\\'", like, like)
 	}
+	// tax_id/branch_code — exact match, for integrations that identify a
+	// Company by its tax ID + branch rather than by name.
+	if v := strings.TrimSpace(c.Query("tax_id")); v != "" {
+		query = query.Where("tax_id = ?", v)
+	}
+	if v := strings.TrimSpace(c.Query("branch_code")); v != "" {
+		query = query.Where("branch_code = ?", v)
+	}
 	// stale_days — only companies with no company-scoped Activity (see
 	// company_activity.go's withLastActivityAt for the same "related_type =
 	// 'company'" definition) at or after the cutoff, i.e. last_activity_at is
