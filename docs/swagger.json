@@ -2061,7 +2061,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Manually adds a Customer-Product record (a Product linked to a Company as a customer), or changes its status, independent of a Deal. FR-CRM-065. source_deal_id, if given, must reference a Deal belonging to this Company. start_date defaults to now when omitted; status defaults to \"Interested\".",
+                "description": "Manually adds a Customer-Product record (a Product linked to a Company as a customer), or changes its status, independent of a Deal. FR-CRM-065. source_deal_id, if given, must reference a Deal belonging to this Company. start_date defaults to now when omitted; status defaults to \"Interested\". Optional renewal fields: renewal_date (YYYY-MM-DD or RFC 3339; stored as a date), billing_cycle (monthly|yearly|one_time), price (\u003e= 0) — renewal_date drives the customer_product_renewal notification rule.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2821,7 +2821,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Updates status and/or quote_id. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §8.1.",
+                "description": "Updates status, quote_id and/or end_date (YYYY-MM-DD; omitted keeps it, null clears it — drives the contract_expiry notification rule). Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §8.1.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3001,7 +3001,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Updates a Customer-Product record — the Company/Product link created via AddForCompany (or auto-created when a Deal is won, FR-CRM-064). company_id/product_id are immutable after creation; only status (and end_date, e.g. when moving to Churned) can change. Writes an audit-log entry when status changes (FR-CRM-082).",
+                "description": "Updates a Customer-Product record — the Company/Product link created via AddForCompany (or auto-created when a Deal is won, FR-CRM-064). company_id/product_id are immutable after creation; status, end_date (e.g. when moving to Churned) and the renewal fields (renewal_date, billing_cycle, price — partial merge: only keys present change, null clears) can change. Writes an audit-log entry when status changes (FR-CRM-082).",
                 "consumes": [
                     "application/json"
                 ],
@@ -3543,7 +3543,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a Contract on a Deal, optionally linked to a Quote (quote_id) for PDF line items. status defaults to draft. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §8.1.",
+                "description": "Creates a Contract on a Deal, optionally linked to a Quote (quote_id) for PDF line items, with an optional end_date (YYYY-MM-DD). status defaults to draft. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §8.1.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3799,7 +3799,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns installments for a Deal, plus a computed total_paid. Backs the Deal detail page's Payments tab. api-system-spec.md §7.5.",
+                "description": "Returns a Deal's recorded Payments (newest paid_at first) plus totals: total_paid = Σ amount (cash received, unchanged meaning), total_wht = Σ wht_amount, total_settled = total_paid + total_wht (what the receivable is reduced by). Backs the Deal detail page's Payments tab. api-system-spec.md §7.5.",
                 "produces": [
                     "application/json"
                 ],
@@ -3818,7 +3818,7 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "{ payments: []models.Payment, total_paid: number }",
+                        "description": "{ payments: []models.Payment, total_paid: number, total_wht: number, total_settled: number }",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -3832,7 +3832,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a Payment installment on a Deal. amount must be \u003e 0; method must be a valid PaymentMethod; paid_at defaults to now if omitted. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §7.5.",
+                "description": "Records money received on a Deal. amount (cash received, net of WHT) must be \u003e 0; method must be a valid PaymentMethod; paid_at defaults to now. Optional: wht_amount (\u003e= 0, default 0 — withholding tax the customer deducted; counts as settled), wht_certificate_received (default false — the 50 ทวิ certificate), document_number (FlowAccount receipt/tax-invoice number, max 64 chars, blank = null), installment_id (a PaymentInstallment of the same Deal; that installment is settled first). Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §7.5.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3869,7 +3869,7 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid request body, amount is required, or method is invalid",
+                        "description": "Invalid request body",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -3884,6 +3884,13 @@
                     },
                     "404": {
                         "description": "Deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "amount/method/wht_amount/document_number/installment_id invalid",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -5283,7 +5290,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Hard delete. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.",
+                "description": "Hard delete. Payments linked to it (installment_id) are unlinked, not deleted — their money rejoins the Deal's waterfall. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.",
                 "tags": [
                     "payment-installments"
                 ],
@@ -5319,6 +5326,71 @@
             }
         },
         "/payments/{id}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Partial merge: only fields present in the body change (same validation as Create); installment_id: null unlinks. Typical use is ticking wht_certificate_received once the 50 ทวิ arrives, or adding the FlowAccount document_number later. deal_id is immutable. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may edit.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payments"
+                ],
+                "summary": "Edit a payment (Admin/Sales Rep/Sales Manager)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Payment ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Fields to change",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.paymentForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Payment"
+                        }
+                    },
+                    "403": {
+                        "description": "Not authorized to modify this deal's records",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Payment not found, or deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Validation error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
             "delete": {
                 "security": [
                     {
@@ -6660,6 +6732,54 @@
                 }
             }
         },
+        "/quotes/{id}/duplicate": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Creates a new Draft Quote on the same Deal, copying every editable field (items, scope_of_work, reference_number, credit_days, price_type, vat_enabled, wht_enabled, wht_rate, discount_total, notes, internal_notes). The copy gets a new server-generated number, issue_date = today, and validity_date = today + the original's issue→validity gap (else + credit_days, else null). Never copied: status (always draft), uploaded file fields, extraction_status/warnings. Same permission as creating a quote on that Deal.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "quotes"
+                ],
+                "summary": "Duplicate a quote as a new Draft (Admin/Sales Rep/Sales Manager/Marketing)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Quote ID to copy",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Quote"
+                        }
+                    },
+                    "403": {
+                        "description": "Not authorized to modify this deal's records",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Quote not found, or deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/quotes/{id}/export-pdf": {
             "get": {
                 "security": [
@@ -7023,7 +7143,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Won Deals whose recorded Payments sum to less than the Deal value, sorted by outstanding amount descending. FR-CRM-095. Admin/Sales Manager only.",
+                "description": "Won Deals with money still owed, sorted by outstanding_amount descending. receivable_amount = latest Accepted Quote's taxable amount + VAT (receivable_source \"quote\"), else the Deal value (\"deal_value\"); outstanding_amount = receivable_amount − paid_amount − wht_amount. Aging: oldest_overdue_due_date, days_overdue, aging_bucket (current|1_30|31_60|61_90|90_plus) from the oldest unpaid overdue installment; legacy aging (overdue|upcoming|none) kept. FR-CRM-095. Admin/Sales Manager only.",
                 "produces": [
                     "application/json"
                 ],
@@ -7445,6 +7565,127 @@
                     },
                     "500": {
                         "description": "Failed to compute sales cycle report",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/reports/source-performance": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Per lead source: leads created in the window, how many reached Qualified, how many Won Deals they produced so far and their value, and win_rate = deals_won / leads × 100. Lead-originated Deals are attributed via the Lead (converted_deal_id / deals.lead_id), not deals.channel; Won Deals with no Lead, created in the window, are reported per deals.channel in direct_deals_won/direct_won_value. Dates are YYYY-MM-DD, both inclusive (from/to accepted as aliases); malformed or reversed → 422. FR-CRM-005. Admin/Sales Manager only.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "reports"
+                ],
+                "summary": "Source performance report (Admin/Sales Manager only)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Inclusive lower bound (YYYY-MM-DD) on Lead created_at (direct Deals: Deal created_at)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Inclusive upper bound (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by assigned user ID (Lead's, or the direct Deal's)",
+                        "name": "assigned_to",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/internal_handlers.sourcePerformanceRow"
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Malformed or reversed date range",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to compute source performance",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/reports/source-performance/export": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "CSV download of GET /reports/source-performance, same params. Admin/Sales Manager only.",
+                "produces": [
+                    "text/csv"
+                ],
+                "tags": [
+                    "reports"
+                ],
+                "summary": "Export source performance report as CSV (Admin/Sales Manager only)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Inclusive lower bound (YYYY-MM-DD)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Inclusive upper bound (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by assigned user ID",
+                        "name": "assigned_to",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "CSV export",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "422": {
+                        "description": "Malformed or reversed date range",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to export source performance",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -8445,6 +8686,19 @@
                 }
             }
         },
+        "github_com_igeargeek_sales-system-api_internal_models.BillingCycle": {
+            "type": "string",
+            "enum": [
+                "monthly",
+                "yearly",
+                "one_time"
+            ],
+            "x-enum-varnames": [
+                "BillingCycleMonthly",
+                "BillingCycleYearly",
+                "BillingCycleOneTime"
+            ]
+        },
         "github_com_igeargeek_sales-system-api_internal_models.BusinessUnit": {
             "type": "string",
             "enum": [
@@ -8625,6 +8879,10 @@
                 "deal_id": {
                     "type": "integer"
                 },
+                "end_date": {
+                    "description": "EndDate is when the signed contract's term ends (a calendar date).\nThe contract_expiry NotificationRule warns ThresholdDays ahead, once\nper EndDate value. Optional; nil never fires.",
+                    "type": "string"
+                },
                 "id": {
                     "type": "integer"
                 },
@@ -8663,6 +8921,14 @@
         "github_com_igeargeek_sales-system-api_internal_models.CustomerProduct": {
             "type": "object",
             "properties": {
+                "billing_cycle": {
+                    "description": "BillingCycle/Price describe what the renewal is worth — informational\n(and shown in the renewal Task), not used to generate any invoice:\ninvoices are issued in FlowAccount, charged via a Contract.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.BillingCycle"
+                        }
+                    ]
+                },
                 "company_id": {
                     "type": "integer"
                 },
@@ -8684,8 +8950,15 @@
                 "id": {
                     "type": "integer"
                 },
+                "price": {
+                    "type": "number"
+                },
                 "product_id": {
                     "type": "integer"
+                },
+                "renewal_date": {
+                    "description": "RenewalDate is the next date this subscription renews (a calendar\ndate, no time). The customer_product_renewal NotificationRule fires\nonce per RenewalDate value, so rolling it forward a year after\nrenewing re-arms the reminder. Optional; nil never fires.",
+                    "type": "string"
                 },
                 "source_deal_id": {
                     "type": "integer"
@@ -9133,6 +9406,7 @@
             "type": "object",
             "properties": {
                 "amount": {
+                    "description": "Amount is the cash that arrived — net of any withholding tax.",
                     "type": "number"
                 },
                 "created_at": {
@@ -9141,7 +9415,15 @@
                 "deal_id": {
                     "type": "integer"
                 },
+                "document_number": {
+                    "description": "DocumentNumber is the FlowAccount receipt / tax-invoice number for this\npayment, free text, optional.",
+                    "type": "string"
+                },
                 "id": {
+                    "type": "integer"
+                },
+                "installment_id": {
+                    "description": "InstallmentID optionally pins this payment to one PaymentInstallment of\nthe same Deal. Linked payments settle their own installment first; the\nrest still waterfall in due-date order (utils.\nComputeInstallmentStatusesFromPayments). App-level reference only, like\nevery other id column here — PaymentInstallmentHandler.Delete clears it.",
                     "type": "integer"
                 },
                 "method": {
@@ -9155,6 +9437,14 @@
                 },
                 "updated_at": {
                     "type": "string"
+                },
+                "wht_amount": {
+                    "description": "WhtAmount is the withholding tax the customer deducted and remits to\nthe Revenue Department on our behalf. It settles the invoice just like\ncash does (see SettledAmount), so a 3% WHT customer paying 97,000 on a\n100,000 invoice leaves nothing outstanding.",
+                    "type": "number"
+                },
+                "wht_certificate_received": {
+                    "description": "WhtCertificateReceived tracks whether the customer's withholding tax\ncertificate (หนังสือรับรองการหักภาษี ณ ที่จ่าย, \"50 ทวิ\") has arrived —\naccounting needs it to claim the WHT credit, and it often lags the\npayment by weeks.",
+                    "type": "boolean"
                 }
             }
         },
@@ -10113,6 +10403,10 @@
         "internal_handlers.contractForm": {
             "type": "object",
             "properties": {
+                "end_date": {
+                    "description": "EndDate — the term's end, YYYY-MM-DD or RFC 3339, stored as a date.\nOn Update, omitted keeps the stored value and null/\"\" clears it.",
+                    "type": "string"
+                },
                 "quote_id": {
                     "type": "integer"
                 },
@@ -10164,11 +10458,20 @@
         "internal_handlers.customerProductForm": {
             "type": "object",
             "properties": {
+                "billing_cycle": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.BillingCycle"
+                },
                 "end_date": {
                     "type": "string"
                 },
+                "price": {
+                    "type": "number"
+                },
                 "product_id": {
                     "type": "integer"
+                },
+                "renewal_date": {
+                    "type": "string"
                 },
                 "source_deal_id": {
                     "type": "integer"
@@ -10184,6 +10487,14 @@
         "internal_handlers.customerProductResponse": {
             "type": "object",
             "properties": {
+                "billing_cycle": {
+                    "description": "BillingCycle/Price describe what the renewal is worth — informational\n(and shown in the renewal Task), not used to generate any invoice:\ninvoices are issued in FlowAccount, charged via a Contract.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.BillingCycle"
+                        }
+                    ]
+                },
                 "company_id": {
                     "type": "integer"
                 },
@@ -10205,11 +10516,18 @@
                 "id": {
                     "type": "integer"
                 },
+                "price": {
+                    "type": "number"
+                },
                 "product": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Product"
                 },
                 "product_id": {
                     "type": "integer"
+                },
+                "renewal_date": {
+                    "description": "RenewalDate is the next date this subscription renews (a calendar\ndate, no time). The customer_product_renewal NotificationRule fires\nonce per RenewalDate value, so rolling it forward a year after\nrenewing re-arms the reminder. Optional; nil never fires.",
+                    "type": "string"
                 },
                 "source_deal_id": {
                     "type": "integer"
@@ -10231,7 +10549,16 @@
         "internal_handlers.customerProductUpdateForm": {
             "type": "object",
             "properties": {
+                "billing_cycle": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.BillingCycle"
+                },
                 "end_date": {
+                    "type": "string"
+                },
+                "price": {
+                    "type": "number"
+                },
+                "renewal_date": {
                     "type": "string"
                 },
                 "status": {
@@ -10512,6 +10839,13 @@
                 "amount": {
                     "type": "number"
                 },
+                "document_number": {
+                    "type": "string"
+                },
+                "installment_id": {
+                    "description": "InstallmentID is raw so Update can tell \"absent\" (keep) from null\n(unlink) from a number (link) — a plain *uint can't.",
+                    "type": "integer"
+                },
                 "method": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.PaymentMethod"
                 },
@@ -10520,6 +10854,12 @@
                 },
                 "paid_at": {
                     "type": "string"
+                },
+                "wht_amount": {
+                    "type": "number"
+                },
+                "wht_certificate_received": {
+                    "type": "boolean"
                 }
             }
         },
@@ -10827,6 +11167,39 @@
                 },
                 "weekly_digest_enabled": {
                     "type": "boolean"
+                }
+            }
+        },
+        "internal_handlers.sourcePerformanceRow": {
+            "type": "object",
+            "properties": {
+                "deals_won": {
+                    "description": "DealsWon/WonValue: Won Deals that came from those Leads, so far\n(Σ deals.value, same revenue figure top-referrers uses).",
+                    "type": "integer"
+                },
+                "direct_deals_won": {
+                    "description": "DirectDealsWon/DirectWonValue: Won Deals created in the window with no\noriginating Lead (entered straight into the pipeline), attributed by\ntheir own deals.channel. Kept separate so leads → qualified → won stays\none cohort and WinRate can't exceed 100%.",
+                    "type": "integer"
+                },
+                "direct_won_value": {
+                    "type": "number"
+                },
+                "leads": {
+                    "description": "Leads created in the window with this source; Qualified = those that\nreached Qualified (status Qualified, or already converted to a Deal —\nconversion leaves status at Qualified, but checking converted_deal_id\ntoo keeps a later status edit from hiding a real conversion).",
+                    "type": "integer"
+                },
+                "qualified": {
+                    "type": "integer"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "win_rate": {
+                    "description": "WinRate = DealsWon / Leads × 100 — lead-to-won, the end-to-end yield\nof the source. 0 when Leads is 0.",
+                    "type": "number"
+                },
+                "won_value": {
+                    "type": "number"
                 }
             }
         },

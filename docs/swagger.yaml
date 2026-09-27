@@ -69,6 +69,16 @@ definitions:
           default; it only ever sends when SMTP is configured.
         type: boolean
     type: object
+  github_com_igeargeek_sales-system-api_internal_models.BillingCycle:
+    enum:
+    - monthly
+    - yearly
+    - one_time
+    type: string
+    x-enum-varnames:
+    - BillingCycleMonthly
+    - BillingCycleYearly
+    - BillingCycleOneTime
   github_com_igeargeek_sales-system-api_internal_models.BusinessUnit:
     enum:
     - Project
@@ -199,6 +209,12 @@ definitions:
         type: string
       deal_id:
         type: integer
+      end_date:
+        description: |-
+          EndDate is when the signed contract's term ends (a calendar date).
+          The contract_expiry NotificationRule warns ThresholdDays ahead, once
+          per EndDate value. Optional; nil never fires.
+        type: string
       id:
         type: integer
       quote_id:
@@ -226,6 +242,13 @@ definitions:
     - ContractStatusExpired
   github_com_igeargeek_sales-system-api_internal_models.CustomerProduct:
     properties:
+      billing_cycle:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.BillingCycle'
+        description: |-
+          BillingCycle/Price describe what the renewal is worth — informational
+          (and shown in the renewal Task), not used to generate any invoice:
+          invoices are issued in FlowAccount, charged via a Contract.
       company_id:
         type: integer
       created_at:
@@ -240,8 +263,17 @@ definitions:
         type: string
       id:
         type: integer
+      price:
+        type: number
       product_id:
         type: integer
+      renewal_date:
+        description: |-
+          RenewalDate is the next date this subscription renews (a calendar
+          date, no time). The customer_product_renewal NotificationRule fires
+          once per RenewalDate value, so rolling it forward a year after
+          renewing re-arms the reminder. Optional; nil never fires.
+        type: string
       source_deal_id:
         type: integer
       start_date:
@@ -608,12 +640,26 @@ definitions:
   github_com_igeargeek_sales-system-api_internal_models.Payment:
     properties:
       amount:
+        description: Amount is the cash that arrived — net of any withholding tax.
         type: number
       created_at:
         type: string
       deal_id:
         type: integer
+      document_number:
+        description: |-
+          DocumentNumber is the FlowAccount receipt / tax-invoice number for this
+          payment, free text, optional.
+        type: string
       id:
+        type: integer
+      installment_id:
+        description: |-
+          InstallmentID optionally pins this payment to one PaymentInstallment of
+          the same Deal. Linked payments settle their own installment first; the
+          rest still waterfall in due-date order (utils.
+          ComputeInstallmentStatusesFromPayments). App-level reference only, like
+          every other id column here — PaymentInstallmentHandler.Delete clears it.
         type: integer
       method:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.PaymentMethod'
@@ -623,6 +669,20 @@ definitions:
         type: string
       updated_at:
         type: string
+      wht_amount:
+        description: |-
+          WhtAmount is the withholding tax the customer deducted and remits to
+          the Revenue Department on our behalf. It settles the invoice just like
+          cash does (see SettledAmount), so a 3% WHT customer paying 97,000 on a
+          100,000 invoice leaves nothing outstanding.
+        type: number
+      wht_certificate_received:
+        description: |-
+          WhtCertificateReceived tracks whether the customer's withholding tax
+          certificate (หนังสือรับรองการหักภาษี ณ ที่จ่าย, "50 ทวิ") has arrived —
+          accounting needs it to claim the WHT credit, and it often lags the
+          payment by weeks.
+        type: boolean
     type: object
   github_com_igeargeek_sales-system-api_internal_models.PaymentInstallment:
     properties:
@@ -1354,6 +1414,11 @@ definitions:
     type: object
   internal_handlers.contractForm:
     properties:
+      end_date:
+        description: |-
+          EndDate — the term's end, YYYY-MM-DD or RFC 3339, stored as a date.
+          On Update, omitted keeps the stored value and null/"" clears it.
+        type: string
       quote_id:
         type: integer
       status:
@@ -1387,10 +1452,16 @@ definitions:
     type: object
   internal_handlers.customerProductForm:
     properties:
+      billing_cycle:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.BillingCycle'
       end_date:
         type: string
+      price:
+        type: number
       product_id:
         type: integer
+      renewal_date:
+        type: string
       source_deal_id:
         type: integer
       start_date:
@@ -1400,6 +1471,13 @@ definitions:
     type: object
   internal_handlers.customerProductResponse:
     properties:
+      billing_cycle:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.BillingCycle'
+        description: |-
+          BillingCycle/Price describe what the renewal is worth — informational
+          (and shown in the renewal Task), not used to generate any invoice:
+          invoices are issued in FlowAccount, charged via a Contract.
       company_id:
         type: integer
       created_at:
@@ -1414,10 +1492,19 @@ definitions:
         type: string
       id:
         type: integer
+      price:
+        type: number
       product:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Product'
       product_id:
         type: integer
+      renewal_date:
+        description: |-
+          RenewalDate is the next date this subscription renews (a calendar
+          date, no time). The customer_product_renewal NotificationRule fires
+          once per RenewalDate value, so rolling it forward a year after
+          renewing re-arms the reminder. Optional; nil never fires.
+        type: string
       source_deal_id:
         type: integer
       start_date:
@@ -1431,7 +1518,13 @@ definitions:
     type: object
   internal_handlers.customerProductUpdateForm:
     properties:
+      billing_cycle:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.BillingCycle'
       end_date:
+        type: string
+      price:
+        type: number
+      renewal_date:
         type: string
       status:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.CustomerProductStatus'
@@ -1632,12 +1725,23 @@ definitions:
     properties:
       amount:
         type: number
+      document_number:
+        type: string
+      installment_id:
+        description: |-
+          InstallmentID is raw so Update can tell "absent" (keep) from null
+          (unlink) from a number (link) — a plain *uint can't.
+        type: integer
       method:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.PaymentMethod'
       note:
         type: string
       paid_at:
         type: string
+      wht_amount:
+        type: number
+      wht_certificate_received:
+        type: boolean
     type: object
   internal_handlers.paymentInstallmentBulkForm:
     properties:
@@ -1853,6 +1957,41 @@ definitions:
         type: boolean
       weekly_digest_enabled:
         type: boolean
+    type: object
+  internal_handlers.sourcePerformanceRow:
+    properties:
+      deals_won:
+        description: |-
+          DealsWon/WonValue: Won Deals that came from those Leads, so far
+          (Σ deals.value, same revenue figure top-referrers uses).
+        type: integer
+      direct_deals_won:
+        description: |-
+          DirectDealsWon/DirectWonValue: Won Deals created in the window with no
+          originating Lead (entered straight into the pipeline), attributed by
+          their own deals.channel. Kept separate so leads → qualified → won stays
+          one cohort and WinRate can't exceed 100%.
+        type: integer
+      direct_won_value:
+        type: number
+      leads:
+        description: |-
+          Leads created in the window with this source; Qualified = those that
+          reached Qualified (status Qualified, or already converted to a Deal —
+          conversion leaves status at Qualified, but checking converted_deal_id
+          too keeps a later status edit from hiding a real conversion).
+        type: integer
+      qualified:
+        type: integer
+      source:
+        type: string
+      win_rate:
+        description: |-
+          WinRate = DealsWon / Leads × 100 — lead-to-won, the end-to-end yield
+          of the source. 0 when Leads is 0.
+        type: number
+      won_value:
+        type: number
     type: object
   internal_handlers.tagForm:
     properties:
@@ -3196,10 +3335,13 @@ paths:
     post:
       consumes:
       - application/json
-      description: Manually adds a Customer-Product record (a Product linked to a
+      description: 'Manually adds a Customer-Product record (a Product linked to a
         Company as a customer), or changes its status, independent of a Deal. FR-CRM-065.
         source_deal_id, if given, must reference a Deal belonging to this Company.
         start_date defaults to now when omitted; status defaults to "Interested".
+        Optional renewal fields: renewal_date (YYYY-MM-DD or RFC 3339; stored as a
+        date), billing_cycle (monthly|yearly|one_time), price (>= 0) — renewal_date
+        drives the customer_product_renewal notification rule.'
       parameters:
       - description: Company ID
         in: path
@@ -3793,8 +3935,10 @@ paths:
     put:
       consumes:
       - application/json
-      description: Updates status and/or quote_id. Only the parent Deal's assigned
-        Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §8.1.
+      description: Updates status, quote_id and/or end_date (YYYY-MM-DD; omitted keeps
+        it, null clears it — drives the contract_expiry notification rule). Only the
+        parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md
+        §8.1.
       parameters:
       - description: Contract ID
         in: path
@@ -3918,10 +4062,12 @@ paths:
     patch:
       consumes:
       - application/json
-      description: Updates a Customer-Product record — the Company/Product link created
+      description: 'Updates a Customer-Product record — the Company/Product link created
         via AddForCompany (or auto-created when a Deal is won, FR-CRM-064). company_id/product_id
-        are immutable after creation; only status (and end_date, e.g. when moving
-        to Churned) can change. Writes an audit-log entry when status changes (FR-CRM-082).
+        are immutable after creation; status, end_date (e.g. when moving to Churned)
+        and the renewal fields (renewal_date, billing_cycle, price — partial merge:
+        only keys present change, null clears) can change. Writes an audit-log entry
+        when status changes (FR-CRM-082).'
       parameters:
       - description: Customer-Product ID
         in: path
@@ -4158,8 +4304,9 @@ paths:
       consumes:
       - application/json
       description: Creates a Contract on a Deal, optionally linked to a Quote (quote_id)
-        for PDF line items. status defaults to draft. Only the Deal's assigned Sales
-        Rep (or Admin/Sales Manager) may create. api-system-spec.md §8.1.
+        for PDF line items, with an optional end_date (YYYY-MM-DD). status defaults
+        to draft. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may
+        create. api-system-spec.md §8.1.
       parameters:
       - description: Deal ID
         in: path
@@ -4338,8 +4485,11 @@ paths:
       - payment-installments
   /deals/{dealId}/payments:
     get:
-      description: Returns installments for a Deal, plus a computed total_paid. Backs
-        the Deal detail page's Payments tab. api-system-spec.md §7.5.
+      description: 'Returns a Deal''s recorded Payments (newest paid_at first) plus
+        totals: total_paid = Σ amount (cash received, unchanged meaning), total_wht
+        = Σ wht_amount, total_settled = total_paid + total_wht (what the receivable
+        is reduced by). Backs the Deal detail page''s Payments tab. api-system-spec.md
+        §7.5.'
       parameters:
       - description: Deal ID
         in: path
@@ -4350,7 +4500,8 @@ paths:
       - application/json
       responses:
         "200":
-          description: '{ payments: []models.Payment, total_paid: number }'
+          description: '{ payments: []models.Payment, total_paid: number, total_wht:
+            number, total_settled: number }'
           schema:
             additionalProperties: true
             type: object
@@ -4362,10 +4513,14 @@ paths:
     post:
       consumes:
       - application/json
-      description: Creates a Payment installment on a Deal. amount must be > 0; method
-        must be a valid PaymentMethod; paid_at defaults to now if omitted. Only the
-        Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md
-        §7.5.
+      description: 'Records money received on a Deal. amount (cash received, net of
+        WHT) must be > 0; method must be a valid PaymentMethod; paid_at defaults to
+        now. Optional: wht_amount (>= 0, default 0 — withholding tax the customer
+        deducted; counts as settled), wht_certificate_received (default false — the
+        50 ทวิ certificate), document_number (FlowAccount receipt/tax-invoice number,
+        max 64 chars, blank = null), installment_id (a PaymentInstallment of the same
+        Deal; that installment is settled first). Only the Deal''s assigned Sales
+        Rep (or Admin/Sales Manager) may create. api-system-spec.md §7.5.'
       parameters:
       - description: Deal ID
         in: path
@@ -4386,7 +4541,7 @@ paths:
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Payment'
         "400":
-          description: Invalid request body, amount is required, or method is invalid
+          description: Invalid request body
           schema:
             additionalProperties: true
             type: object
@@ -4397,6 +4552,11 @@ paths:
             type: object
         "404":
           description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: amount/method/wht_amount/document_number/installment_id invalid
           schema:
             additionalProperties: true
             type: object
@@ -5452,8 +5612,9 @@ paths:
       - projects
   /payment-installments/{id}:
     delete:
-      description: Hard delete. Only the parent Deal's assigned Sales Rep (or Admin/Sales
-        Manager) may delete.
+      description: Hard delete. Payments linked to it (installment_id) are unlinked,
+        not deleted — their money rejoins the Deal's waterfall. Only the parent Deal's
+        assigned Sales Rep (or Admin/Sales Manager) may delete.
       parameters:
       - description: Payment Installment ID
         in: path
@@ -5543,6 +5704,53 @@ paths:
       security:
       - BearerAuth: []
       summary: Delete a payment
+      tags:
+      - payments
+    put:
+      consumes:
+      - application/json
+      description: 'Partial merge: only fields present in the body change (same validation
+        as Create); installment_id: null unlinks. Typical use is ticking wht_certificate_received
+        once the 50 ทวิ arrives, or adding the FlowAccount document_number later.
+        deal_id is immutable. Only the parent Deal''s assigned Sales Rep (or Admin/Sales
+        Manager) may edit.'
+      parameters:
+      - description: Payment ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Fields to change
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.paymentForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Payment'
+        "403":
+          description: Not authorized to modify this deal's records
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Payment not found, or deal not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Validation error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Edit a payment (Admin/Sales Rep/Sales Manager)
       tags:
       - payments
   /products:
@@ -6436,6 +6644,43 @@ paths:
       summary: Update a quote
       tags:
       - quotes
+  /quotes/{id}/duplicate:
+    post:
+      description: 'Creates a new Draft Quote on the same Deal, copying every editable
+        field (items, scope_of_work, reference_number, credit_days, price_type, vat_enabled,
+        wht_enabled, wht_rate, discount_total, notes, internal_notes). The copy gets
+        a new server-generated number, issue_date = today, and validity_date = today
+        + the original''s issue→validity gap (else + credit_days, else null). Never
+        copied: status (always draft), uploaded file fields, extraction_status/warnings.
+        Same permission as creating a quote on that Deal.'
+      parameters:
+      - description: Quote ID to copy
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Quote'
+        "403":
+          description: Not authorized to modify this deal's records
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Quote not found, or deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Duplicate a quote as a new Draft (Admin/Sales Rep/Sales Manager/Marketing)
+      tags:
+      - quotes
   /quotes/{id}/export-pdf:
     get:
       description: Renders the quote's line items as a PDF — document number, scope
@@ -6681,8 +6926,13 @@ paths:
       - reports
   /reports/outstanding-balance:
     get:
-      description: Won Deals whose recorded Payments sum to less than the Deal value,
-        sorted by outstanding amount descending. FR-CRM-095. Admin/Sales Manager only.
+      description: 'Won Deals with money still owed, sorted by outstanding_amount
+        descending. receivable_amount = latest Accepted Quote''s taxable amount +
+        VAT (receivable_source "quote"), else the Deal value ("deal_value"); outstanding_amount
+        = receivable_amount − paid_amount − wht_amount. Aging: oldest_overdue_due_date,
+        days_overdue, aging_bucket (current|1_30|31_60|61_90|90_plus) from the oldest
+        unpaid overdue installment; legacy aging (overdue|upcoming|none) kept. FR-CRM-095.
+        Admin/Sales Manager only.'
       parameters:
       - description: Filter by assigned Sales Rep user ID
         in: query
@@ -6973,6 +7223,92 @@ paths:
       security:
       - BearerAuth: []
       summary: Sales cycle report (Admin/Sales Manager only)
+      tags:
+      - reports
+  /reports/source-performance:
+    get:
+      description: 'Per lead source: leads created in the window, how many reached
+        Qualified, how many Won Deals they produced so far and their value, and win_rate
+        = deals_won / leads × 100. Lead-originated Deals are attributed via the Lead
+        (converted_deal_id / deals.lead_id), not deals.channel; Won Deals with no
+        Lead, created in the window, are reported per deals.channel in direct_deals_won/direct_won_value.
+        Dates are YYYY-MM-DD, both inclusive (from/to accepted as aliases); malformed
+        or reversed → 422. FR-CRM-005. Admin/Sales Manager only.'
+      parameters:
+      - description: 'Inclusive lower bound (YYYY-MM-DD) on Lead created_at (direct
+          Deals: Deal created_at)'
+        in: query
+        name: date_from
+        type: string
+      - description: Inclusive upper bound (YYYY-MM-DD)
+        in: query
+        name: date_to
+        type: string
+      - description: Filter by assigned user ID (Lead's, or the direct Deal's)
+        in: query
+        name: assigned_to
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/internal_handlers.sourcePerformanceRow'
+            type: array
+        "422":
+          description: Malformed or reversed date range
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to compute source performance
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Source performance report (Admin/Sales Manager only)
+      tags:
+      - reports
+  /reports/source-performance/export:
+    get:
+      description: CSV download of GET /reports/source-performance, same params. Admin/Sales
+        Manager only.
+      parameters:
+      - description: Inclusive lower bound (YYYY-MM-DD)
+        in: query
+        name: date_from
+        type: string
+      - description: Inclusive upper bound (YYYY-MM-DD)
+        in: query
+        name: date_to
+        type: string
+      - description: Filter by assigned user ID
+        in: query
+        name: assigned_to
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV export
+          schema:
+            type: file
+        "422":
+          description: Malformed or reversed date range
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to export source performance
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export source performance report as CSV (Admin/Sales Manager only)
       tags:
       - reports
   /reports/stalled-deals:

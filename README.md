@@ -72,6 +72,8 @@ See [`.env.example`](.env.example). Notable ones:
 
 A background goroutine (`internal/notifier`) polls every 15 minutes for pending Tasks whose `due_date` has passed and haven't been notified yet, and emails the assignee (via `SMTP_*` above) with the task title, due date, and related Deal/Contact/Company name when resolvable. Each task is marked with `notified_at` after sending so the reminder only goes out once. A failed send (or missing SMTP config) is logged and does not block other tasks' reminders.
 
+Admin-configurable Notification Rules (`/admin/notification-rules`, `internal/notifier/workflow_rules.go`) run on the same interval and, besides emailing, create a Task for the record's owner (`create_task`, default on) — so every alert reaches someone in-app even with SMTP off. Each firing is recorded in `notification_logs` (also listed by `GET /notification-log`), which is what stops it firing twice.
+
 ## Testing
 
 ```sh
