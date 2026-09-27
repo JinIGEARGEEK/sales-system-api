@@ -38,10 +38,10 @@ func TestCheckPaymentInstallmentDueRule_FiresWithinThreshold(t *testing.T) {
 	require.NoError(t, db.Create(dueFar).Error)
 
 	rule := seedInstallmentRule(t, db, 7)
-	checkPaymentInstallmentDueRule(db, testutil.Config(), rule)
+	checkPaymentInstallmentDueRule(db, testutil.Config(), rule, time.Now())
 
-	require.True(t, alreadyNotified(db, rule.ID, dueSoon.ID, ""), "an installment due within the threshold must be notified")
-	require.False(t, alreadyNotified(db, rule.ID, dueFar.ID, ""), "an installment due well outside the threshold must not be notified")
+	require.True(t, alreadyNotified(db, rule.ID, dueSoon.ID, installmentContextDueSoon), "an installment due within the threshold must be notified")
+	require.False(t, alreadyNotified(db, rule.ID, dueFar.ID, installmentContextDueSoon), "an installment due well outside the threshold must not be notified")
 }
 
 // TestCheckPaymentInstallmentDueRule_SkipsFullyPaid guards that a fully
@@ -57,15 +57,14 @@ func TestCheckPaymentInstallmentDueRule_SkipsFullyPaid(t *testing.T) {
 	require.NoError(t, db.Create(&models.Payment{DealID: deal.ID, Amount: 10000, PaidAt: time.Now(), Method: models.PaymentMethodTransfer}).Error)
 
 	rule := seedInstallmentRule(t, db, 7)
-	checkPaymentInstallmentDueRule(db, testutil.Config(), rule)
+	checkPaymentInstallmentDueRule(db, testutil.Config(), rule, time.Now())
 
-	require.False(t, alreadyNotified(db, rule.ID, paid.ID, ""), "a fully paid installment must not be notified even if overdue")
+	require.False(t, alreadyNotified(db, rule.ID, paid.ID, installmentContextOverdue), "a fully paid installment must not be notified even if overdue")
 }
 
-// TestCheckPaymentInstallmentDueRule_FiresOnceEver guards the dedup
-// behavior — same "fires once ever per entity" shape as Contract/Quote's own
-// rules (empty Context), confirmed by running the check twice.
-func TestCheckPaymentInstallmentDueRule_FiresOnceEver(t *testing.T) {
+// TestCheckPaymentInstallmentDueRule_FiresOncePerState guards the dedup
+// behavior: re-running the check in the same state writes nothing new.
+func TestCheckPaymentInstallmentDueRule_FiresOncePerState(t *testing.T) {
 	_, db := testutil.App(t)
 	owner := testutil.CreateUser(t, db, models.RoleSalesRep)
 	deal := seedDealForNotifier(t, db, &owner.ID)
@@ -73,16 +72,40 @@ func TestCheckPaymentInstallmentDueRule_FiresOnceEver(t *testing.T) {
 	require.NoError(t, db.Create(overdue).Error)
 
 	rule := seedInstallmentRule(t, db, 7)
-	checkPaymentInstallmentDueRule(db, testutil.Config(), rule)
-	require.True(t, alreadyNotified(db, rule.ID, overdue.ID, ""))
+	checkPaymentInstallmentDueRule(db, testutil.Config(), rule, time.Now())
+	require.True(t, alreadyNotified(db, rule.ID, overdue.ID, installmentContextOverdue))
 
 	var count int64
 	db.Model(&models.NotificationLog{}).Where("rule_id = ? AND entity_id = ?", rule.ID, overdue.ID).Count(&count)
 
-	checkPaymentInstallmentDueRule(db, testutil.Config(), rule)
+	checkPaymentInstallmentDueRule(db, testutil.Config(), rule, time.Now())
 	var countAfter int64
 	db.Model(&models.NotificationLog{}).Where("rule_id = ? AND entity_id = ?", rule.ID, overdue.ID).Count(&countAfter)
 	require.Equal(t, count, countAfter, "a second run must not write a duplicate NotificationLog row")
+}
+
+// An installment alerted while due soon must alert again once it goes
+// overdue: the due-soon firing used to consume the only dedupe key ("").
+func TestCheckPaymentInstallmentDueRule_DueSoonThenOverdue(t *testing.T) {
+	_, db := testutil.App(t)
+	owner := testutil.CreateUser(t, db, models.RoleSalesRep)
+	deal := seedDealForNotifier(t, db, &owner.ID)
+	now := time.Now()
+	inst := &models.PaymentInstallment{DealID: deal.ID, Amount: 10000, DueDate: now.AddDate(0, 0, 3)}
+	require.NoError(t, db.Create(inst).Error)
+
+	rule := seedInstallmentRule(t, db, 7)
+	checkPaymentInstallmentDueRule(db, testutil.Config(), rule, now)
+	checkPaymentInstallmentDueRule(db, testutil.Config(), rule, now.AddDate(0, 0, 1))
+	checkPaymentInstallmentDueRule(db, testutil.Config(), rule, now.AddDate(0, 0, 5))
+	checkPaymentInstallmentDueRule(db, testutil.Config(), rule, now.AddDate(0, 0, 6))
+
+	var tasks []models.Task
+	require.NoError(t, db.Where("related_type = ? AND related_id = ?", models.RelatedTypeDeal, deal.ID).Order("id").Find(&tasks).Error)
+	require.Len(t, tasks, 2, "one due-soon Task, then one overdue Task")
+	require.Equal(t, models.TaskPriorityMedium, tasks[0].Priority)
+	require.Equal(t, models.TaskPriorityHigh, tasks[1].Priority)
+	require.Contains(t, tasks[1].Title, "Overdue payment")
 }
 
 // seedDealForNotifier is a minimal Deal seed local to this package's tests —

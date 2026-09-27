@@ -147,7 +147,37 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := MigrateCompanySizeDefaults(db); err != nil {
 		return err
 	}
+	if err := BackfillInstallmentAlertContexts(db); err != nil {
+		return err
+	}
 	return nil
+}
+
+// installmentAlertContextsBackfill names BackfillInstallmentAlertContexts'
+// data_migrations row.
+const installmentAlertContextsBackfill = "installment_alert_contexts_backfill"
+
+// BackfillInstallmentAlertContexts (called from AutoMigrate; exported for
+// its test) re-keys payment_installment NotificationLog rows written before
+// the rule's context became the alert state ("due_soon"/"overdue"). Those
+// rows have context "", so without this every installment already alerted
+// would alert again under its new key. Each row gets the state it fired in:
+// "overdue" if the installment was already past due when notified, else
+// "due_soon" — so a due-soon alert still gets its overdue follow-up later.
+// Runs once (runOnce): "" is never written for this rule type afterwards.
+func BackfillInstallmentAlertContexts(db *gorm.DB) error {
+	return runOnce(db, installmentAlertContextsBackfill, func(tx *gorm.DB) error {
+		err := tx.Exec(`
+			UPDATE notification_logs nl
+			SET context = CASE WHEN pi.due_date < nl.notified_at THEN 'overdue' ELSE 'due_soon' END
+			FROM notification_rules r, payment_installments pi
+			WHERE nl.rule_id = r.id AND r.entity_type = ? AND nl.context = '' AND pi.id = nl.entity_id`,
+			models.NotificationEntityPaymentInstallment).Error
+		if err != nil {
+			return fmt.Errorf("backfill installment alert contexts: %w", err)
+		}
+		return nil
+	})
 }
 
 // companySizeLegacyNames maps each current default Company Size name

@@ -136,7 +136,7 @@ func TestPaymentInstallmentRule_TaskTitleAndPriority(t *testing.T) {
 		Method: models.PaymentMethodTransfer, InstallmentID: &first.ID}).Error)
 
 	rule := seedRule(t, db, models.NotificationEntityPaymentInstallment, 7, true)
-	checkPaymentInstallmentDueRule(db, testutil.Config(), rule)
+	checkPaymentInstallmentDueRule(db, testutil.Config(), rule, time.Now())
 
 	tasks := tasksFor(t, db)
 	byTitle := map[string]models.Task{}

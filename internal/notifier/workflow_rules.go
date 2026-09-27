@@ -54,7 +54,7 @@ func checkWorkflowRules(db *gorm.DB, cfg *config.Config) {
 		case models.NotificationEntityCompany:
 			checkCompanyDormantRule(db, cfg, rule)
 		case models.NotificationEntityPaymentInstallment:
-			checkPaymentInstallmentDueRule(db, cfg, rule)
+			checkPaymentInstallmentDueRule(db, cfg, rule, time.Now())
 		case models.NotificationEntityCustomerProductRenewal:
 			checkCustomerProductRenewalRule(db, cfg, rule, time.Now())
 		case models.NotificationEntityContractExpiry:
@@ -358,14 +358,32 @@ func checkContractStuckRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 	}
 }
 
-// checkPaymentInstallmentDueRule — fires once per non-fully-paid
+// Installment alert contexts: the rule fires once per installment per
+// state, so the "due soon" reminder doesn't use up the dedupe key and
+// swallow the later, higher-priority "overdue" one.
+const (
+	installmentContextDueSoon = "due_soon"
+	installmentContextOverdue = "overdue"
+)
+
+// installmentAlertContext is the NotificationLog context for an unpaid
+// installment's current status.
+func installmentAlertContext(status string) string {
+	if status == utils.InstallmentStatusOverdue {
+		return installmentContextOverdue
+	}
+	return installmentContextDueSoon
+}
+
+// checkPaymentInstallmentDueRule — fires for each non-fully-paid
 // PaymentInstallment whose due date falls within rule.ThresholdDays from now
 // (covers both "coming due soon" and "already overdue" in one condition —
-// see NotificationRule's own doc comment). Status is derived the same way
+// see NotificationRule's own doc comment): at most once while it's due soon
+// and once more when it becomes overdue (installmentAlertContext). Status is derived the same way
 // the Payment Schedule UI and the Outstanding Balance report do
 // (utils.ComputeInstallmentStatuses), grouped by Deal since the waterfall
 // allocation needs each Deal's own running total-paid.
-func checkPaymentInstallmentDueRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule) {
+func checkPaymentInstallmentDueRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, now time.Time) {
 	var installments []models.PaymentInstallment
 	if err := db.Find(&installments).Error; err != nil {
 		log.Printf("notifier: failed to query payment installments for rule %d: %v", rule.ID, err)
@@ -404,7 +422,6 @@ func checkPaymentInstallmentDueRule(db *gorm.DB, cfg *config.Config, rule models
 		paymentsByDeal[p.DealID] = append(paymentsByDeal[p.DealID], p)
 	}
 
-	now := time.Now()
 	cutoff := now.Add(time.Duration(rule.ThresholdDays) * 24 * time.Hour)
 
 	for dealID, dealInstallments := range byDeal {
@@ -417,7 +434,8 @@ func checkPaymentInstallmentDueRule(db *gorm.DB, cfg *config.Config, rule models
 			if s.Installment.DueDate.After(cutoff) {
 				continue
 			}
-			if alreadyNotified(db, rule.ID, s.Installment.ID, "") {
+			context := installmentAlertContext(s.Status)
+			if alreadyNotified(db, rule.ID, s.Installment.ID, context) {
 				continue
 			}
 
@@ -435,7 +453,7 @@ func checkPaymentInstallmentDueRule(db *gorm.DB, cfg *config.Config, rule models
 				priority = models.TaskPriorityHigh
 			}
 			fireRule(db, cfg, rule, ruleFiring{
-				EntityID: s.Installment.ID, OwnerID: deal.AssignedTo,
+				EntityID: s.Installment.ID, Context: context, OwnerID: deal.AssignedTo,
 				Subject: fmt.Sprintf("Payment installment due: %s", deal.Title),
 				Body: fmt.Sprintf(
 					"Reminder: a payment installment on the following deal is %s.\n\nDeal: %s\nAmount: %.2f\nDue date: %s\n",
