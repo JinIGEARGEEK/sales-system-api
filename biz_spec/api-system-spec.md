@@ -593,6 +593,9 @@ interface PaymentInstallment {
 }
 
 type InstallmentComputedStatus = 'paid' | 'partial' | 'overdue' | 'upcoming'
+// 'paid' once covered to within 0.005 baht (float rounding on cash + WHT).
+// 'overdue' from the calendar day after due_date (server-local), not on the
+// due date itself — since 2026-09-27, matching the report's days_overdue.
 
 interface InstallmentStatus {
   installment: PaymentInstallment
@@ -698,7 +701,7 @@ interface Contract {
 | `POST` | `/deals/:dealId/contracts` | Create. |
 | `PUT` | `/contracts/:id` | Update status/`quote_id`. |
 | `POST` | `/contracts/:id/upload` | Upload the signed document (§6.1) → sets `signed_file_url`/`signed_date`. |
-| `GET` | `/contracts/:id/export-pdf` | Returns a generated PDF pulling line items/total from the linked Quote (if any), Deal/Company header, and Company `legal_name`/`address`/`tax_id` (§4) as the registered party details. Since 2026-09-27 the address line appends `postal_code`, and the tax ID line names the branch ("Head office" for `00000`, else "Branch 00001"), via `utils.CompanyPartyLines`, shared with the Quote PDF. English only, because the core Arial font has no Thai glyphs. |
+| `GET` | `/contracts/:id/export-pdf` | Returns a generated PDF pulling line items/total from the linked Quote (if any), Deal/Company header, and Company `legal_name`/`address`/`tax_id` (§4) as the registered party details. Since 2026-09-27 the address line appends `postal_code`, and the tax ID line names the branch the way Thai tax documents do ("สำนักงานใหญ่" for `00000`, else "สาขาที่ 00001"), via `utils.CompanyPartyLines`, shared with the Quote PDF. Labels are English; values print in Thai too, since the PDF embeds the Sarabun font. Long party lines (e.g. a full Thai address) wrap rather than being clipped (2026-09-27). |
 
 ### 8.2 Product Catalog & Customer-Product tracking (`FR-CRM-060`–`066`)
 
@@ -789,7 +792,7 @@ Six more, going beyond the dashboard's aggregate stat cards into "which specific
 |---|---|---|
 | `GET` | `/reports/win-loss-reasons?date_from=&date_to=&assigned_to=&company_tag=` | `FR-CRM-093`. Every closed Deal (`won` or `lost`), grouped by `"won"` or its `lost_reason` code — `[{ reason, count, value }]`, sorted by `count` descending. Answers "why are we losing," not just the dashboard's win-rate number. A lost Deal missing `lost_reason` (shouldn't happen given `lost_reason`'s required-on-Lost validation, but tolerated defensively) groups under `"other"` rather than being dropped. |
 | `GET` | `/reports/stalled-deals?min_days=&assigned_to=&company_tag=` | `FR-CRM-094`. Open Deals with no logged Activity for at least `min_days` (default 14, falling back to the Deal's own `created_at` if it has never had one) — `[{ deal_id, title, company_name, stage, value, assigned_to, last_activity_at, days_stalled }]`, sorted by `days_stalled` descending (coldest first). Surfaces deals quietly going cold, not yet marked Lost. |
-| `GET` | `/reports/outstanding-balance?assigned_to=&company_tag=` | `FR-CRM-095`. Won Deals whose recorded Payments sum to less than the Deal's `value` — `[{ deal_id, deal_title, company_name, deal_value, paid_amount, outstanding_amount, aging }]`, sorted by `outstanding_amount` descending, every row money still owed. `aging` is `'overdue' \| 'upcoming' \| 'none'` — added 2026-09-15 alongside §7.5a's Payment Installment schedule: `'none'` when the Deal has no installment schedule defined (this report's original, pre-`aging` behavior, unchanged), otherwise `'overdue'` if any of that Deal's installments is overdue per §7.5a's waterfall helper (`utils.ComputeInstallmentStatuses`, run against this row's own `paid_amount`), else `'upcoming'`. Batches every row's installments in one query (`applyOutstandingBalanceAging`), not N+1 per row. |
+| `GET` | `/reports/outstanding-balance?assigned_to=&company_tag=` | `FR-CRM-095`. Won Deals whose recorded Payments sum to less than the Deal's `value` — `[{ deal_id, deal_title, company_name, deal_value, paid_amount, outstanding_amount, aging }]`, sorted by `outstanding_amount` descending, every row money still owed. `aging` is `'overdue' \| 'upcoming' \| 'none'` — added 2026-09-15 alongside §7.5a's Payment Installment schedule: `'none'` when the Deal has no installment schedule defined (this report's original, pre-`aging` behavior, unchanged), otherwise `'overdue'` if any of that Deal's installments is overdue per §7.5a's waterfall helper (`utils.ComputeInstallmentStatusesFromPayments`, run against this Deal's Payments), else `'upcoming'`. Batches every row's installments in one query (`applyOutstandingBalanceAging`), not N+1 per row. **2026-09-27:** `receivable_amount` is the latest Accepted Quote's taxable amount + VAT (`receivable_source: 'quote'`) only when that quote has priced line items; otherwise (no Accepted quote, or e.g. an uploaded PDF whose extraction found no items) the Deal `value` (`'deal_value'`); `outstanding_amount` = receivable − `paid_amount` − `wht_amount`, rows within 0.005 of zero dropped. |
 | `GET` | `/reports/quotes-expiring-soon?within_days=&assigned_to=&company_tag=` | `FR-CRM-096`. Sent quotes (not yet Accepted/Rejected) whose `validity_date` falls within the next `within_days` (default 7) — `[{ quote_id, deal_id, deal_title, company_name, validity_date, total_value }]`, sorted by `validity_date` ascending (soonest-to-expire first). The forward-looking mirror of `Quote`'s `EffectiveStatus`-derived `expired` state (§7.4) — same permissive RFC3339-or-bare-date `validity_date` parsing, a value that fails to parse is silently skipped rather than erroring the whole report. `assigned_to`/`company_tag` match against each quote's parent Deal (there's no single SQL join spanning quotes/deals/companies here, so this is resolved in application code). |
 | `GET` | `/reports/contracts-stuck?min_days=&assigned_to=&company_tag=` | `FR-CRM-097`. Contracts sitting in `draft` or `sent` for at least `min_days` (default 14) without being signed — `[{ contract_id, deal_id, deal_title, company_name, status, assigned_to, days_in_status }]`, sorted by `days_in_status` descending (longest-stalled first). `assigned_to` here is the parent Deal's assignee, not a field on `Contract` itself. `Contract` has no start/end date to measure true expiration by (only `signed_date`, set once actually signed), so this tracks staleness before signature instead — the contract-side equivalent of `stalled-deals` above. |
 | `GET` | `/reports/projects-at-risk?company_tag=` | `FR-CRM-098`. Projects whose `target_end_date` has already passed but whose `status` isn't `Completed`/`Cancelled` — `[{ project_id, name, company_id, company_name, status, target_end_date, days_overdue }]`, sorted by `days_overdue` descending. The delivery-side equivalent of `stalled-deals`, for whoever owns customer-delivery visibility (§8.3). No `assigned_to` filter — `Project` has no owner/assignee field, only a Company FK. |
@@ -961,7 +964,8 @@ interface NotificationRule {
                              // installment (per §7.5a's waterfall status) whose due_date falls
                              // within threshold_days from now, covering both "coming due soon"
                              // and "already overdue" in one condition, same single-direction
-                             // shape every other entity_type above uses.
+                             // shape every other entity_type above uses. Since 2026-09-27 it
+                             // fires once while due soon and once more when overdue.
   recipient_role: NotificationRecipientRole
   is_active: boolean
   created_at: string
@@ -971,7 +975,10 @@ interface NotificationLogEntry {
   id: number
   rule_id: number
   entity_id: number
-  context: string          // the Deal's stage at the time of firing (for "deal" rules); "" otherwise
+  context: string          // the dedupe key per entity: Deal stage ("deal"), Prospect status
+                           // ("prospect"), stale tier ("company"), "due_soon"/"overdue"
+                           // ("payment_installment", since 2026-09-27), the date
+                           // (renewal/contract_expiry); "" for "quote"/"contract"
   notified_at: string
 }
 ```
@@ -981,6 +988,8 @@ interface NotificationLogEntry {
 | `GET` / `POST` | `/admin/notification-rules` | Admin | List / create a `NotificationRule`. |
 | `PATCH` / `DELETE` | `/admin/notification-rules/:id` | Admin | Update / delete. |
 | `GET` | `/notification-log` | any authenticated | Recent rule firings for the caller's own entities (per-row ownership scoping happens inside the handler, not a role gate) — powers an in-app notification feed. |
+
+Rule owner (since 2026-09-27): a firing's Task and owner email go only to an **active** owner. A deactivated owner counts as no owner: with `owner_and_managers` the managers are still emailed and the firing is logged; with nobody at all to alert nothing is logged, so the rule fires for whoever the record is reassigned to.
 
 ### 8.9 Open API (external integrations) — added 2026-09-11
 

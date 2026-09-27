@@ -40,7 +40,7 @@ Follow-ups so the accounting sync can match Companies reliably.
 
 **Search covers tax IDs.** `?search=` also matches `tax_id`, with the term's spaces/dashes dropped. A term with nothing left after that ("-") skips the tax ID column rather than matching every row.
 
-**PDFs.** Quote and Contract PDFs append `postal_code` to the address line and print the branch with the tax ID ("Tax ID: 0105555555555 (Head office)", "(Branch 00001)"). Both now share `utils.CompanyPartyLines` instead of duplicating the block, and `handlers.derefStr` is replaced by the shared `utils.DerefString`.
+**PDFs.** Quote and Contract PDFs append `postal_code` to the address line and print the branch with the tax ID ("Tax ID: 0105555555555 (สำนักงานใหญ่)", "(สาขาที่ 00001)", the wording on Thai tax documents). Both now share `utils.CompanyPartyLines` instead of duplicating the block, and `handlers.derefStr` is replaced by the shared `utils.DerefString`.
 
 **Swagger.** `docs/swagger.json`/`.yaml` are regenerated, which also picks up earlier annotation changes never regenerated. Company Create/Update now document their `409`/`422` responses (the old `400` note wrongly listed a missing name, which is a `422`). `cmd/api/main.go` now defines the `ApiKeyAuth` (`X-API-Key`) scheme the Open API routes were already tagged with. `docs/embed.go`'s regen steps note to delete the `docs/docs.go` swag also writes.
 

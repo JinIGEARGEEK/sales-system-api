@@ -70,7 +70,7 @@ See [`.env.example`](.env.example). Notable ones:
 
 ### Task due-date reminders
 
-A background goroutine (`internal/notifier`) polls every 15 minutes for pending Tasks whose `due_date` has passed and haven't been notified yet, and emails the assignee (via `SMTP_*` above) with the task title, due date, and related Deal/Contact/Company name when resolvable. Each task is marked with `notified_at` after sending so the reminder only goes out once. A failed send (or missing SMTP config) is logged and does not block other tasks' reminders.
+A background goroutine (`internal/notifier`) polls every 15 minutes for pending Tasks whose `due_date` has passed and haven't been notified yet, and emails the assignee (via `SMTP_*` above) with the task title, due date, and related Deal/Contact/Company name when resolvable. Each task is marked with `notified_at` after sending so the reminder only goes out once. A failed send is logged and does not block other tasks' reminders; with SMTP unset, sends no-op silently (logged once at startup, see `SMTP_HOST` above) and tasks are still marked, so turning SMTP on later doesn't email a backlog.
 
 Admin-configurable Notification Rules (`/admin/notification-rules`, `internal/notifier/workflow_rules.go`) run on the same interval and, besides emailing, create a Task for the record's owner (`create_task`, default on) — so every alert reaches someone in-app even with SMTP off. Each firing is recorded in `notification_logs` (also listed by `GET /notification-log`), which is what stops it firing twice.
 
@@ -88,7 +88,7 @@ All routes are prefixed `/api/v1`. Auth is a Bearer JWT (`Authorization: Bearer 
 
 Resources: Auth & Users, Leads, Prospects, Companies, Contacts, Deals, Activities, Tags, Quotes, Payments, Tasks, Contracts, Products & Customer-Products, Projects, Reports, Audit log, Dashboard aggregate. See `biz_spec/api-system-spec.md` for the full endpoint list, request/response shapes, filters, and per-endpoint status (🟢 required / 🔜 planned).
 
-In development (`APP_ENV=development`), a browsable Swagger UI is also served at `GET /swagger/index.html`, generated from `@`-annotated handler doc comments — currently a scaffold covering `/admin/pipeline-stages`, `/admin/prospect-stages`, and `/dashboard/summary` (see `docs/embed.go` for the regen command). `biz_spec/api-system-spec.md` remains the complete, authoritative reference.
+In development (`APP_ENV=development`), a browsable Swagger UI is also served at `GET /swagger/index.html`, generated from `@`-annotated handler doc comments, which cover most routes (see `docs/embed.go` for the regen command). `biz_spec/api-system-spec.md` remains the complete, authoritative reference.
 
 `POST /auth/login` is rate-limited to 10 attempts/minute per client IP (resolved from `X-Forwarded-For` behind Railway's proxy, falling back to the raw connection address for local/direct connections) — see `internal/routes/routes.go`.
 
