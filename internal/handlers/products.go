@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -257,11 +256,6 @@ func applyCustomerProductEndDate(c *fiber.Ctx, record *models.CustomerProduct, e
 	return true
 }
 
-func keyPresent(raw map[string]json.RawMessage, key string) bool {
-	_, ok := raw[key]
-	return ok
-}
-
 // applyRenewalFields validates and writes renewal_date/billing_cycle/price —
 // shared by AddForCompany and UpdateCustomerProduct. present reports which
 // keys the body actually contained (Update merges; Create passes every key
@@ -406,8 +400,8 @@ func (h *ProductHandler) UpdateCustomerProduct(c *fiber.Ctx) error {
 	}
 	oldStatus := record.Status
 
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(c.Body(), &raw); err != nil {
+	raw, ok := bodyKeys(c)
+	if !ok {
 		return utils.BadRequest(c, "Invalid request body")
 	}
 	var form customerProductUpdateForm
@@ -421,11 +415,11 @@ func (h *ProductHandler) UpdateCustomerProduct(c *fiber.Ctx) error {
 	if form.Status != "" {
 		record.Status = form.Status
 	}
-	if !applyCustomerProductEndDate(c, &record, form.EndDate, keyPresent(raw, "end_date")) {
+	if !applyCustomerProductEndDate(c, &record, form.EndDate, raw.has("end_date")) {
 		return nil
 	}
 
-	if !applyRenewalFields(c, &record, form.RenewalDate, form.BillingCycle, form.Price, func(k string) bool { _, ok := raw[k]; return ok }) {
+	if !applyRenewalFields(c, &record, form.RenewalDate, form.BillingCycle, form.Price, raw.has) {
 		return nil
 	}
 

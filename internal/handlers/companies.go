@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -197,14 +196,6 @@ func sameOptionalString(a, b *string) bool {
 	return *a == *b
 }
 
-// jsonBodyKeys returns the top-level keys of a JSON request body. A non-JSON
-// body (BodyParser also accepts form encoding) gives an empty map.
-func jsonBodyKeys(c *fiber.Ctx) map[string]json.RawMessage {
-	var raw map[string]json.RawMessage
-	_ = json.Unmarshal(c.Body(), &raw)
-	return raw
-}
-
 // validateCompanyForm runs every check CompanyHandler.Create and Update
 // share: required name, website format, five-digit branch_code/postal_code,
 // active size/revenue_size, status, and the website and tax-ID-plus-branch
@@ -248,11 +239,11 @@ func validateCompanyForm(c *fiber.Ctx, db *gorm.DB, form companyForm, current *m
 		return companyFormResult{}, utils.ErrHandled
 	}
 	if current != nil {
-		keys := jsonBodyKeys(c)
-		if _, sent := keys["branch_code"]; !sent {
+		keys, _ := bodyKeys(c)
+		if !keys.has("branch_code") {
 			branchCode = current.BranchCode
 		}
-		if _, sent := keys["postal_code"]; !sent {
+		if !keys.has("postal_code") {
 			postalCode = current.PostalCode
 		}
 	}

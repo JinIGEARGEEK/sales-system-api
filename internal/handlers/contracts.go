@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -64,17 +63,6 @@ func applyContractEndDate(c *fiber.Ctx, contract *models.Contract, endDate *stri
 	}
 	contract.EndDate = &d
 	return true
-}
-
-// bodyHasKey reports whether the JSON body has key at the top level, so a
-// handler can tell an omitted field from an explicit null.
-func bodyHasKey(c *fiber.Ctx, key string) bool {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(c.Body(), &raw); err != nil {
-		return false
-	}
-	_, ok := raw[key]
-	return ok
 }
 
 // validateContractForm checks status enum membership and, if quote_id is
@@ -178,7 +166,7 @@ func (h *ContractHandler) Update(c *fiber.Ctx) error {
 	if form.QuoteID != nil {
 		contract.QuoteID = form.QuoteID
 	}
-	if !applyContractEndDate(c, &contract, form.EndDate, bodyHasKey(c, "end_date")) {
+	if !applyContractEndDate(c, &contract, form.EndDate, bodyHas(c, "end_date")) {
 		return nil
 	}
 

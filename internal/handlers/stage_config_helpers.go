@@ -19,12 +19,12 @@ const maxStaleDays = 365
 // the key was in the body at all. value is nil for an explicit null (use
 // models.DefaultStaleDays). fields is set when the value is invalid.
 func staleDaysFromBody(c *fiber.Ctx) (value *int, present bool, fields map[string][]string) {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(c.Body(), &raw); err != nil {
+	raw, ok := bodyKeys(c)
+	if !ok {
 		return nil, false, nil
 	}
-	v, ok := raw["stale_days"]
-	if !ok {
+	v, sent := raw["stale_days"]
+	if !sent {
 		return nil, false, nil
 	}
 	if string(v) == "null" {
