@@ -467,6 +467,10 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	authed.Put("/quotes/:id", quoteH.Update)
 	authed.Delete("/quotes/:id", quoteH.Delete)
 	authed.Get("/quotes/:id/export-pdf", quoteH.ExportPDF)
+	// Duplicate goes through salesPipelineRoles like the nested Create it
+	// mirrors (POST /deals/:dealId/quotes), not just authed.
+	authed.Post("/quotes/:id/duplicate", salesPipelineRoles, quoteH.Duplicate)
+	authed.Put("/payments/:id", paymentH.Update)
 	authed.Delete("/payments/:id", paymentH.Delete)
 	authed.Put("/payment-installments/:id", paymentInstallmentH.Update)
 	authed.Delete("/payment-installments/:id", paymentInstallmentH.Delete)
@@ -527,6 +531,8 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	reports := authed.Group("/reports", middleware.RequireRoles(models.RoleAdmin, models.RoleSalesManager))
 	reports.Get("/lead-source-conversion", reportH.LeadSourceConversion)
 	reports.Get("/lead-source-conversion/export", reportH.LeadSourceConversionExport)
+	reports.Get("/source-performance", reportH.SourcePerformance)
+	reports.Get("/source-performance/export", reportH.SourcePerformanceExport)
 	reports.Get("/top-referrers", reportH.TopReferrers)
 	reports.Get("/top-referrers/export", reportH.TopReferrersExport)
 	reports.Get("/customers-by-product-status", reportH.CustomersByProductStatus)

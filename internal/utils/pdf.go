@@ -17,8 +17,10 @@ const HeadOfficeBranchCode = "00000"
 // PDFs print under the company name: the address with the postal code
 // appended, and the tax ID with its branch, since a full tax invoice must
 // say which branch it's for. Without a tax ID the branch prints on its own
-// line. Blank fields are skipped. English only, because the PDFs use the core
-// Arial font, which has no Thai glyphs.
+// line. Blank fields are skipped. The branch prints the way Thai tax
+// documents word it ("สำนักงานใหญ่" / "สาขาที่ 00001") — the PDFs embed the
+// Thai-capable PDFFont, so it renders — while the field labels stay English
+// to match the rest of the document.
 func CompanyPartyLines(company models.Company) []string {
 	var lines []string
 	if address := strings.TrimSpace(DerefString(company.Address) + " " + DerefString(company.PostalCode)); address != "" {
@@ -31,21 +33,22 @@ func CompanyPartyLines(company models.Company) []string {
 	case taxID != "":
 		lines = append(lines, "Tax ID: "+taxID)
 	case branch != "":
-		lines = append(lines, "Branch: "+strings.TrimPrefix(branch, "Branch "))
+		lines = append(lines, "Branch: "+branch)
 	}
 	return lines
 }
 
-// branchLabel names a branch code the way a tax document does: "Head office"
-// for 00000, else "Branch 00001". Blank for no code.
+// branchLabel names a branch code the way a Thai tax document does:
+// "สำนักงานใหญ่" (head office) for 00000, else "สาขาที่ 00001". Blank for no
+// code.
 func branchLabel(code string) string {
 	switch code {
 	case "":
 		return ""
 	case HeadOfficeBranchCode:
-		return "Head office"
+		return "สำนักงานใหญ่"
 	default:
-		return "Branch " + code
+		return "สาขาที่ " + code
 	}
 }
 
@@ -81,7 +84,7 @@ func RenderQuoteItemsTable(pdf *fpdf.Fpdf, items []models.QuoteItem) float64 {
 
 func renderItemsTable(pdf *fpdf.Fpdf, items []models.QuoteItem, showDiscount bool, totalLabel string) float64 {
 	descColWidth := 90.0
-	pdf.SetFont("Arial", "B", 10)
+	pdf.SetFont(PDFFont, "B", 10)
 	pdf.CellFormat(descColWidth, 8, "Description", "1", 0, "L", false, 0, "")
 	pdf.CellFormat(20, 8, "Qty", "1", 0, "R", false, 0, "")
 	pdf.CellFormat(30, 8, "Unit Price", "1", 0, "R", false, 0, "")
@@ -91,7 +94,7 @@ func renderItemsTable(pdf *fpdf.Fpdf, items []models.QuoteItem, showDiscount boo
 	}
 	pdf.CellFormat(30, 8, "Total", "1", 1, "R", false, 0, "")
 
-	pdf.SetFont("Arial", "", 10)
+	pdf.SetFont(PDFFont, "", 10)
 	const lineHeight = 5.0
 	var grandTotal float64
 	for _, item := range items {
@@ -123,7 +126,7 @@ func renderItemsTable(pdf *fpdf.Fpdf, items []models.QuoteItem, showDiscount boo
 		}
 		pdf.CellFormat(30, rowHeight, fmt.Sprintf("%.2f", lineTotal), "1", 1, "R", false, 0, "")
 	}
-	pdf.SetFont("Arial", "B", 10)
+	pdf.SetFont(PDFFont, "B", 10)
 	labelWidth := 150.0
 	if showDiscount {
 		labelWidth = 165.0

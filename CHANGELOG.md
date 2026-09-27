@@ -4,6 +4,28 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-09-27 — In-app alerts without SMTP, payment tax fields, receivables, renewals, Thai PDFs
+
+The company runs without SMTP, so alerts now arrive in-app, and payments carry what Thai accounting needs.
+
+**Email-free operation.** With `SMTP_HOST` unset the server logs "email is disabled" once at startup (`utils.LogMailStatus`) and `SendMail` no-ops silently — no per-recipient log line every 15 minutes, no errors. Tickers still do their in-app work. `POST /admin/weekly-digest/test` still `422`s without SMTP, on purpose.
+
+**Rules create Tasks.** A `NotificationRule` firing also creates a Task for the owner (new `create_task`, default `true`, existing rules migrated to `true`): due today, `high` for an overdue installment else `medium`, related to the Deal (deal/quote/contract/installment/contract_expiry), Company (company, customer_product_renewal) or Prospect. Deduped by the `NotificationLog` insert (`ON CONFLICT DO NOTHING`, same transaction as the Task). Rule Tasks are pre-stamped `notified_at`. Rule Create now keeps an explicit `is_active`/`create_task` `false`.
+
+**Renewals.** `CustomerProduct` gains `renewal_date` (date), `billing_cycle` (`monthly|yearly|one_time`), `price`; `Contract` gains `end_date` (date). New rule types `customer_product_renewal` and `contract_expiry` fire from `threshold_days` before the date to 30 days after, once per date value; one of each is seeded active (30 days) at boot if none of that type exists.
+
+**Payments.** `wht_amount`, `wht_certificate_received` (50 ทวิ), `document_number` (FlowAccount receipt/tax invoice no.), `installment_id` (same Deal). New `PUT /payments/:id` (partial merge). List adds `total_wht`, `total_settled`. Installment status: linked payments settle their own installment first, the rest waterfalls as before; cash + WHT both count.
+
+**Outstanding balance.** Receivable = latest Accepted Quote's taxable + VAT (before WHT), else `deals.value`; outstanding = receivable − (paid + WHT). New fields `receivable_amount`, `receivable_source`, `wht_amount`, `oldest_overdue_due_date`, `days_overdue`, `aging_bucket`; CSV appends matching columns.
+
+**Source performance.** `GET /reports/source-performance` (+ `/export`): leads → qualified → Won Deals/value → `win_rate` per lead source, attributed through the Lead rather than `deals.channel`; lead-less Won Deals in `direct_*`.
+
+**Duplicate quote.** `POST /quotes/:id/duplicate` → new Draft with a fresh number, `issue_date` today, validity recomputed from the original's term. Fixed: `vat_enabled: false` on quote create/upload was stored as `true`.
+
+**Thai PDFs.** Quote/Contract PDFs embed Sarabun (SIL OFL, `internal/utils/fonts/`), so Thai renders; branch prints as สำนักงานใหญ่ / สาขาที่ 00001.
+
+Regression-guarded: `tests/in_app_alerts_payment_tax_test.go`, `internal/notifier/rule_tasks_test.go`, `internal/handlers/receivables_internal_test.go`, `internal/utils/{mailer,payment_schedule,pdf}_test.go`. Swagger regenerated.
+
 ## 2026-09-27 — Company tax ID matching: normalization, tax ID + branch dedupe, `updated_since`
 
 Follow-ups so the accounting sync can match Companies reliably.

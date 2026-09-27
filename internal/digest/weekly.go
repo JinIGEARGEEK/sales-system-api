@@ -62,7 +62,7 @@ func weekStart(t time.Time) time.Time {
 // morning, the next check catches up. Called hourly by
 // notifier.StartWeeklyDigest.
 func MaybeSendWeekly(db *gorm.DB, cfg *config.Config, now time.Time) error {
-	if cfg == nil || cfg.SMTPHost == "" {
+	if !utils.MailEnabled(cfg) {
 		return nil
 	}
 	var settings models.AppSettings

@@ -61,7 +61,7 @@ See [`.env.example`](.env.example). Notable ones:
 | `JWT_EXPIRY_HOURS` | Access token lifetime |
 | `CORS_ORIGINS` | Comma-separated allow-list of origins. Defaults to `*` (any origin) for local dev; the server refuses to boot with `*` whenever `APP_ENV` is anything other than `development`, same deny-by-default reasoning as `JWT_SECRET` above — set an explicit allow-list in every other environment |
 | `PORT` | HTTP listen port (default `8080`) |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM` | Outbound mail server for the Task due-date reminder emails. Optional — if `SMTP_HOST` is left unset, the mailer logs a warning and skips sending instead of failing, so the app runs fine without these configured. Set all five in production to actually deliver reminder emails. `internal/utils/mailer.go` requires and verifies TLS (implicit TLS on port 465, STARTTLS otherwise) — it refuses to send rather than falling back to a plaintext connection if the server doesn't offer either. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM` | Outbound mail server for the Task due-date reminder emails. Optional — if `SMTP_HOST` is left unset, email is disabled: the server logs that once at startup and every send silently no-ops (no per-message log lines, no errors), while alerts still reach people in-app (Notification Rules create Tasks, `GET /notification-log`). Set all five in production to actually deliver reminder emails. `internal/utils/mailer.go` requires and verifies TLS (implicit TLS on port 465, STARTTLS otherwise) — it refuses to send rather than falling back to a plaintext connection if the server doesn't offer either. |
 | `TZ` | The server's local time zone (e.g. `Asia/Bangkok`, the Docker image's default). Business-day logic uses it: the Overview Pipeline's "today" and period bounds, and the weekly digest's Monday 08:00 send and week boundaries. The binary embeds the tz database, so any IANA name works on the alpine image. |
 | `APP_URL` | The frontend's public base URL (e.g. `https://crm.example.com`), used to link from emails back into the app — currently the weekly Overview Pipeline digest (FR-CRM-124), which is sent every Monday from 08:00 server-local time to active Admins/Sales Managers when SMTP is configured and the CRM Settings switch is on. Optional: the email just omits the link when unset. |
 | `STORAGE_BACKEND` | `local` (default) or `s3` — where Quote/Contract/Attachment uploads are stored. See [`biz_spec/s3-migration-plan.md`](biz_spec/s3-migration-plan.md). |
@@ -71,6 +71,8 @@ See [`.env.example`](.env.example). Notable ones:
 ### Task due-date reminders
 
 A background goroutine (`internal/notifier`) polls every 15 minutes for pending Tasks whose `due_date` has passed and haven't been notified yet, and emails the assignee (via `SMTP_*` above) with the task title, due date, and related Deal/Contact/Company name when resolvable. Each task is marked with `notified_at` after sending so the reminder only goes out once. A failed send (or missing SMTP config) is logged and does not block other tasks' reminders.
+
+Admin-configurable Notification Rules (`/admin/notification-rules`, `internal/notifier/workflow_rules.go`) run on the same interval and, besides emailing, create a Task for the record's owner (`create_task`, default on) — so every alert reaches someone in-app even with SMTP off. Each firing is recorded in `notification_logs` (also listed by `GET /notification-log`), which is what stops it firing twice.
 
 ## Testing
 

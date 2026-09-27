@@ -6,7 +6,6 @@ import (
 	"io"
 	"time"
 
-	"github.com/go-pdf/fpdf"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
@@ -235,17 +234,36 @@ func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 	// a DB constraint error) must roll the sequence increment back too, or a
 	// retried create after a failed save would burn numbers.
 	err = h.DB.Transaction(func(tx *gorm.DB) error {
-		number, err := utils.NextDocumentNumber(tx, "QT", time.Now())
-		if err != nil {
-			return err
-		}
-		quote.Number = &number
-		return tx.Create(&quote).Error
+		return createQuoteNumbered(tx, &quote, time.Now())
 	})
 	if err != nil {
 		return utils.Internal(c, "Failed to create quote")
 	}
 	return utils.Created(c, withEffectiveStatus(quote))
+}
+
+// createQuoteNumbered assigns the next QT number and inserts quote inside
+// tx. VatEnabled is NOT NULL DEFAULT true, and GORM omits a false defaulted
+// field from the INSERT (then reads the default back into the struct), so a
+// no-VAT quote used to be saved — and totalled — with 7% VAT. The intended
+// value is written explicitly afterwards.
+func createQuoteNumbered(tx *gorm.DB, quote *models.Quote, now time.Time) error {
+	number, err := utils.NextDocumentNumber(tx, "QT", now)
+	if err != nil {
+		return err
+	}
+	quote.Number = &number
+	vatEnabled := quote.VatEnabled
+	if err := tx.Create(quote).Error; err != nil {
+		return err
+	}
+	if !vatEnabled {
+		if err := tx.Model(quote).UpdateColumn("vat_enabled", false).Error; err != nil {
+			return err
+		}
+		quote.VatEnabled = false
+	}
+	return nil
 }
 
 // Upload — POST /deals/:dealId/quotes/upload. Uploads a PDF quote in place of
@@ -339,12 +357,7 @@ func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 		quote.ExtractionStatus = &failed
 	}
 	err = h.DB.Transaction(func(tx *gorm.DB) error {
-		number, err := utils.NextDocumentNumber(tx, "QT", now)
-		if err != nil {
-			return err
-		}
-		quote.Number = &number
-		return tx.Create(&quote).Error
+		return createQuoteNumbered(tx, &quote, now)
 	})
 	if err != nil {
 		return utils.Internal(c, "Failed to create quote")
@@ -430,6 +443,82 @@ func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	return utils.OK(c, withEffectiveStatus(quote))
 }
 
+// duplicateQuoteDates returns the copy's issue date (today, local) and its
+// validity/due date. Create takes both dates from the client verbatim, so
+// "recompute the same way" here means keeping the original's credit term:
+// the gap between the original's issue and validity dates when both parse,
+// else CreditDays when set (it is the credit term behind ValidityDate), else
+// no validity date. Dates are written as bare YYYY-MM-DD, a format
+// ParseFlexDate already accepts everywhere these fields are read.
+func duplicateQuoteDates(src models.Quote, now time.Time) (issue string, validity *string) {
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	issue = today.Format("2006-01-02")
+
+	days := -1
+	if from, ok := models.ParseFlexDate(src.IssueDate); ok {
+		if until, ok := models.ParseFlexDate(src.ValidityDate); ok {
+			fromDay := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, time.UTC)
+			untilDay := time.Date(until.Year(), until.Month(), until.Day(), 0, 0, 0, 0, time.UTC)
+			if d := int(untilDay.Sub(fromDay).Hours() / 24); d >= 0 {
+				days = d
+			}
+		}
+	}
+	if days < 0 && src.CreditDays > 0 {
+		days = src.CreditDays
+	}
+	if days < 0 {
+		return issue, nil
+	}
+	v := today.AddDate(0, 0, days).Format("2006-01-02")
+	return issue, &v
+}
+
+// Duplicate godoc
+// @Summary Duplicate a quote as a new Draft (Admin/Sales Rep/Sales Manager/Marketing)
+// @Description Creates a new Draft Quote on the same Deal, copying every editable field (items, scope_of_work, reference_number, credit_days, price_type, vat_enabled, wht_enabled, wht_rate, discount_total, notes, internal_notes). The copy gets a new server-generated number, issue_date = today, and validity_date = today + the original's issue→validity gap (else + credit_days, else null). Never copied: status (always draft), uploaded file fields, extraction_status/warnings. Same permission as creating a quote on that Deal.
+// @Tags quotes
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "Quote ID to copy"
+// @Success 201 {object} models.Quote
+// @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
+// @Failure 404 {object} map[string]interface{} "Quote not found, or deal not found"
+// @Router /quotes/{id}/duplicate [post]
+func (h *QuoteHandler) Duplicate(c *fiber.Ctx) error {
+	var src models.Quote
+	if err := utils.FindByID(c, h.DB, &src, "Quote not found"); err != nil {
+		return nil
+	}
+	deal, err := dealForSubResource(c, h.DB, fmt.Sprint(src.DealID))
+	if err != nil {
+		return respondFindErr(c, err, "Deal not found")
+	}
+
+	now := time.Now()
+	issue, validity := duplicateQuoteDates(src, now)
+	items := make(models.JSONItems, len(src.Items))
+	copy(items, src.Items)
+	quote := models.Quote{
+		DealID: deal.ID, Items: items, ScopeOfWork: src.ScopeOfWork,
+		ValidityDate: validity, IssueDate: &issue, Status: models.QuoteStatusDraft,
+		ReferenceNumber: src.ReferenceNumber, CreditDays: src.CreditDays, PriceType: src.PriceType,
+		VatEnabled: src.VatEnabled, WhtEnabled: src.WhtEnabled, WhtRate: src.WhtRate,
+		DiscountTotal: src.DiscountTotal, Notes: src.Notes, InternalNotes: src.InternalNotes,
+	}
+	if quote.PriceType == "" {
+		quote.PriceType = models.QuotePriceTypeExclTax
+	}
+
+	err = h.DB.Transaction(func(tx *gorm.DB) error {
+		return createQuoteNumbered(tx, &quote, now)
+	})
+	if err != nil {
+		return utils.Internal(c, "Failed to duplicate quote")
+	}
+	return utils.Created(c, withEffectiveStatus(quote))
+}
+
 // Delete godoc
 // @Summary Delete a quote
 // @Description Hard delete of a Quote. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.
@@ -478,17 +567,17 @@ func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 	var contact models.Contact
 	h.DB.First(&contact, deal.ContactID)
 
-	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf := utils.NewPDF()
 	pdf.AddPage()
 
-	pdf.SetFont("Arial", "B", 16)
+	pdf.SetFont(utils.PDFFont, "B", 16)
 	pdf.Cell(0, 10, "Quotation")
 	if quote.Number != nil {
 		pdf.Cell(0, 10, fmt.Sprintf("  %s", *quote.Number))
 	}
 	pdf.Ln(12)
 
-	pdf.SetFont("Arial", "", 11)
+	pdf.SetFont(utils.PDFFont, "", 11)
 	pdf.Cell(0, 6, fmt.Sprintf("Deal: %s", deal.Title))
 	pdf.Ln(6)
 	// Same party-info block Contract's export already renders (name/address/
@@ -528,10 +617,10 @@ func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 	pdf.Ln(10)
 
 	if quote.ScopeOfWork != "" {
-		pdf.SetFont("Arial", "B", 11)
+		pdf.SetFont(utils.PDFFont, "B", 11)
 		pdf.Cell(0, 6, "Scope of Work")
 		pdf.Ln(7)
-		pdf.SetFont("Arial", "", 10)
+		pdf.SetFont(utils.PDFFont, "", 10)
 		pdf.MultiCell(0, 5, quote.ScopeOfWork, "", "L", false)
 		pdf.Ln(4)
 	}
@@ -542,7 +631,7 @@ func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 	// utils.ComputeQuoteTotals so this PDF and the edit page's live totals
 	// never disagree.
 	totals := utils.ComputeQuoteTotals(quote.Items, quote.DiscountTotal, quote.VatEnabled, quote.WhtEnabled, quote.WhtRate)
-	pdf.SetFont("Arial", "", 10)
+	pdf.SetFont(utils.PDFFont, "", 10)
 	if quote.DiscountTotal > 0 {
 		pdf.Ln(1)
 		pdf.CellFormat(165, 7, "Discount", "0", 0, "R", false, 0, "")
@@ -556,17 +645,17 @@ func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 		pdf.CellFormat(165, 7, fmt.Sprintf("Withholding Tax (%.1f%%)", quote.WhtRate), "0", 0, "R", false, 0, "")
 		pdf.CellFormat(30, 7, fmt.Sprintf("-%.2f", totals.Wht), "0", 1, "R", false, 0, "")
 	}
-	pdf.SetFont("Arial", "B", 11)
+	pdf.SetFont(utils.PDFFont, "B", 11)
 	pdf.CellFormat(165, 8, "Grand Total", "0", 0, "R", false, 0, "")
 	pdf.CellFormat(30, 8, fmt.Sprintf("%.2f", totals.GrandTotal), "0", 1, "R", false, 0, "")
 	pdf.Ln(6)
 
 	// Notes prints; InternalNotes deliberately never reaches this PDF.
 	if quote.Notes != nil && *quote.Notes != "" {
-		pdf.SetFont("Arial", "B", 10)
+		pdf.SetFont(utils.PDFFont, "B", 10)
 		pdf.Cell(0, 6, "Notes")
 		pdf.Ln(6)
-		pdf.SetFont("Arial", "", 10)
+		pdf.SetFont(utils.PDFFont, "", 10)
 		pdf.MultiCell(0, 5, *quote.Notes, "", "L", false)
 	}
 

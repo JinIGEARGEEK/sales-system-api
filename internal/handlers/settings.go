@@ -188,7 +188,7 @@ func (h *SettingsHandler) WeeklyDigestPreview(c *fiber.Ctx) error {
 // current digest to the calling Admin only, so they can check it arrives and
 // reads well; doesn't touch the Monday schedule.
 func (h *SettingsHandler) SendWeeklyDigestTest(c *fiber.Ctx) error {
-	if h.cfg == nil || h.cfg.SMTPHost == "" {
+	if !utils.MailEnabled(h.cfg) {
 		return utils.ValidationError(c, "Email isn't configured on the server (SMTP_HOST)", map[string][]string{"smtp": {"not_configured"}})
 	}
 	var me models.User

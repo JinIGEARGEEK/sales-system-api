@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/models"
@@ -20,9 +21,10 @@ import (
 const workflowRuleInterval = 15 * time.Minute
 
 // StartWorkflowRuleReminders launches a background goroutine that
-// periodically evaluates every active NotificationRule and emails the
-// resolved recipients for any entity that newly matches. Safe to call even
-// when SMTP isn't configured — utils.SendMail no-ops in that case.
+// periodically evaluates every active NotificationRule and, for any entity
+// that newly matches, creates an in-app Task for its owner (rule.CreateTask)
+// and emails the resolved recipients. The Task is the alert that always
+// arrives: this company runs without SMTP, where utils.SendMail no-ops.
 func StartWorkflowRuleReminders(db *gorm.DB, cfg *config.Config) {
 	ticker := time.NewTicker(workflowRuleInterval)
 	go func() {
@@ -53,12 +55,18 @@ func checkWorkflowRules(db *gorm.DB, cfg *config.Config) {
 			checkCompanyDormantRule(db, cfg, rule)
 		case models.NotificationEntityPaymentInstallment:
 			checkPaymentInstallmentDueRule(db, cfg, rule)
+		case models.NotificationEntityCustomerProductRenewal:
+			checkCustomerProductRenewalRule(db, cfg, rule, time.Now())
+		case models.NotificationEntityContractExpiry:
+			checkContractExpiryRule(db, cfg, rule, time.Now())
 		}
 	}
 }
 
 // alreadyNotified/recordNotified — the (rule_id, entity_id, context)
-// idempotency check shared by all three condition types. See
+// idempotency check shared by every condition type. alreadyNotified is a
+// cheap pre-check that skips building a firing; the authoritative dedupe is
+// fireRule's conflict-safe insert. See
 // models.NotificationLog's doc for why `context` varies by entity type
 // (a Deal's current stage, so re-idling in a new stage can re-fire; empty
 // for Quote/Contract, which only ever need to fire once per entity).
@@ -115,6 +123,100 @@ func sendRuleNotification(cfg *config.Config, emails []string, subject, body str
 	}
 }
 
+// ruleFiring is one entity a rule matched on this tick: the idempotency key
+// (EntityID, Context), who owns it, the email, and the in-app Task.
+type ruleFiring struct {
+	EntityID uint
+	Context  string
+	// OwnerID is who the Task is assigned to — the same person the email's
+	// "owner" recipient resolves to (for owner_and_managers, only the owner
+	// gets a Task; managers see it through the task list / notification log).
+	OwnerID *uint
+
+	Subject, Body string
+
+	TaskTitle    string
+	TaskPriority models.TaskPriority
+	RelatedType  models.TaskRelatedType
+	RelatedID    uint
+}
+
+// fireRule delivers one firing, at most once per (rule, entity, context).
+//
+// The NotificationLog row is the dedupe key (unique on rule_id, entity_id,
+// context). It is inserted first with ON CONFLICT DO NOTHING, in the same
+// transaction as the Task, so only the firing that actually writes the log
+// row creates a Task — two overlapping ticks (or two API instances) can't
+// both create one, and a failed Task insert rolls the log row back so the
+// next tick retries. Emails go out after commit, best-effort as before.
+//
+// When there is nobody to alert at all (no recipient email and no Task
+// assignee) nothing is recorded, so the firing happens later once the entity
+// gets an owner — the same "skip, don't record" the email-only version did.
+//
+// The Task is due today (end of day, server-local) and is stamped
+// NotifiedAt so task_reminders.go doesn't send a second "task due" email
+// for an alert the rule email already covered.
+func fireRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, f ruleFiring, now time.Time) bool {
+	emails := recipientEmails(db, f.OwnerID, rule.RecipientRole)
+
+	var assignee *uint
+	if rule.CreateTask && f.OwnerID != nil {
+		var count int64
+		db.Model(&models.User{}).Where("id = ?", *f.OwnerID).Count(&count)
+		if count > 0 {
+			assignee = f.OwnerID
+		}
+	}
+	if len(emails) == 0 && assignee == nil {
+		return false
+	}
+
+	fired := false
+	err := db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Clauses(clause.OnConflict{DoNothing: true}).
+			Create(&models.NotificationLog{RuleID: rule.ID, EntityID: f.EntityID, Context: f.Context, NotifiedAt: now})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return nil // already fired for this key
+		}
+		fired = true
+		if assignee == nil {
+			return nil
+		}
+		local := now.In(time.Local)
+		task := models.Task{
+			RelatedType: f.RelatedType, RelatedID: f.RelatedID,
+			Title: f.TaskTitle, Description: f.Body,
+			DueDate:    time.Date(local.Year(), local.Month(), local.Day(), 23, 59, 59, 0, time.Local),
+			Status:     models.TaskStatusPending,
+			Priority:   f.TaskPriority,
+			AssignedTo: assignee,
+			NotifiedAt: &now,
+		}
+		if task.Priority == "" {
+			task.Priority = models.TaskPriorityMedium
+		}
+		return tx.Create(&task).Error
+	})
+	if err != nil {
+		log.Printf("notifier: failed to record rule %d firing for entity %d: %v", rule.ID, f.EntityID, err)
+		return false
+	}
+	if !fired {
+		return false
+	}
+	sendRuleNotification(cfg, emails, f.Subject, f.Body)
+	return true
+}
+
+// daysSince is whole elapsed days, for alert titles ("idle 14 days").
+func daysSince(t, now time.Time) int {
+	return int(now.Sub(t).Hours() / 24)
+}
+
 // checkDealIdleRule — FR-CRM-100. An open Deal (not yet Won/Lost) whose
 // current stage has held for at least rule.ThresholdDays, measured from its
 // most recent "stage_changed" audit entry (deals.go's UpdateStage — the only
@@ -161,19 +263,16 @@ func checkDealIdleRule(db *gorm.DB, cfg *config.Config, rule models.Notification
 			continue
 		}
 
-		emails := recipientEmails(db, deal.AssignedTo, rule.RecipientRole)
-		if len(emails) == 0 {
-			continue
-		}
-		subject := fmt.Sprintf("Deal idle: %s", deal.Title)
-		body := fmt.Sprintf(
-			"Reminder: the following deal has been in stage \"%s\" for %d+ days.\n\nDeal: %s\nStage: %s\n",
-			deal.Stage, rule.ThresholdDays, deal.Title, deal.Stage,
-		)
-		sendRuleNotification(cfg, emails, subject, body)
-		if err := recordNotified(db, rule.ID, deal.ID, context); err != nil {
-			log.Printf("notifier: failed to record notification for deal %d: %v", deal.ID, err)
-		}
+		fireRule(db, cfg, rule, ruleFiring{
+			EntityID: deal.ID, Context: context, OwnerID: deal.AssignedTo,
+			Subject: fmt.Sprintf("Deal idle: %s", deal.Title),
+			Body: fmt.Sprintf(
+				"Reminder: the following deal has been in stage \"%s\" for %d+ days.\n\nDeal: %s\nStage: %s\n",
+				deal.Stage, rule.ThresholdDays, deal.Title, deal.Stage,
+			),
+			TaskTitle:   fmt.Sprintf("Deal idle %d days: %s", daysSince(since, now), deal.Title),
+			RelatedType: models.RelatedTypeDeal, RelatedID: deal.ID,
+		}, now)
 	}
 }
 
@@ -203,19 +302,20 @@ func checkQuoteExpiringRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 		if err := db.First(&deal, quote.DealID).Error; err != nil {
 			continue
 		}
-		emails := recipientEmails(db, deal.AssignedTo, rule.RecipientRole)
-		if len(emails) == 0 {
-			continue
+		quoteLabel := "Quote"
+		if quote.Number != nil {
+			quoteLabel = "Quote " + *quote.Number
 		}
-		subject := fmt.Sprintf("Quote expiring soon: %s", deal.Title)
-		body := fmt.Sprintf(
-			"Reminder: a quote on the following deal expires within %d days.\n\nDeal: %s\nValidity date: %s\n",
-			rule.ThresholdDays, deal.Title, validUntil.Format("2006-01-02"),
-		)
-		sendRuleNotification(cfg, emails, subject, body)
-		if err := recordNotified(db, rule.ID, quote.ID, ""); err != nil {
-			log.Printf("notifier: failed to record notification for quote %d: %v", quote.ID, err)
-		}
+		fireRule(db, cfg, rule, ruleFiring{
+			EntityID: quote.ID, OwnerID: deal.AssignedTo,
+			Subject: fmt.Sprintf("Quote expiring soon: %s", deal.Title),
+			Body: fmt.Sprintf(
+				"Reminder: a quote on the following deal expires within %d days.\n\nDeal: %s\nValidity date: %s\n",
+				rule.ThresholdDays, deal.Title, validUntil.Format("2006-01-02"),
+			),
+			TaskTitle:   fmt.Sprintf("%s expires %s: %s", quoteLabel, validUntil.Format("2006-01-02"), deal.Title),
+			RelatedType: models.RelatedTypeDeal, RelatedID: deal.ID,
+		}, now)
 	}
 }
 
@@ -245,19 +345,16 @@ func checkContractStuckRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 		if err := db.First(&deal, contract.DealID).Error; err != nil {
 			continue
 		}
-		emails := recipientEmails(db, deal.AssignedTo, rule.RecipientRole)
-		if len(emails) == 0 {
-			continue
-		}
-		subject := fmt.Sprintf("Contract unsigned: %s", deal.Title)
-		body := fmt.Sprintf(
-			"Reminder: a contract on the following deal has been unsigned for %d+ days.\n\nDeal: %s\nStatus: %s\n",
-			rule.ThresholdDays, deal.Title, contract.Status,
-		)
-		sendRuleNotification(cfg, emails, subject, body)
-		if err := recordNotified(db, rule.ID, contract.ID, ""); err != nil {
-			log.Printf("notifier: failed to record notification for contract %d: %v", contract.ID, err)
-		}
+		fireRule(db, cfg, rule, ruleFiring{
+			EntityID: contract.ID, OwnerID: deal.AssignedTo,
+			Subject: fmt.Sprintf("Contract unsigned: %s", deal.Title),
+			Body: fmt.Sprintf(
+				"Reminder: a contract on the following deal has been unsigned for %d+ days.\n\nDeal: %s\nStatus: %s\n",
+				rule.ThresholdDays, deal.Title, contract.Status,
+			),
+			TaskTitle:   fmt.Sprintf("Contract unsigned %d days: %s", daysSince(contract.CreatedAt, now), deal.Title),
+			RelatedType: models.RelatedTypeDeal, RelatedID: deal.ID,
+		}, now)
 	}
 }
 
@@ -294,16 +391,17 @@ func checkPaymentInstallmentDueRule(db *gorm.DB, cfg *config.Config, rule models
 	// Installments. This runs on a 15-minute ticker rather than a live
 	// request, so the previous per-Deal query wasn't urgent, but there's no
 	// reason to pay for it once it's this easy to avoid.
-	type paidTotal struct {
-		DealID uint
-		Total  float64
+	//
+	// Loads the Payment rows (not just a SUM) since installment_id links and
+	// WHT both affect allocation (utils.ComputeInstallmentStatusesFromPayments).
+	var payments []models.Payment
+	if err := db.Where("deal_id IN ?", dealIDs).Find(&payments).Error; err != nil {
+		log.Printf("notifier: failed to query payments for rule %d: %v", rule.ID, err)
+		return
 	}
-	var paidTotals []paidTotal
-	db.Model(&models.Payment{}).Select("deal_id, COALESCE(SUM(amount), 0) as total").
-		Where("deal_id IN ?", dealIDs).Group("deal_id").Scan(&paidTotals)
-	totalPaidByDeal := make(map[uint]float64, len(paidTotals))
-	for _, pt := range paidTotals {
-		totalPaidByDeal[pt.DealID] = pt.Total
+	paymentsByDeal := make(map[uint][]models.Payment, len(dealIDs))
+	for _, p := range payments {
+		paymentsByDeal[p.DealID] = append(paymentsByDeal[p.DealID], p)
 	}
 
 	now := time.Now()
@@ -311,7 +409,8 @@ func checkPaymentInstallmentDueRule(db *gorm.DB, cfg *config.Config, rule models
 
 	for dealID, dealInstallments := range byDeal {
 		var deal *models.Deal
-		for _, s := range utils.ComputeInstallmentStatuses(dealInstallments, totalPaidByDeal[dealID], now) {
+		// Statuses come back in due-date order, so position = installment number.
+		for i, s := range utils.ComputeInstallmentStatusesFromPayments(dealInstallments, paymentsByDeal[dealID], now) {
 			if s.Status == utils.InstallmentStatusPaid {
 				continue
 			}
@@ -329,19 +428,22 @@ func checkPaymentInstallmentDueRule(db *gorm.DB, cfg *config.Config, rule models
 				}
 				deal = &d
 			}
-			emails := recipientEmails(db, deal.AssignedTo, rule.RecipientRole)
-			if len(emails) == 0 {
-				continue
+			title := fmt.Sprintf("Payment due %s: %s — installment %d", s.Installment.DueDate.Format("2006-01-02"), deal.Title, i+1)
+			priority := models.TaskPriorityMedium
+			if s.Status == utils.InstallmentStatusOverdue {
+				title = fmt.Sprintf("Overdue payment: %s — installment %d", deal.Title, i+1)
+				priority = models.TaskPriorityHigh
 			}
-			subject := fmt.Sprintf("Payment installment due: %s", deal.Title)
-			body := fmt.Sprintf(
-				"Reminder: a payment installment on the following deal is %s.\n\nDeal: %s\nAmount: %.2f\nDue date: %s\n",
-				s.Status, deal.Title, s.Installment.Amount, s.Installment.DueDate.Format("2006-01-02"),
-			)
-			sendRuleNotification(cfg, emails, subject, body)
-			if err := recordNotified(db, rule.ID, s.Installment.ID, ""); err != nil {
-				log.Printf("notifier: failed to record notification for payment installment %d: %v", s.Installment.ID, err)
-			}
+			fireRule(db, cfg, rule, ruleFiring{
+				EntityID: s.Installment.ID, OwnerID: deal.AssignedTo,
+				Subject: fmt.Sprintf("Payment installment due: %s", deal.Title),
+				Body: fmt.Sprintf(
+					"Reminder: a payment installment on the following deal is %s.\n\nDeal: %s\nAmount: %.2f\nDue date: %s\n",
+					s.Status, deal.Title, s.Installment.Amount, s.Installment.DueDate.Format("2006-01-02"),
+				),
+				TaskTitle: title, TaskPriority: priority,
+				RelatedType: models.RelatedTypeDeal, RelatedID: deal.ID,
+			}, now)
 		}
 	}
 }
@@ -396,19 +498,16 @@ func checkProspectStaleRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 			continue
 		}
 
-		emails := recipientEmails(db, prospect.AssignedTo, rule.RecipientRole)
-		if len(emails) == 0 {
-			continue
-		}
-		subject := fmt.Sprintf("Prospect stale: %s", prospect.Name)
-		body := fmt.Sprintf(
-			"Reminder: the following prospect has had no updates in %d+ days.\n\nProspect: %s\nStatus: %s\n",
-			rule.ThresholdDays, prospect.Name, prospect.Status,
-		)
-		sendRuleNotification(cfg, emails, subject, body)
-		if err := recordNotified(db, rule.ID, prospect.ID, context); err != nil {
-			log.Printf("notifier: failed to record notification for prospect %d: %v", prospect.ID, err)
-		}
+		fireRule(db, cfg, rule, ruleFiring{
+			EntityID: prospect.ID, Context: context, OwnerID: prospect.AssignedTo,
+			Subject: fmt.Sprintf("Prospect stale: %s", prospect.Name),
+			Body: fmt.Sprintf(
+				"Reminder: the following prospect has had no updates in %d+ days.\n\nProspect: %s\nStatus: %s\n",
+				rule.ThresholdDays, prospect.Name, prospect.Status,
+			),
+			TaskTitle:   fmt.Sprintf("Prospect stale %d days: %s", daysSince(prospect.UpdatedAt, now), prospect.Name),
+			RelatedType: models.RelatedTypeProspect, RelatedID: prospect.ID,
+		}, now)
 	}
 }
 
@@ -495,18 +594,15 @@ func checkCompanyDormantRule(db *gorm.DB, cfg *config.Config, rule models.Notifi
 			ownerID = mostRecentDeal.AssignedTo
 		}
 
-		emails := recipientEmails(db, ownerID, rule.RecipientRole)
-		if len(emails) == 0 {
-			continue
-		}
-		subject := fmt.Sprintf("Company gone quiet: %s", row.Name)
-		body := fmt.Sprintf(
-			"Reminder: the following company has had no logged activity in %d+ days — a possible upsell/renewal target worth reaching out to.\n\nCompany: %s\n",
-			tier, row.Name,
-		)
-		sendRuleNotification(cfg, emails, subject, body)
-		if err := recordNotified(db, rule.ID, row.ID, context); err != nil {
-			log.Printf("notifier: failed to record notification for company %d: %v", row.ID, err)
-		}
+		fireRule(db, cfg, rule, ruleFiring{
+			EntityID: row.ID, Context: context, OwnerID: ownerID,
+			Subject: fmt.Sprintf("Company gone quiet: %s", row.Name),
+			Body: fmt.Sprintf(
+				"Reminder: the following company has had no logged activity in %d+ days — a possible upsell/renewal target worth reaching out to.\n\nCompany: %s\n",
+				tier, row.Name,
+			),
+			TaskTitle:   fmt.Sprintf("Company quiet %d+ days: %s", tier, row.Name),
+			RelatedType: models.RelatedTypeCompany, RelatedID: row.ID,
+		}, now)
 	}
 }

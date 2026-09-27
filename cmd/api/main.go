@@ -38,6 +38,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/database"
@@ -95,6 +96,7 @@ func main() {
 	seedPipelineConfig(db)
 	seedLeadScoringCriteria(db)
 	seedAppSettings(db)
+	seedNotificationRules(db)
 	if cfg.AppEnv == "development" {
 		seedDemoData(db)
 	}
@@ -128,8 +130,11 @@ func main() {
 
 	routes.Setup(app, db, cfg, storageBackend)
 
-	// Background job: emails a Task's assignee once its due date has passed.
-	// Safe to run even without SMTP configured — see internal/utils/mailer.go.
+	// Background jobs. All safe to run without SMTP configured (see
+	// internal/utils/mailer.go): their in-app work (rule-created Tasks,
+	// notification log, forecast snapshots) runs either way, and email is
+	// skipped silently — LogMailStatus says so once here instead.
+	utils.LogMailStatus(cfg)
 	notifier.StartTaskDueReminders(db, cfg)
 	notifier.StartWorkflowRuleReminders(db, cfg)
 	// Daily forecast-accuracy snapshot — see internal/notifier/forecast_snapshots.go.
@@ -325,6 +330,26 @@ func seedLeadScoringCriteria(db *gorm.DB) {
 			log.Fatalf("failed to seed default lead scoring criteria: %v", err)
 		}
 		log.Printf("Seeded %d default lead scoring criteria", len(models.DefaultLeadScoringCriteria))
+	}
+}
+
+// seedNotificationRules inserts each models.DefaultNotificationRules row
+// whose entity type has no rule yet (active or not), so an existing
+// deployment gets the new renewal rules once, and an Admin who deactivates
+// or edits one never has it re-created. ON CONFLICT DO NOTHING covers an
+// Admin-made rule that already uses the default's name.
+func seedNotificationRules(db *gorm.DB) {
+	for _, def := range models.DefaultNotificationRules {
+		var count int64
+		db.Model(&models.NotificationRule{}).Where("entity_type = ?", def.EntityType).Count(&count)
+		if count > 0 {
+			continue
+		}
+		rule := def
+		if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&rule).Error; err != nil {
+			log.Fatalf("failed to seed default notification rule %q: %v", def.Name, err)
+		}
+		log.Printf("Seeded default notification rule %q", def.Name)
 	}
 }
 

@@ -22,8 +22,9 @@ type Config struct {
 	CORSOrigins string // comma-separated allow-list; "*" (default) allows any origin
 
 	// SMTP settings for the Task due-date email reminder feature. SMTPHost empty
-	// means email is not configured — utils.SendMail no-ops (logs a warning)
-	// rather than erroring, so the app runs fine without these set.
+	// means email is not configured — utils.SendMail silently no-ops rather
+	// than erroring (utils.LogMailStatus logs that once at startup), so the
+	// app runs fine without these set; alerts still reach people in-app.
 	SMTPHost     string
 	SMTPPort     string
 	SMTPUsername string
