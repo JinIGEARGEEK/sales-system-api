@@ -20,11 +20,10 @@ func NewPaymentInstallmentHandler(db *gorm.DB) *PaymentInstallmentHandler {
 	return &PaymentInstallmentHandler{DB: db}
 }
 
-// installmentStatuses loads a Deal's installments and its actual Payments
-// total, then runs the shared waterfall helper — same total-paid sum
-// PaymentHandler.List already computes (payments.go:38-41), kept here as its
-// own small query rather than calling that handler, since only the sum is
-// needed.
+// installmentStatuses loads a Deal's installments and its actual Payments,
+// then runs the shared allocation helper — linked payments
+// (Payment.InstallmentID) settle their own installment first, the rest
+// waterfall; cash + WHT both count (Payment.SettledAmount).
 func (h *PaymentInstallmentHandler) installmentStatuses(dealID uint) ([]utils.InstallmentStatus, error) {
 	var installments []models.PaymentInstallment
 	if err := h.DB.Where("deal_id = ?", dealID).Order("due_date").Find(&installments).Error; err != nil {
@@ -35,12 +34,7 @@ func (h *PaymentInstallmentHandler) installmentStatuses(dealID uint) ([]utils.In
 	if err := h.DB.Where("deal_id = ?", dealID).Find(&payments).Error; err != nil {
 		return nil, err
 	}
-	var totalPaid float64
-	for _, p := range payments {
-		totalPaid += p.Amount
-	}
-
-	return utils.ComputeInstallmentStatuses(installments, totalPaid, time.Now()), nil
+	return utils.ComputeInstallmentStatusesFromPayments(installments, payments, time.Now()), nil
 }
 
 // List godoc
@@ -218,7 +212,7 @@ func (h *PaymentInstallmentHandler) Update(c *fiber.Ctx) error {
 
 // Delete godoc
 // @Summary Delete a planned installment
-// @Description Hard delete. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.
+// @Description Hard delete. Payments linked to it (installment_id) are unlinked, not deleted — their money rejoins the Deal's waterfall. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.
 // @Tags payment-installments
 // @Security BearerAuth
 // @Param id path int true "Payment Installment ID"
@@ -234,7 +228,14 @@ func (h *PaymentInstallmentHandler) Delete(c *fiber.Ctx) error {
 	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(installment.DealID)); err != nil {
 		return respondFindErr(c, err, "Deal not found")
 	}
-	if err := h.DB.Delete(&installment).Error; err != nil {
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.Payment{}).Where("installment_id = ?", installment.ID).
+			Update("installment_id", nil).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&installment).Error
+	})
+	if err != nil {
 		return utils.Internal(c, "Failed to delete payment installment")
 	}
 	return utils.NoContent(c)
