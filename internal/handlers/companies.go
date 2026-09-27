@@ -94,24 +94,65 @@ func conflictingCompanyDomain(db *gorm.DB, domain string, excludeID uint) (*mode
 	return &existing, nil
 }
 
-// companyDomainConflictMessage formats conflictingCompanyDomain's match into
-// the 409 body's message — shared by the pre-check and the post-write race
-// fallback so both report the conflict identically.
-func companyDomainConflictMessage(dup *models.Company, excludeID uint) string {
+// conflictingCompanyTaxBranch looks up an existing, different Company with
+// the same tax ID and branch — how an accounting system tells one legal
+// entity's branch from another, and the only practical duplicate check for a
+// company with no website. A NULL branch_code only matches another NULL:
+// "no branch recorded" and "00000" (head office) aren't assumed to be the
+// same thing. Returns nil, nil when taxID is nil.
+//
+// Unlike the domain check above this has no unique index behind it, because
+// rows saved before the check existed may already share a tax ID and branch,
+// and the index would fail to build on them. So two truly concurrent
+// Creates can still both succeed; integrations should look up before
+// creating and use an Idempotency-Key.
+func conflictingCompanyTaxBranch(db *gorm.DB, taxID, branchCode *string, excludeID uint) (*models.Company, error) {
+	if taxID == nil {
+		return nil, nil
+	}
+	query := db.Where("tax_id = ? AND id <> ?", *taxID, excludeID)
+	if branchCode == nil {
+		query = query.Where("branch_code IS NULL")
+	} else {
+		query = query.Where("branch_code = ?", *branchCode)
+	}
+	var existing models.Company
+	err := query.First(&existing).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &existing, nil
+}
+
+// companyConflictMessage formats a duplicate match into the 409 body's
+// message — shared by the domain and tax-ID checks, and by the domain
+// check's post-write race fallback, so every duplicate reads the same way.
+// what names the clashing value ("this website").
+func companyConflictMessage(what string, dup *models.Company, excludeID uint) string {
 	verb := "A company"
 	if excludeID != 0 {
 		verb = "A different company"
 	}
-	return fmt.Sprintf("%s with this website already exists (id %d, %q)", verb, dup.ID, dup.Name)
+	return fmt.Sprintf("%s with %s already exists (id %d, %q)", verb, what, dup.ID, dup.Name)
 }
 
+const (
+	websiteConflict   = "this website"
+	taxBranchConflict = "this tax ID and branch"
+)
+
 // companyFormResult carries the values validateCompanyForm derives that
-// Create/Update both need afterward — computed once here rather than twice
-// (Website's Domain, and Status normalized/defaulted) — since both handlers
-// otherwise ran the identical derivation a second time.
+// Create/Update both need afterward, so neither handler repeats the
+// derivation: Website's Domain, Status normalized, and the normalized
+// tax_id/branch_code/postal_code. On Update, BranchCode/PostalCode already
+// hold the saved value when the body omitted the key.
 type companyFormResult struct {
 	Domain     string
 	Status     models.ActiveArchivedStatus
+	TaxID      *string
 	BranchCode *string
 	PostalCode *string
 }
@@ -134,17 +175,56 @@ func normalizeFiveDigitCode(v *string) (*string, bool) {
 	return &trimmed, true
 }
 
+// normalizeTaxIDField applies utils.NormalizeTaxID to an optional tax_id,
+// mapping a value that is blank after normalizing to nil.
+func normalizeTaxIDField(v *string) *string {
+	if v == nil {
+		return nil
+	}
+	normalized := utils.NormalizeTaxID(*v)
+	if normalized == "" {
+		return nil
+	}
+	return &normalized
+}
+
+// sameOptionalString reports whether two optional strings hold the same value
+// (both nil counts as the same).
+func sameOptionalString(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// jsonBodyKeys returns the top-level keys of a JSON request body. A non-JSON
+// body (BodyParser also accepts form encoding) gives an empty map.
+func jsonBodyKeys(c *fiber.Ctx) map[string]json.RawMessage {
+	var raw map[string]json.RawMessage
+	_ = json.Unmarshal(c.Body(), &raw)
+	return raw
+}
+
 // validateCompanyForm runs every check CompanyHandler.Create and Update
-// share — required name, website format, industry registration, active
-// size/revenue_size, status normalization, five-digit branch_code/
-// postal_code, and domain-conflict dedupe.
-// excludeID is the Company being updated (0 on Create, so nothing is
-// excluded from the dedupe check).
+// share: required name, website format, five-digit branch_code/postal_code,
+// active size/revenue_size, status, and the website and tax-ID-plus-branch
+// duplicate checks. Only then does it register the industry, the one step
+// that writes, so a rejected request never leaves a new industry option
+// behind. current is the Company being updated (nil on Create).
+//
+// On Update, branch_code/postal_code keep current's values when the body
+// omits the key: they're newer than every existing client (the staff Company
+// form, earlier integrations), so leaving them out mustn't wipe them. Same
+// rule as stale_days (staleDaysFromBody). Explicit null or "" still clears.
 //
 // Returns utils.ErrHandled (see its doc) if invalid — the caller should
 // `return nil`, not `return err`, exactly like every other validateX helper
 // in this codebase (see validateDealRequiredFields, deals.go).
-func validateCompanyForm(c *fiber.Ctx, db *gorm.DB, form companyForm, excludeID uint) (companyFormResult, error) {
+func validateCompanyForm(c *fiber.Ctx, db *gorm.DB, form companyForm, current *models.Company) (companyFormResult, error) {
+	var excludeID uint
+	if current != nil {
+		excludeID = current.ID
+	}
 	if form.Name == "" {
 		_ = utils.ValidationError(c, "name is required", map[string][]string{"name": {"required"}})
 		return companyFormResult{}, utils.ErrHandled
@@ -157,8 +237,6 @@ func validateCompanyForm(c *fiber.Ctx, db *gorm.DB, form companyForm, excludeID 
 		_ = utils.ValidationError(c, "website is not a valid domain/URL", map[string][]string{"website": {"invalid"}})
 		return companyFormResult{}, utils.ErrHandled
 	}
-	// Before EnsureActiveIndustry, which writes: a request rejected here
-	// mustn't have registered a new industry option first.
 	branchCode, ok := normalizeFiveDigitCode(form.BranchCode)
 	if !ok {
 		_ = utils.ValidationError(c, "branch_code must be 5 digits", map[string][]string{"branch_code": {"invalid"}})
@@ -169,10 +247,16 @@ func validateCompanyForm(c *fiber.Ctx, db *gorm.DB, form companyForm, excludeID 
 		_ = utils.ValidationError(c, "postal_code must be 5 digits", map[string][]string{"postal_code": {"invalid"}})
 		return companyFormResult{}, utils.ErrHandled
 	}
-	if err := utils.EnsureActiveIndustry(db, form.Industry); err != nil {
-		_ = utils.Internal(c, "Failed to save industry option")
-		return companyFormResult{}, utils.ErrHandled
+	if current != nil {
+		keys := jsonBodyKeys(c)
+		if _, sent := keys["branch_code"]; !sent {
+			branchCode = current.BranchCode
+		}
+		if _, sent := keys["postal_code"]; !sent {
+			postalCode = current.PostalCode
+		}
 	}
+	taxID := normalizeTaxIDField(form.TaxID)
 	if !utils.IsActiveCompanySize(db, form.Size) {
 		_ = utils.ValidationError(c, "size is not a valid active company size", map[string][]string{"size": {"invalid"}})
 		return companyFormResult{}, utils.ErrHandled
@@ -190,11 +274,27 @@ func validateCompanyForm(c *fiber.Ctx, db *gorm.DB, form companyForm, excludeID 
 		_ = utils.Internal(c, "Failed to check for an existing company")
 		return companyFormResult{}, utils.ErrHandled
 	} else if dup != nil {
-		_ = utils.Conflict(c, companyDomainConflictMessage(dup, excludeID))
+		_ = utils.Conflict(c, companyConflictMessage(websiteConflict, dup, excludeID))
+		return companyFormResult{}, utils.ErrHandled
+	}
+	// Only when the pair is new or changed, so an unrelated edit to a row
+	// that already shared its tax ID and branch before this check existed
+	// isn't blocked.
+	if current == nil || !sameOptionalString(current.TaxID, taxID) || !sameOptionalString(current.BranchCode, branchCode) {
+		if dup, err := conflictingCompanyTaxBranch(db, taxID, branchCode, excludeID); err != nil {
+			_ = utils.Internal(c, "Failed to check for an existing company")
+			return companyFormResult{}, utils.ErrHandled
+		} else if dup != nil {
+			_ = utils.Conflict(c, companyConflictMessage(taxBranchConflict, dup, excludeID))
+			return companyFormResult{}, utils.ErrHandled
+		}
+	}
+	if err := utils.EnsureActiveIndustry(db, form.Industry); err != nil {
+		_ = utils.Internal(c, "Failed to save industry option")
 		return companyFormResult{}, utils.ErrHandled
 	}
 
-	return companyFormResult{Domain: domain, Status: status, BranchCode: branchCode, PostalCode: postalCode}, nil
+	return companyFormResult{Domain: domain, Status: status, TaxID: taxID, BranchCode: branchCode, PostalCode: postalCode}, nil
 }
 
 type CompanyHandler struct {
@@ -207,38 +307,48 @@ func NewCompanyHandler(db *gorm.DB) *CompanyHandler {
 
 // List godoc
 // @Summary List companies
-// @Description Paginated, filterable Company list, each row annotated with last_activity_at (from any company-scoped Activity). Filters: status, tag, industry, search (name), tax_id, branch_code, stale_days, has_won_deal.
+// @Description Paginated, filterable Company list, each row annotated with last_activity_at (from any company-scoped Activity). Filters: status, tag, industry, search (name, website or tax ID), tax_id, branch_code, updated_since, stale_days, has_won_deal.
 // @Tags companies
 // @Security BearerAuth
 // @Produce json
 // @Param status query string false "active or archived"
 // @Param tag query string false "Filter by Company tag"
 // @Param industry query string false "Filter by industry"
-// @Param search query string false "Search by name"
-// @Param tax_id query string false "Exact tax_id match"
+// @Param search query string false "Search by name, website or tax ID"
+// @Param tax_id query string false "Exact tax_id match (spaces/dashes ignored)"
 // @Param branch_code query string false "Exact branch_code match"
+// @Param updated_since query string false "Only companies updated at or after this RFC 3339 timestamp or YYYY-MM-DD date"
 // @Param stale_days query int false "Filter to companies with no activity in N days"
 // @Param has_won_deal query bool false "Filter to companies with (or without) a won Deal"
-// @Param sort query string false "Sort field, prefix - for descending (created_at, name, industry)"
+// @Param sort query string false "Sort field, prefix - for descending (created_at, updated_at, name, industry)"
 // @Param page query int false "Page number"
 // @Param per_page query int false "Items per page"
 // @Success 200 {object} map[string]interface{} "Paginated company list (data, page, per_page, total)"
 // @Router /companies [get]
 func (h *CompanyHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
-	query := applyCompanyFilters(h.DB.Model(&models.Company{}), c)
+	query, err := applyCompanyFilters(h.DB.Model(&models.Company{}), c)
+	if err != nil {
+		return updatedSinceInvalid(c)
+	}
 	query = withLastActivityAt(query)
 
 	var total int64
 	query.Count(&total)
 
 	var companies []companyWithActivity
-	query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true, "industry": true}, "-created_at")
+	query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "updated_at": true, "name": true, "industry": true}, "-created_at")
 	if err := query.Select("companies.*, last_company_activity.last_activity_at as last_activity_at").
 		Limit(perPage).Offset(offset).Find(&companies).Error; err != nil {
 		return utils.Internal(c, "Failed to list companies")
 	}
 	return utils.List(c, companies, page, perPage, total)
+}
+
+// updatedSinceInvalid is the 422 for an unparseable ?updated_since=, shared
+// by CompanyHandler.List and ExportHandler.Companies.
+func updatedSinceInvalid(c *fiber.Ctx) error {
+	return utils.ValidationError(c, "updated_since must be an RFC 3339 timestamp or YYYY-MM-DD date", map[string][]string{"updated_since": {"invalid"}})
 }
 
 type companyForm struct {
@@ -266,14 +376,16 @@ type companyForm struct {
 // @Produce json
 // @Param body body companyForm true "Company fields"
 // @Success 201 {object} models.Company
-// @Failure 400 {object} map[string]interface{} "Invalid body or missing name"
+// @Failure 400 {object} map[string]interface{} "Invalid body (e.g. a field sent as the wrong JSON type)"
+// @Failure 409 {object} map[string]interface{} "Another Company has this website's domain, or this tax_id + branch_code"
+// @Failure 422 {object} map[string]interface{} "Missing name, invalid website, branch_code/postal_code not 5 digits, or an inactive size/revenue_size"
 // @Router /companies [post]
 func (h *CompanyHandler) Create(c *fiber.Ctx) error {
 	var form companyForm
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
-	result, err := validateCompanyForm(c, h.DB, form, 0)
+	result, err := validateCompanyForm(c, h.DB, form, nil)
 	if err != nil {
 		return nil
 	}
@@ -284,7 +396,7 @@ func (h *CompanyHandler) Create(c *fiber.Ctx) error {
 		Domain: result.Domain,
 		Tags:   pq.StringArray(normalizeTags(form.Tags)), Notes: form.Notes,
 		Status:    result.Status,
-		LegalName: form.LegalName, Address: form.Address, TaxID: form.TaxID,
+		LegalName: form.LegalName, Address: form.Address, TaxID: result.TaxID,
 		BranchCode: result.BranchCode, PostalCode: result.PostalCode,
 	}
 	if company.Status == "" {
@@ -298,7 +410,7 @@ func (h *CompanyHandler) Create(c *fiber.Ctx) error {
 		// (database.go) is what actually catches that; re-resolve it into the
 		// same friendly 409 rather than a generic 500.
 		if dup, lookupErr := conflictingCompanyDomain(h.DB, result.Domain, 0); lookupErr == nil && dup != nil {
-			return utils.Conflict(c, companyDomainConflictMessage(dup, 0))
+			return utils.Conflict(c, companyConflictMessage(websiteConflict, dup, 0))
 		}
 		return utils.Internal(c, "Failed to create company")
 	}
@@ -335,8 +447,10 @@ func (h *CompanyHandler) Get(c *fiber.Ctx) error {
 // @Param id path int true "Company ID"
 // @Param body body companyForm true "Company fields"
 // @Success 200 {object} models.Company
-// @Failure 400 {object} map[string]interface{} "Invalid body or invalid option"
+// @Failure 400 {object} map[string]interface{} "Invalid body (e.g. a field sent as the wrong JSON type)"
 // @Failure 404 {object} map[string]interface{} "Company not found"
+// @Failure 409 {object} map[string]interface{} "Another Company has this website's domain, or (when changed) this tax_id + branch_code"
+// @Failure 422 {object} map[string]interface{} "Missing name, invalid website, branch_code/postal_code not 5 digits, or an inactive size/revenue_size"
 // @Router /companies/{id} [put]
 func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 	var company models.Company
@@ -348,7 +462,7 @@ func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
-	result, err := validateCompanyForm(c, h.DB, form, company.ID)
+	result, err := validateCompanyForm(c, h.DB, form, &company)
 	if err != nil {
 		return nil
 	}
@@ -357,20 +471,8 @@ func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 	company.Domain = result.Domain
 	company.Tags = pq.StringArray(normalizeTags(form.Tags))
 	company.Notes = form.Notes
-	company.LegalName, company.Address, company.TaxID = form.LegalName, form.Address, form.TaxID
-	// branch_code/postal_code are newer than every existing client (the staff
-	// Company form, earlier integrations), so a body that omits them keeps
-	// the saved values instead of clearing them — same rule as stale_days
-	// (staleDaysFromBody). Explicit null or "" still clears. A non-JSON body
-	// (BodyParser also accepts form encoding) leaves raw nil, so both keep.
-	var raw map[string]json.RawMessage
-	_ = json.Unmarshal(c.Body(), &raw)
-	if _, ok := raw["branch_code"]; ok {
-		company.BranchCode = result.BranchCode
-	}
-	if _, ok := raw["postal_code"]; ok {
-		company.PostalCode = result.PostalCode
-	}
+	company.LegalName, company.Address, company.TaxID = form.LegalName, form.Address, result.TaxID
+	company.BranchCode, company.PostalCode = result.BranchCode, result.PostalCode
 	if result.Status != "" {
 		company.Status = result.Status
 	}
@@ -380,7 +482,7 @@ func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 	if err := h.DB.Save(&company).Error; err != nil {
 		// Same race as Create — see validateCompanyForm's doc.
 		if dup, lookupErr := conflictingCompanyDomain(h.DB, result.Domain, company.ID); lookupErr == nil && dup != nil {
-			return utils.Conflict(c, companyDomainConflictMessage(dup, company.ID))
+			return utils.Conflict(c, companyConflictMessage(websiteConflict, dup, company.ID))
 		}
 		return utils.Internal(c, "Failed to update company")
 	}

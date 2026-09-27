@@ -28,9 +28,8 @@ type Company struct {
 	Address     *string              `json:"address"`
 	TaxID       *string              `gorm:"index" json:"tax_id"`
 	// BranchCode/PostalCode are each exactly five digits when set
-	// (BranchCode "00000" = head office). Newer than every existing client,
-	// so Update leaves them unchanged when the body omits them — see
-	// CompanyHandler.Update.
+	// (BranchCode "00000" = head office). An update that omits either keeps
+	// the saved value (validateCompanyForm).
 	BranchCode *string `gorm:"type:varchar(5)" json:"branch_code"`
 	PostalCode *string `gorm:"type:varchar(5)" json:"postal_code"`
 	// Domain is the lowercase, scheme/www-stripped host extracted from Website

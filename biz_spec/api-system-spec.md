@@ -320,7 +320,7 @@ interface Company {
   status: ActiveArchivedStatus
   legal_name: string | null   // registered legal entity name — used on Contract PDF exports
   address: string | null      // registered address — used on Contract PDF exports
-  tax_id: string | null       // used on Contract PDF exports; exact-match ?tax_id= filter
+  tax_id: string | null       // on Quote/Contract PDFs; stored without spaces/dashes; exact-match ?tax_id= filter
   branch_code: string | null  // 5 digits ("00000" = head office) — for full tax invoices. Added 2026-09-27
   postal_code: string | null  // 5 digits, separate from address. Added 2026-09-27
   last_activity_at: string | null   // dormant-customer / upsell-targeting feature — see note below
@@ -335,10 +335,10 @@ interface Company {
 
 | Method | Path | Status | Description |
 |---|---|---|---|
-| `GET` | `/companies` | 🟢 | Filters: `status`, `tag`, `industry`, `search` (name), `tax_id` / `branch_code` (exact match, surrounding spaces ignored; added 2026-09-27 for accounting integrations that identify a Company by tax ID + branch), `stale_days` (int — only companies whose `last_activity_at` is `null` or older than this many days), `has_won_deal` (`true`/`false` — only companies with/without at least one Deal at `status: 'won'`). Backs `pages/crm/companies/index.vue`. |
-| `POST` | `/companies` | 🟢 | Create. `branch_code`/`postal_code`, if non-blank, must be exactly 5 digits (`422`); they're trimmed, and blank is stored as `null`. `tax_id` is not format-checked or deduped. |
+| `GET` | `/companies` | 🟢 | Filters: `status`, `tag`, `industry`, `search` (name or website; **since 2026-09-27** also tax ID, with the term's spaces/dashes dropped), `tax_id` / `branch_code` (exact match; added 2026-09-27 for accounting integrations that identify a Company by tax ID + branch; `tax_id` is normalized like stored values, and one that normalizes to nothing, such as `-`, matches no Company instead of dropping the filter), `updated_since` (**added 2026-09-27**: `updated_at >=` an RFC 3339 timestamp or `YYYY-MM-DD` date, `422` if unparseable — for incremental syncs), `stale_days` (int — only companies whose `last_activity_at` is `null` or older than this many days), `has_won_deal` (`true`/`false` — only companies with/without at least one Deal at `status: 'won'`). `sort` accepts `created_at` (default, descending) / `updated_at` / `name` / `industry`. Backs `pages/crm/companies/index.vue`. |
+| `POST` | `/companies` | 🟢 | Create. `branch_code`/`postal_code`, if non-blank, must be exactly 5 digits (`422`); they're trimmed, and blank is stored as `null`. **Since 2026-09-27:** `tax_id` is stored with every Unicode space and dash removed (`utils.NormalizeTaxID`; blank after that → `null`), and existing rows are normalized on boot (`database.NormalizeCompanyTaxIDs`, which doesn't touch `updated_at`). `409` if another Company has the same `tax_id` + `branch_code` (a `null` branch only matches another `null`; no `tax_id`, no check). That check is app-level only, with no unique index, because older rows may already share a pair. Every check runs before `industry` auto-registration, so a rejected request never adds an industry option. |
 | `GET` | `/companies/:id` | 🟢 | Single company — `pages/crm/companies/[id].vue`'s Overview tab. |
-| `PUT` | `/companies/:id` | 🟢 | Update (full replace). Exception: `branch_code`/`postal_code` keep their saved value when the key is absent from the body (explicit `null`/`""` clears), since they're newer than existing clients such as the staff Company form. Same rule as `stale_days` on the stage config resources. |
+| `PUT` | `/companies/:id` | 🟢 | Update (full replace). Exception: `branch_code`/`postal_code` keep their saved value when the key is absent from the body (explicit `null`/`""` clears), since they're newer than existing clients such as the staff Company form. Same rule as `stale_days` on the stage config resources. The tax ID + branch `409` only runs when the pair changes, so a legacy duplicate can still be edited. |
 | `DELETE` | `/companies/:id` | 🟢 | Sets `status: 'archived'` (soft delete, §1.6) — never a hard delete, since Deals/Contacts/Payments reference `company_id`. |
 | `POST` | `/companies/import` | 🟢 | Bulk import — see §6.2. `FR-CRM-014`. |
 
@@ -556,7 +556,7 @@ interface Quote {
 | `POST` | `/deals/:dealId/quotes/upload` | 🟢 | Upload a PDF quote (§6.1) — sets `file_name/file_url/file_size/uploaded_at` and attempts FlowAccount field extraction (see above), setting `extraction_status`/`extraction_warnings` and pre-filling whatever fields it could read; `items` stays empty only if extraction found none. |
 | `PUT` | `/quotes/:id` | 🟢 | Update status/items and every other field above (`number` excepted — immutable after Create). |
 | `DELETE` | `/quotes/:id` | 🟢 | Delete. |
-| `GET` | `/quotes/:id/export-pdf` | 🟢 | `FR-CRM-042` — returns a generated PDF (`github.com/go-pdf/fpdf`): document number, scope of work, line items table (with per-item discount and tax/WHT totals), Deal/Company/Contact header, validity date, status, and `notes` (never `internal_notes`). Read-only, same access level as List (no `CanWrite` ownership check). |
+| `GET` | `/quotes/:id/export-pdf` | 🟢 | `FR-CRM-042` — returns a generated PDF (`github.com/go-pdf/fpdf`): document number, scope of work, line items table (with per-item discount and tax/WHT totals), Deal/Company/Contact header (Company address with postal code, tax ID with branch — same `utils.CompanyPartyLines` block as the Contract PDF, since 2026-09-27), validity date, status, and `notes` (never `internal_notes`). Read-only, same access level as List (no `CanWrite` ownership check). |
 
 ### 7.5 Payments
 
@@ -698,7 +698,7 @@ interface Contract {
 | `POST` | `/deals/:dealId/contracts` | Create. |
 | `PUT` | `/contracts/:id` | Update status/`quote_id`. |
 | `POST` | `/contracts/:id/upload` | Upload the signed document (§6.1) → sets `signed_file_url`/`signed_date`. |
-| `GET` | `/contracts/:id/export-pdf` | Returns a generated PDF pulling line items/total from the linked Quote (if any), Deal/Company header, and Company `legal_name`/`address`/`tax_id` (§4) as the registered party details. |
+| `GET` | `/contracts/:id/export-pdf` | Returns a generated PDF pulling line items/total from the linked Quote (if any), Deal/Company header, and Company `legal_name`/`address`/`tax_id` (§4) as the registered party details. Since 2026-09-27 the address line appends `postal_code`, and the tax ID line names the branch ("Head office" for `00000`, else "Branch 00001"), via `utils.CompanyPartyLines`, shared with the Quote PDF. English only, because the core Arial font has no Thai glyphs. |
 
 ### 8.2 Product Catalog & Customer-Product tracking (`FR-CRM-060`–`066`)
 

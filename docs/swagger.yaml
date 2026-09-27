@@ -81,6 +81,12 @@ definitions:
     properties:
       address:
         type: string
+      branch_code:
+        description: |-
+          BranchCode/PostalCode are each exactly five digits when set
+          (BranchCode "00000" = head office). An update that omits either keeps
+          the saved value (validateCompanyForm).
+        type: string
       created_at:
         type: string
       created_by:
@@ -98,6 +104,8 @@ definitions:
       name:
         type: string
       notes:
+        type: string
+      postal_code:
         type: string
       revenue_size:
         type: string
@@ -1296,6 +1304,8 @@ definitions:
     properties:
       address:
         type: string
+      branch_code:
+        type: string
       industry:
         type: string
       legal_name:
@@ -1303,6 +1313,8 @@ definitions:
       name:
         type: string
       notes:
+        type: string
+      postal_code:
         type: string
       revenue_size:
         type: string
@@ -2946,8 +2958,8 @@ paths:
       - application/json
       description: Admin-only. quarterly_sales_target and annual_revenue_goal are
         required on every PATCH (this is a singleton row, not a per-field partial-update
-        resource); both must be non-negative. lead_scoring_mql_threshold and require_signed_contract_before_won
-        are optional and left unchanged if omitted.
+        resource); both must be non-negative. lead_scoring_mql_threshold, require_signed_contract_before_won
+        and weekly_digest_enabled are optional and left unchanged if omitted.
       parameters:
       - description: Settings fields
         in: body
@@ -2994,6 +3006,11 @@ paths:
           Manager)
         in: query
         name: actor_id
+        type: string
+      - description: Filter by action (e.g. stage_changed) — applies to all roles,
+          narrowing within the role's visible slice
+        in: query
+        name: action
         type: string
       - description: Filter by entity ID (e.g. a specific Deal ID) — applies to all
           roles
@@ -3042,7 +3059,8 @@ paths:
     get:
       description: 'Paginated, filterable Company list, each row annotated with last_activity_at
         (from any company-scoped Activity). Filters: status, tag, industry, search
-        (name), stale_days, has_won_deal.'
+        (name, website or tax ID), tax_id, branch_code, updated_since, stale_days,
+        has_won_deal.'
       parameters:
       - description: active or archived
         in: query
@@ -3056,9 +3074,22 @@ paths:
         in: query
         name: industry
         type: string
-      - description: Search by name
+      - description: Search by name, website or tax ID
         in: query
         name: search
+        type: string
+      - description: Exact tax_id match (spaces/dashes ignored)
+        in: query
+        name: tax_id
+        type: string
+      - description: Exact branch_code match
+        in: query
+        name: branch_code
+        type: string
+      - description: Only companies updated at or after this RFC 3339 timestamp or
+          YYYY-MM-DD date
+        in: query
+        name: updated_since
         type: string
       - description: Filter to companies with no activity in N days
         in: query
@@ -3068,7 +3099,8 @@ paths:
         in: query
         name: has_won_deal
         type: boolean
-      - description: Sort field, prefix - for descending (created_at, name, industry)
+      - description: Sort field, prefix - for descending (created_at, updated_at,
+          name, industry)
         in: query
         name: sort
         type: string
@@ -3116,7 +3148,19 @@ paths:
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Company'
         "400":
-          description: Invalid body or missing name
+          description: Invalid body (e.g. a field sent as the wrong JSON type)
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Another Company has this website's domain, or this tax_id +
+            branch_code
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Missing name, invalid website, branch_code/postal_code not
+            5 digits, or an inactive size/revenue_size
           schema:
             additionalProperties: true
             type: object
@@ -3305,9 +3349,11 @@ paths:
     put:
       consumes:
       - application/json
-      description: Updates a Company. size/revenue_size must each match an active
-        configured option; industry is free text and auto-registers a new active /admin/industries
-        option if needed; domain is re-derived from website.
+      description: Updates a Company (full replace). size/revenue_size must each match
+        an active configured option; industry is free text and auto-registers a new
+        active /admin/industries option if needed; domain is re-derived from website.
+        branch_code/postal_code are kept when omitted from the body; send null or
+        "" to clear them.
       parameters:
       - description: Company ID
         in: path
@@ -3328,12 +3374,24 @@ paths:
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Company'
         "400":
-          description: Invalid body or invalid option
+          description: Invalid body (e.g. a field sent as the wrong JSON type)
           schema:
             additionalProperties: true
             type: object
         "404":
           description: Company not found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Another Company has this website's domain, or (when changed)
+            this tax_id + branch_code
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Missing name, invalid website, branch_code/postal_code not
+            5 digits, or an inactive size/revenue_size
           schema:
             additionalProperties: true
             type: object
@@ -4144,8 +4202,11 @@ paths:
   /deals/{dealId}/payment-installments:
     get:
       description: Returns each planned installment with its derived paid/partial/overdue/upcoming
-        status (utils.ComputeInstallmentStatuses). Backs the Deal detail page's Payment
-        Schedule section. api-system-spec.md §7.5a.
+        status (utils.ComputeInstallmentStatuses), ordered by due_date. Backs the
+        Deal detail page's Payment Schedule section, and is also served read-only
+        to API keys at /open/deals/{dealId}/payment-installments. Sales Rep/Marketing
+        callers only see Deals assigned to them or unassigned; Admin/Sales Manager
+        see every Deal. api-system-spec.md §7.5a.
       parameters:
       - description: Deal ID
         in: path
@@ -4161,9 +4222,20 @@ paths:
             items:
               $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_utils.InstallmentStatus'
             type: array
+        "403":
+          description: Not authorized to read this deal's records
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
       security:
       - BearerAuth: []
-      summary: List a deal's payment installment schedule (Admin/Sales Rep/Sales Manager)
+      - ApiKeyAuth: []
+      summary: List a deal's payment installment schedule (Admin/Sales Rep/Sales Manager/Marketing)
       tags:
       - payment-installments
     post:
@@ -5279,6 +5351,45 @@ paths:
       summary: List deleted leads (Admin/Sales Manager only)
       tags:
       - leads
+  /open/deals/{dealId}/payment-installments:
+    get:
+      description: Returns each planned installment with its derived paid/partial/overdue/upcoming
+        status (utils.ComputeInstallmentStatuses), ordered by due_date. Backs the
+        Deal detail page's Payment Schedule section, and is also served read-only
+        to API keys at /open/deals/{dealId}/payment-installments. Sales Rep/Marketing
+        callers only see Deals assigned to them or unassigned; Admin/Sales Manager
+        see every Deal. api-system-spec.md §7.5a.
+      parameters:
+      - description: Deal ID
+        in: path
+        name: dealId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_utils.InstallmentStatus'
+            type: array
+        "403":
+          description: Not authorized to read this deal's records
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      - ApiKeyAuth: []
+      summary: List a deal's payment installment schedule (Admin/Sales Rep/Sales Manager/Marketing)
+      tags:
+      - payment-installments
   /open/options:
     get:
       description: 'Returns every currently active option value Company/Contact fields
@@ -7483,6 +7594,11 @@ paths:
       tags:
       - users
 securityDefinitions:
+  ApiKeyAuth:
+    description: Open API key for the /open/* routes (docs/OPEN_API_GUIDE.md).
+    in: header
+    name: X-API-Key
+    type: apiKey
   BearerAuth:
     description: Bearer JWT, e.g. "Bearer <token>".
     in: header

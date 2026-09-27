@@ -168,13 +168,6 @@ func boolYesNo(b bool) string {
 	return "No"
 }
 
-func derefStr(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
-}
-
 // Companies godoc
 // @Summary Export companies as CSV (Admin/Sales Manager only)
 // @Description CSV download of the full (non-deleted, non-paginated) Company dataset. Filters mirror CompanyHandler.List. Admin/Sales Manager only.
@@ -185,14 +178,18 @@ func derefStr(s *string) string {
 // @Failure 500 {object} map[string]interface{} "Failed to export data"
 // @Router /companies/export [get]
 func (h *ExportHandler) Companies(c *fiber.Ctx) error {
-	query := applyCompanyFilters(h.DB.Model(&models.Company{}), c).Order("created_at DESC")
+	query, err := applyCompanyFilters(h.DB.Model(&models.Company{}), c)
+	if err != nil {
+		return updatedSinceInvalid(c)
+	}
+	query = query.Order("created_at DESC")
 
 	header := []string{"Name", "Industry", "Size", "Website", "Tags", "Status", "Legal Name", "Address", "Tax ID", "Branch Code", "Postal Code", "Notes", "Created Date"}
 	return exportStream(c, query, "companies.csv", header, func(w *csv.Writer, batch []models.Company) error {
 		for _, co := range batch {
 			if err := writeCSVRow(w, []string{
 				co.Name, co.Industry, co.Size, co.Website, joinTags(co.Tags), string(co.Status),
-				derefStr(co.LegalName), derefStr(co.Address), derefStr(co.TaxID), derefStr(co.BranchCode), derefStr(co.PostalCode), co.Notes,
+				utils.DerefString(co.LegalName), utils.DerefString(co.Address), utils.DerefString(co.TaxID), utils.DerefString(co.BranchCode), utils.DerefString(co.PostalCode), co.Notes,
 				co.CreatedAt.Format("2006-01-02"),
 			}); err != nil {
 				return err
@@ -260,8 +257,8 @@ func (h *ExportHandler) Deals(c *fiber.Ctx) error {
 			}
 			if err := writeCSVRow(w, []string{
 				d.Title, companyNameByID[d.CompanyID], strconv.FormatFloat(d.Value, 'f', 2, 64),
-				string(d.Stage), string(d.Status), derefStr(d.ExpectedCloseDate),
-				assignedName, string(d.Channel), businessUnit, derefStr(d.BusinessUnitItem),
+				string(d.Stage), string(d.Status), utils.DerefString(d.ExpectedCloseDate),
+				assignedName, string(d.Channel), businessUnit, utils.DerefString(d.BusinessUnitItem),
 				joinTags(d.Tags), d.CreatedAt.Format("2006-01-02"),
 			}); err != nil {
 				return err
@@ -318,7 +315,7 @@ func (h *ExportHandler) Projects(c *fiber.Ctx) error {
 			}
 			if err := writeCSVRow(w, []string{
 				p.Name, companyNameByID[p.CompanyID], string(p.Status),
-				p.StartDate.Format("2006-01-02"), targetEnd, derefStr(p.ProductionReference), p.Notes,
+				p.StartDate.Format("2006-01-02"), targetEnd, utils.DerefString(p.ProductionReference), p.Notes,
 				p.CreatedAt.Format("2006-01-02"),
 			}); err != nil {
 				return err

@@ -3,6 +3,10 @@
 // hand-written — regenerate them after editing handler @-annotations with:
 //
 //	go run github.com/swaggo/swag/cmd/swag@v1.16.6 init -g cmd/api/main.go -o docs --parseDependency --parseInternal
+//	rm docs/docs.go
+//
+// swag also writes docs/docs.go, which imports its runtime package. Delete
+// it, for the reason below.
 //
 // Deliberately just an embedded static file rather than importing
 // github.com/swaggo/swag's runtime Register/ReadDoc API: that package's root
