@@ -575,17 +575,13 @@ func (h *ReportHandler) fetchOutstandingBalance(c *fiber.Ctx) ([]outstandingBala
 	for _, r := range candidates {
 		quote, hasQuote := latestAccepted[r.DealID]
 		computeOutstandingRow(&r, quotePtr(quote, hasQuote), paymentsByDeal[r.DealID], installmentsByDeal[r.DealID], now)
-		if r.OutstandingAmount > outstandingEpsilon {
+		if r.OutstandingAmount > utils.MoneyEpsilon {
 			rows = append(rows, r)
 		}
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].OutstandingAmount > rows[j].OutstandingAmount })
 	return rows, nil
 }
-
-// outstandingEpsilon absorbs float rounding (e.g. 7% VAT on odd amounts), so
-// a Deal paid to the satang doesn't linger in the report owing 0.0000001.
-const outstandingEpsilon = 0.005
 
 func quotePtr(q models.Quote, ok bool) *models.Quote {
 	if !ok {

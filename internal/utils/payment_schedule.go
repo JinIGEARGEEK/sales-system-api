@@ -100,10 +100,15 @@ func allocateInstallments(installments []models.PaymentInstallment, linked map[u
 			pool -= take
 		}
 
-		isOverdue := inst.DueDate.Before(now)
+		// Overdue from the day after the due date, by calendar day — the
+		// same count DaysOverdue/AgingBucket use, so an installment isn't
+		// "overdue" on its own due date while its aging says current.
+		isOverdue := DaysOverdue(inst.DueDate, now) > 0
 		var status string
 		switch {
-		case covered[i] >= inst.Amount:
+		// Within MoneyEpsilon: cash + WHT from a percentage lands a hair
+		// short of the installment (e.g. 9,699.999…), which is still paid.
+		case covered[i] >= inst.Amount-MoneyEpsilon:
 			status = InstallmentStatusPaid
 		case isOverdue:
 			status = InstallmentStatusOverdue
@@ -117,6 +122,12 @@ func allocateInstallments(installments []models.PaymentInstallment, linked map[u
 	}
 	return statuses
 }
+
+// MoneyEpsilon absorbs float rounding in baht amounts (7% VAT or 3% WHT on
+// odd amounts), so a sum paid to the satang compares as settled rather than
+// owing 0.0000001. Shared by the installment allocation and the Outstanding
+// Balance report.
+const MoneyEpsilon = 0.005
 
 // Receivable aging buckets (Outstanding Balance report), by whole days past
 // the oldest unpaid installment's due date.

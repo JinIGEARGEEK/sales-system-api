@@ -137,3 +137,29 @@ func TestAgingBucketAndDaysOverdue(t *testing.T) {
 	assert.Equal(t, 31, DaysOverdue(time.Date(2026, 8, 27, 23, 0, 0, 0, time.Local), now))
 	assert.Equal(t, -3, DaysOverdue(time.Date(2026, 9, 30, 0, 0, 0, 0, time.Local), now))
 }
+
+// Cash plus a percentage WHT can sum a hair under the installment; that's
+// paid, not partial/overdue (which fired a spurious "Overdue payment" Task).
+func TestComputeInstallmentStatuses_FloatShortfallIsPaid(t *testing.T) {
+	now := time.Date(2026, 9, 15, 10, 0, 0, 0, time.Local)
+	// (0.7 + 0.1) + 0.2 sums to 0.9999999999999999 in float64.
+	installments := []models.PaymentInstallment{{Amount: 1, DueDate: daysFromNow(now, -5)}}
+	payments := []models.Payment{{Amount: 0.7, WhtAmount: 0.1}, {Amount: 0.2}}
+	statuses := ComputeInstallmentStatusesFromPayments(installments, payments, now)
+	assert.Equal(t, InstallmentStatusPaid, statuses[0].Status)
+
+	short := []models.PaymentInstallment{{Amount: 10000, DueDate: daysFromNow(now, -5)}}
+	statuses = ComputeInstallmentStatuses(short, 9999.999999, now)
+	assert.Equal(t, InstallmentStatusPaid, statuses[0].Status)
+}
+
+// On its due date an unpaid installment is not yet overdue (DaysOverdue is
+// 0, aging "current"); it becomes overdue the next calendar day.
+func TestComputeInstallmentStatuses_DueTodayIsNotOverdue(t *testing.T) {
+	due := time.Date(2026, 9, 27, 0, 0, 0, 0, time.Local)
+	inst := []models.PaymentInstallment{{Amount: 1000, DueDate: due}}
+
+	assert.Equal(t, InstallmentStatusUpcoming, ComputeInstallmentStatuses(inst, 0, time.Date(2026, 9, 27, 16, 0, 0, 0, time.Local))[0].Status)
+	assert.Equal(t, InstallmentStatusPartial, ComputeInstallmentStatuses(inst, 400, time.Date(2026, 9, 27, 16, 0, 0, 0, time.Local))[0].Status)
+	assert.Equal(t, InstallmentStatusOverdue, ComputeInstallmentStatuses(inst, 0, time.Date(2026, 9, 28, 0, 30, 0, 0, time.Local))[0].Status)
+}
