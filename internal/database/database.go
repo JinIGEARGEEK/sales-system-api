@@ -116,6 +116,9 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := ensureCompanyDomainUniqueIndex(db); err != nil {
 		return err
 	}
+	if err := NormalizeCompanyTaxIDs(db); err != nil {
+		return err
+	}
 	if err := backfillLowercaseTags(db); err != nil {
 		return err
 	}
@@ -361,6 +364,36 @@ func backfillCompanyDomains(db *gorm.DB) error {
 		}
 		if err := db.Model(&models.Company{}).Where("id = ?", co.ID).Update("domain", domain).Error; err != nil {
 			return fmt.Errorf("backfill domain for company %d: %w", co.ID, err)
+		}
+	}
+	return nil
+}
+
+// NormalizeCompanyTaxIDs (called from AutoMigrate; exported for its test)
+// rewrites every stored tax_id into utils.NormalizeTaxID's form, the form
+// Create/Update now save and ?tax_id= matches, so a row saved earlier as
+// "0-1055-55555-55-5" is still found by its 13 digits. A value that
+// normalizes to nothing becomes NULL. Includes soft-deleted rows, so a
+// restored Company matches too. UpdateColumn leaves updated_at alone: this
+// fixes the stored format, it isn't an edit, so it mustn't show up in an
+// ?updated_since= sync. Cheap to re-run on every boot: it only loads rows
+// that aren't already plain digits.
+func NormalizeCompanyTaxIDs(db *gorm.DB) error {
+	var companies []models.Company
+	if err := db.Unscoped().Select("id", "tax_id").Where("tax_id !~ '^[0-9]+$'").Find(&companies).Error; err != nil {
+		return fmt.Errorf("load companies for tax_id normalization: %w", err)
+	}
+	for _, co := range companies {
+		normalized := utils.NormalizeTaxID(*co.TaxID)
+		if normalized == *co.TaxID {
+			continue
+		}
+		var value interface{}
+		if normalized != "" {
+			value = normalized
+		}
+		if err := db.Unscoped().Model(&models.Company{}).Where("id = ?", co.ID).UpdateColumn("tax_id", value).Error; err != nil {
+			return fmt.Errorf("normalize tax_id for company %d: %w", co.ID, err)
 		}
 	}
 	return nil

@@ -1685,6 +1685,12 @@
                     },
                     {
                         "type": "string",
+                        "description": "Filter by action (e.g. stage_changed) — applies to all roles, narrowing within the role's visible slice",
+                        "name": "action",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
                         "description": "Filter by entity ID (e.g. a specific Deal ID) — applies to all roles",
                         "name": "entity_id",
                         "in": "query"
@@ -1745,7 +1751,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Paginated, filterable Company list, each row annotated with last_activity_at (from any company-scoped Activity). Filters: status, tag, industry, search (name), stale_days, has_won_deal.",
+                "description": "Paginated, filterable Company list, each row annotated with last_activity_at (from any company-scoped Activity). Filters: status, tag, industry, search (name, website or tax ID), tax_id, branch_code, updated_since, stale_days, has_won_deal.",
                 "produces": [
                     "application/json"
                 ],
@@ -1774,8 +1780,26 @@
                     },
                     {
                         "type": "string",
-                        "description": "Search by name",
+                        "description": "Search by name, website or tax ID",
                         "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact tax_id match (spaces/dashes ignored)",
+                        "name": "tax_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact branch_code match",
+                        "name": "branch_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Only companies updated at or after this RFC 3339 timestamp or YYYY-MM-DD date",
+                        "name": "updated_since",
                         "in": "query"
                     },
                     {
@@ -1792,7 +1816,7 @@
                     },
                     {
                         "type": "string",
-                        "description": "Sort field, prefix - for descending (created_at, name, industry)",
+                        "description": "Sort field, prefix - for descending (created_at, updated_at, name, industry)",
                         "name": "sort",
                         "in": "query"
                     },
@@ -1855,7 +1879,21 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid body or missing name",
+                        "description": "Invalid body (e.g. a field sent as the wrong JSON type)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Another Company has this website's domain, or this tax_id + branch_code",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Missing name, invalid website, branch_code/postal_code not 5 digits, or an inactive size/revenue_size",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -2217,7 +2255,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Updates a Company. size/revenue_size must each match an active configured option; industry is free text and auto-registers a new active /admin/industries option if needed; domain is re-derived from website.",
+                "description": "Updates a Company (full replace). size/revenue_size must each match an active configured option; industry is free text and auto-registers a new active /admin/industries option if needed; domain is re-derived from website. branch_code/postal_code are kept when omitted from the body; send null or \"\" to clear them.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2254,7 +2292,7 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid body or invalid option",
+                        "description": "Invalid body (e.g. a field sent as the wrong JSON type)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -2262,6 +2300,20 @@
                     },
                     "404": {
                         "description": "Company not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Another Company has this website's domain, or (when changed) this tax_id + branch_code",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Missing name, invalid website, branch_code/postal_code not 5 digits, or an inactive size/revenue_size",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -3556,16 +3608,19 @@
                 "security": [
                     {
                         "BearerAuth": []
+                    },
+                    {
+                        "ApiKeyAuth": []
                     }
                 ],
-                "description": "Returns each planned installment with its derived paid/partial/overdue/upcoming status (utils.ComputeInstallmentStatuses). Backs the Deal detail page's Payment Schedule section. api-system-spec.md §7.5a.",
+                "description": "Returns each planned installment with its derived paid/partial/overdue/upcoming status (utils.ComputeInstallmentStatuses), ordered by due_date. Backs the Deal detail page's Payment Schedule section, and is also served read-only to API keys at /open/deals/{dealId}/payment-installments. Sales Rep/Marketing callers only see Deals assigned to them or unassigned; Admin/Sales Manager see every Deal. api-system-spec.md §7.5a.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "payment-installments"
                 ],
-                "summary": "List a deal's payment installment schedule (Admin/Sales Rep/Sales Manager)",
+                "summary": "List a deal's payment installment schedule (Admin/Sales Rep/Sales Manager/Marketing)",
                 "parameters": [
                     {
                         "type": "integer",
@@ -3583,6 +3638,20 @@
                             "items": {
                                 "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_utils.InstallmentStatus"
                             }
+                        }
+                    },
+                    "403": {
+                        "description": "Not authorized to read this deal's records",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     }
                 }
@@ -5002,6 +5071,60 @@
                     },
                     "422": {
                         "description": "position out of range (±1e9)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/open/deals/{dealId}/payment-installments": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    },
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "Returns each planned installment with its derived paid/partial/overdue/upcoming status (utils.ComputeInstallmentStatuses), ordered by due_date. Backs the Deal detail page's Payment Schedule section, and is also served read-only to API keys at /open/deals/{dealId}/payment-installments. Sales Rep/Marketing callers only see Deals assigned to them or unassigned; Admin/Sales Manager see every Deal. api-system-spec.md §7.5a.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payment-installments"
+                ],
+                "summary": "List a deal's payment installment schedule (Admin/Sales Rep/Sales Manager/Marketing)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Deal ID",
+                        "name": "dealId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_utils.InstallmentStatus"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Not authorized to read this deal's records",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Deal not found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -8339,6 +8462,10 @@
                 "address": {
                     "type": "string"
                 },
+                "branch_code": {
+                    "description": "BranchCode/PostalCode are each exactly five digits when set\n(BranchCode \"00000\" = head office). An update that omits either keeps\nthe saved value (validateCompanyForm).",
+                    "type": "string"
+                },
                 "created_at": {
                     "type": "string"
                 },
@@ -8364,6 +8491,9 @@
                     "type": "string"
                 },
                 "notes": {
+                    "type": "string"
+                },
+                "postal_code": {
                     "type": "string"
                 },
                 "revenue_size": {
@@ -9907,6 +10037,9 @@
                 "address": {
                     "type": "string"
                 },
+                "branch_code": {
+                    "type": "string"
+                },
                 "industry": {
                     "type": "string"
                 },
@@ -9917,6 +10050,9 @@
                     "type": "string"
                 },
                 "notes": {
+                    "type": "string"
+                },
+                "postal_code": {
                     "type": "string"
                 },
                 "revenue_size": {
@@ -10756,6 +10892,12 @@
         }
     },
     "securityDefinitions": {
+        "ApiKeyAuth": {
+            "description": "Open API key for the /open/* routes (docs/OPEN_API_GUIDE.md).",
+            "type": "apiKey",
+            "name": "X-API-Key",
+            "in": "header"
+        },
         "BearerAuth": {
             "description": "Bearer JWT, e.g. \"Bearer \u003ctoken\u003e\".",
             "type": "apiKey",

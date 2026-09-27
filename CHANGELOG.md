@@ -4,6 +4,26 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-09-27 — Company tax ID matching: normalization, tax ID + branch dedupe, `updated_since`
+
+Follow-ups so the accounting sync can match Companies reliably.
+
+**Tax IDs are normalized.** Create/Update store `tax_id` with every space and dash removed (`utils.NormalizeTaxID`, Unicode-aware, so a pasted non-breaking space or en dash counts), and a value with nothing left becomes `null`. `?tax_id=` is normalized the same way, so `0-1055-55555-55-5` finds `0105555555555`; one that normalizes to nothing (`-`, a space) matches no Company rather than silently dropping the filter and returning them all. Existing rows are rewritten on boot by `database.NormalizeCompanyTaxIDs`. It includes soft-deleted rows, uses `UpdateColumn` so `updated_at` doesn't move, and only loads rows that aren't plain digits already, so re-running it is cheap.
+
+**Tax ID + branch dedupe.** Create/Update return `409 CONFLICT` when another Company has the same `tax_id` + `branch_code`. A `null` branch only matches another `null`, and a Company without a `tax_id` is never checked. On Update it runs only when the pair changes, so rows that already shared a pair can still be edited. It's an app-level check with no unique index, because existing data may hold duplicates the index couldn't be built over; integrations still look up before creating.
+
+**Validation writes last.** `validateCompanyForm` now runs every check, the two duplicate checks included, before `industry` auto-registration. Before this, a request rejected with `409` for a duplicate website had already added its new industry option. It also takes the current Company, so the Update-only rule "omitted `branch_code`/`postal_code` keep their value" lives next to the other checks instead of in the handler.
+
+**Incremental sync.** `GET /companies` (so also `/open/companies` and `/companies/export`) gains `updated_since` (inclusive; RFC 3339 or `YYYY-MM-DD`; `422` if unparseable), and `sort` accepts `updated_at`.
+
+**Search covers tax IDs.** `?search=` also matches `tax_id`, with the term's spaces/dashes dropped. A term with nothing left after that ("-") skips the tax ID column rather than matching every row.
+
+**PDFs.** Quote and Contract PDFs append `postal_code` to the address line and print the branch with the tax ID ("Tax ID: 0105555555555 (Head office)", "(Branch 00001)"). Both now share `utils.CompanyPartyLines` instead of duplicating the block, and `handlers.derefStr` is replaced by the shared `utils.DerefString`.
+
+**Swagger.** `docs/swagger.json`/`.yaml` are regenerated, which also picks up earlier annotation changes never regenerated. Company Create/Update now document their `409`/`422` responses (the old `400` note wrongly listed a missing name, which is a `422`). `cmd/api/main.go` now defines the `ApiKeyAuth` (`X-API-Key`) scheme the Open API routes were already tagged with. `docs/embed.go`'s regen steps note to delete the `docs/docs.go` swag also writes.
+
+Regression-guarded: `tests/company_tax_id_test.go`, `TestNormalizeTaxID` and `TestCompanyPartyLines` (`internal/utils`). Spec: `api-system-spec.md` §4, §7.4, §8.1. Guide: `docs/OPEN_API_GUIDE.md` intro, §6, §12b, §13.
+
 ## 2026-09-27 — Company `branch_code`/`postal_code`, exact `tax_id` filter
 
 Requested by the IGG Finance accounting integration, which identifies a customer by its 13-digit tax ID plus branch number, and needs the buyer's branch on full tax invoices.

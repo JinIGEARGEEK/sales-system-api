@@ -32,9 +32,12 @@ func tagFilter(query *gorm.DB, v string) *gorm.DB {
 	return query.Where("? = ANY(tags)", strings.ToLower(v))
 }
 
-// applyCompanyFilters applies status/industry/tag/search filters shared by
-// CompanyHandler.List and ExportHandler.Companies.
-func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
+// applyCompanyFilters applies the filters shared by CompanyHandler.List and
+// ExportHandler.Companies: status, industry, tag, search (name, website or
+// tax ID), tax_id/branch_code, updated_since, stale_days, has_won_deal.
+// Returns a non-nil error (a 422 for the caller) only for an unparseable
+// updated_since.
+func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) (*gorm.DB, error) {
 	if v := c.Query("status"); v != "" {
 		// Case-insensitive: Status is meant to be the canonical lowercase
 		// active/archived (now enforced on write, see normalizeCompanyStatus),
@@ -55,12 +58,27 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 	}
 	if v := c.Query("search"); v != "" {
 		like := utils.LikePattern(v)
-		query = query.Where("name ILIKE ? ESCAPE '\\' OR website ILIKE ? ESCAPE '\\'", like, like)
+		clause, args := "name ILIKE ? ESCAPE '\\' OR website ILIKE ? ESCAPE '\\'", []interface{}{like, like}
+		// Tax IDs are stored without spaces/dashes, so the term is normalized
+		// the same way before matching that column. Skipped when nothing is
+		// left ("-"), since an empty pattern would match every tax ID.
+		if taxID := utils.NormalizeTaxID(v); taxID != "" {
+			clause += " OR tax_id ILIKE ? ESCAPE '\\'"
+			args = append(args, utils.LikePattern(taxID))
+		}
+		query = query.Where(clause, args...)
 	}
 	// tax_id/branch_code — exact match, for integrations that identify a
-	// Company by its tax ID + branch rather than by name.
-	if v := strings.TrimSpace(c.Query("tax_id")); v != "" {
-		query = query.Where("tax_id = ?", v)
+	// Company by its tax ID + branch rather than by name. tax_id is
+	// normalized like stored values, so "0-1055-55555-55-5" still matches.
+	// A value with nothing left after that ("-", " ") matches no Company
+	// rather than dropping the filter: a caller that takes the first result
+	// as its match must not get an arbitrary Company back. That needs no
+	// special case: no stored tax_id is "" (writes and the boot-time
+	// normalization store blank as NULL). An empty ?tax_id= is still "no
+	// filter", like every other parameter.
+	if raw := c.Query("tax_id"); raw != "" {
+		query = query.Where("tax_id = ?", utils.NormalizeTaxID(raw))
 	}
 	if v := strings.TrimSpace(c.Query("branch_code")); v != "" {
 		query = query.Where("branch_code = ?", v)
@@ -72,6 +90,15 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 	// relying on withLastActivityAt's joined alias, so this filter works
 	// standalone here (and in ExportHandler.Companies, which shares this
 	// function but never joins the activity subquery itself).
+	// updated_since (inclusive, RFC 3339 or YYYY-MM-DD) — lets a sync pull
+	// only the Companies changed since its last run.
+	if v := c.Query("updated_since"); v != "" {
+		t, err := parseTimeBound(v)
+		if err != nil {
+			return query, err
+		}
+		query = query.Where("companies.updated_at >= ?", t)
+	}
 	if v := c.Query("stale_days"); v != "" {
 		if days, err := strconv.Atoi(v); err == nil {
 			cutoff := time.Now().AddDate(0, 0, -days)
@@ -92,7 +119,7 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 			query = query.Where(exists, models.DealStatusWon)
 		}
 	}
-	return query
+	return query, nil
 }
 
 // applyContactFilters applies company_id/status/tag/search filters shared by

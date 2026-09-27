@@ -16,6 +16,10 @@
 // @in header
 // @name Authorization
 // @description Bearer JWT, e.g. "Bearer <token>".
+// @securityDefinitions.apikey ApiKeyAuth
+// @in header
+// @name X-API-Key
+// @description Open API key for the /open/* routes (docs/OPEN_API_GUIDE.md).
 package main
 
 import (

@@ -2,11 +2,60 @@ package utils
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/go-pdf/fpdf"
 
 	"github.com/igeargeek/sales-system-api/internal/models"
 )
+
+// HeadOfficeBranchCode is the branch_code that means head office on a Thai
+// tax document.
+const HeadOfficeBranchCode = "00000"
+
+// CompanyPartyLines returns the registered-party lines Quote and Contract
+// PDFs print under the company name: the address with the postal code
+// appended, and the tax ID with its branch, since a full tax invoice must
+// say which branch it's for. Without a tax ID the branch prints on its own
+// line. Blank fields are skipped. English only, because the PDFs use the core
+// Arial font, which has no Thai glyphs.
+func CompanyPartyLines(company models.Company) []string {
+	var lines []string
+	if address := strings.TrimSpace(DerefString(company.Address) + " " + DerefString(company.PostalCode)); address != "" {
+		lines = append(lines, "Address: "+address)
+	}
+	taxID, branch := DerefString(company.TaxID), branchLabel(DerefString(company.BranchCode))
+	switch {
+	case taxID != "" && branch != "":
+		lines = append(lines, fmt.Sprintf("Tax ID: %s (%s)", taxID, branch))
+	case taxID != "":
+		lines = append(lines, "Tax ID: "+taxID)
+	case branch != "":
+		lines = append(lines, "Branch: "+strings.TrimPrefix(branch, "Branch "))
+	}
+	return lines
+}
+
+// branchLabel names a branch code the way a tax document does: "Head office"
+// for 00000, else "Branch 00001". Blank for no code.
+func branchLabel(code string) string {
+	switch code {
+	case "":
+		return ""
+	case HeadOfficeBranchCode:
+		return "Head office"
+	default:
+		return "Branch " + code
+	}
+}
+
+// DerefString returns *s, or "" for nil.
+func DerefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
 
 // RenderLineItemsTable draws the Description/Qty/Unit Price/Total header row,
 // one row per item, and a Grand Total row — used by Contract's PDF export

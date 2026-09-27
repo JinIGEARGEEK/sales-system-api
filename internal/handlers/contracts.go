@@ -237,12 +237,8 @@ func (h *ContractHandler) ExportPDF(c *fiber.Ctx) error {
 	pdf.Ln(6)
 	pdf.Cell(0, 6, fmt.Sprintf("Party: %s", strOrDefault(company.LegalName, company.Name)))
 	pdf.Ln(6)
-	if company.Address != nil && *company.Address != "" {
-		pdf.Cell(0, 6, fmt.Sprintf("Address: %s", *company.Address))
-		pdf.Ln(6)
-	}
-	if company.TaxID != nil && *company.TaxID != "" {
-		pdf.Cell(0, 6, fmt.Sprintf("Tax ID: %s", *company.TaxID))
+	for _, line := range utils.CompanyPartyLines(company) {
+		pdf.Cell(0, 6, line)
 		pdf.Ln(6)
 	}
 	pdf.Cell(0, 6, fmt.Sprintf("Contact: %s (%s)", contact.Name, contact.RoleTitle))

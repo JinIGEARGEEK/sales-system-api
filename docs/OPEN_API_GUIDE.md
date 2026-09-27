@@ -2,7 +2,7 @@
 
 A guide for external/partner integrations that need to create, read, or update **Company**, **Contact**, **Project**, **Product**, **Prospect**, and **Lead** records without a staff login, and to read a Deal's **payment schedule** (read-only). If you're working inside this repo on the main resource API instead, see [`biz_spec/api-system-spec.md`](../biz_spec/api-system-spec.md) — this document only covers the `/open/*` routes and the `/admin/api-keys` credentials that unlock them (§8.9 there).
 
-This CRM is meant to be the **source of truth** for this data across our internal systems — several of them create, update, and read the same records here. Two things follow from that, both covered in detail below: every Company Create is deduped by website domain so the same real-world company never ends up as two rows (§11's `409 Conflict`), and every Create across every resource supports an `Idempotency-Key` header so a retried call can't accidentally create a duplicate either (§11).
+This CRM is meant to be the **source of truth** for this data across our internal systems — several of them create, update, and read the same records here. Two things follow from that, both covered in detail below: every Company Create is deduped by website domain and by tax ID + branch, so the same real-world company never ends up as two rows (§12b's `409 Conflict`), and every Create across every resource supports an `Idempotency-Key` header so a retried call can't accidentally create a duplicate either (§12a).
 
 ---
 
@@ -144,16 +144,25 @@ X-API-Key: sk_live_...
 
 ### `GET /api/v1/open/companies` — List
 
-Supports the same filters as the staff-facing list: `status`, `tag`, `industry`, `search` (matches name), `tax_id`, `branch_code`, `stale_days`, `has_won_deal`, `sort` (`created_at`/`name`/`industry`, prefix `-` for descending), `page`, `per_page`. `status`, `tag`, and `industry` all match case-insensitively (`?status=ACTIVE` and `?status=active` behave identically).
+Supports the same filters as the staff-facing list: `status`, `tag`, `industry`, `search` (matches name, website or tax ID), `tax_id`, `branch_code`, `updated_since`, `stale_days`, `has_won_deal`, `sort` (`created_at`/`updated_at`/`name`/`industry`, prefix `-` for descending), `page`, `per_page`. `status`, `tag`, and `industry` all match case-insensitively (`?status=ACTIVE` and `?status=active` behave identically).
 
-`tax_id` and `branch_code` are **exact** matches: every character must match the stored value (surrounding spaces in the query are ignored), so `?tax_id=010555555555` does not match `0105555555555`. Use them together to find one branch of a company:
+`tax_id` and `branch_code` are **exact** matches, so `?tax_id=010555555555` does not match `0105555555555`. Spaces and dashes don't matter: tax IDs are stored without them, and `?tax_id=` drops them the same way, so `0-1055-55555-55-5` and `0105555555555` find the same Company. Use them together to find one branch of a company:
 
 ```
 GET /api/v1/open/companies?tax_id=0105555555555&branch_code=00000
 X-API-Key: sk_live_...
 ```
 
-`tax_id` alone returns every branch registered under that tax ID. An empty `data` array means no Company has it yet. `tax_id` is matched as stored, and it isn't format-checked on write, so a value saved with dashes or spaces (`0-1055-55555-55-5`) won't match the 13 plain digits. Search by name to find such rows.
+`tax_id` alone returns every branch registered under that tax ID. An empty `data` array means no Company has it yet. A `tax_id` made only of spaces or dashes (`?tax_id=-`) matches nothing rather than being ignored, so a missing value on your side can't return an unrelated Company. Leave the parameter out entirely to list without this filter.
+
+**Syncing only what changed.** `updated_since` (inclusive; an RFC 3339 timestamp such as `2026-09-27T00:00:00Z`, or a `YYYY-MM-DD` date, read as midnight UTC) returns only Companies created or edited at or after that time. Combine it with `sort=updated_at` and page through the results:
+
+```
+GET /api/v1/open/companies?updated_since=2026-09-26T00:00:00Z&sort=updated_at&per_page=100
+X-API-Key: sk_live_...
+```
+
+Save the time you started the run, not the time it finished, and use that as the next run's `updated_since`, so an edit made during the run is picked up next time. A value that isn't a valid timestamp or date returns `422`. Soft-deleted Companies aren't returned, so a deletion doesn't show up in this feed.
 
 ```
 GET /api/v1/open/companies?search=acme&status=active
@@ -220,11 +229,11 @@ Every field below is a **JSON string** unless noted otherwise — `tags` is an a
 | `revenue_size` | string | | Same rule as `size` — see §5. **Common mistake:** sending a number (e.g. `3`) or a bare numeric string instead of one of the label strings §5 returns — that's a type/value mismatch, not a valid shorthand. |
 | `notes` | string | | |
 | `status` | string | | `"active"` or `"archived"`, matched/stored case-insensitively (`"Active"` is accepted and normalized to `"active"`); defaults to `active`. |
-| `legal_name`, `address`, `tax_id` | string \| null | | Used on Contract PDF exports if present. `tax_id` is stored as sent (no format check) and is what `?tax_id=` matches exactly. |
+| `legal_name`, `address`, `tax_id` | string \| null | | Printed on Quote and Contract PDFs if present. `tax_id` is saved with spaces and dashes removed (`"0-1055-55555-55-5"` is stored as `"0105555555555"`); a value with nothing left is stored as `null`. There's no other format check. **Deduped** together with `branch_code` (§12b). |
 | `branch_code` | string \| null | | Branch number: exactly 5 digits, e.g. `"00000"` = head office. Send it as a string: a JSON number loses the leading zeros and is rejected with `400`. Surrounding spaces are trimmed, and `""` is stored as `null`. |
 | `postal_code` | string \| null | | Exactly 5 digits, kept separate from `address`. Same string, trimming and blank rules as `branch_code`. |
 
-`201 Created` returns the new Company (same shape as List's rows, minus `last_activity_at`). `422 Unprocessable Entity` for a missing `name`, an invalid `website`, a `branch_code`/`postal_code` that isn't 5 digits, or a `size`/`revenue_size`/`status` that doesn't match an active option/allowed value. `409 Conflict` if the website's domain already belongs to a different Company (§12). `400 Bad Request` for a field sent as the wrong JSON type — see [§13](#13-error-reference).
+`201 Created` returns the new Company (same shape as List's rows, minus `last_activity_at`). `422 Unprocessable Entity` for a missing `name`, an invalid `website`, a `branch_code`/`postal_code` that isn't 5 digits, or a `size`/`revenue_size`/`status` that doesn't match an active option/allowed value. `409 Conflict` if the website's domain, or the `tax_id` + `branch_code` pair, already belongs to a different Company (§12b). `400 Bad Request` for a field sent as the wrong JSON type — see [§13](#13-error-reference).
 
 ### `GET /api/v1/open/companies/:id` — Get
 
@@ -242,7 +251,7 @@ Same body shape and validation as Create (`name` is required here too — an upd
 - `status`: omit it (or send `""`) and the existing status is kept, since an empty string is never a valid status to set.
 - `branch_code` and `postal_code`: omit the key and the saved value is kept. Send `null` or `""` to clear it. These fields are newer than the other clients that update Companies (including the staff web app's edit form), so leaving them out must not wipe values another system set.
 
-Everything else (`name`, `industry`, `size`, `revenue_size`, `website`, `tags`, `notes`, `legal_name`, `address`, `tax_id`) follows the general rule. To change only some fields, `GET` the Company first and send every other field back with its current value. Changing `website` to a domain already used by a *different* Company gets the same `409 Conflict` Create does (§12) — changing it back to the Company's own current domain is fine.
+Everything else (`name`, `industry`, `size`, `revenue_size`, `website`, `tags`, `notes`, `legal_name`, `address`, `tax_id`) follows the general rule. To change only some fields, `GET` the Company first and send every other field back with its current value. Changing `website` to a domain, or `tax_id`/`branch_code` to a pair, already used by a *different* Company gets the same `409 Conflict` Create does (§12b). Resending the Company's own current values is always fine.
 
 ```
 PUT /api/v1/open/companies/42
@@ -750,7 +759,7 @@ Ordered by `due_date` ascending. Not paginated. An empty `data` array means no s
 
 `404 Not Found` if the Deal doesn't exist.
 
-## 12. Avoiding duplicates (idempotent retries + domain dedupe)
+## 12. Avoiding duplicates (idempotent retries + Company dedupe)
 
 This CRM is the source of truth other internal systems sync this data through, so an accidental duplicate isn't just clutter here — it propagates to everything reading from it. Two independent safeguards:
 
@@ -774,7 +783,7 @@ Content-Type: application/json
 
 Idempotency keys are scoped per API key and stay valid for replay for 24 hours after the original attempt — a truly new call should use a fresh key value (don't reuse one across unrelated operations).
 
-### 12b. Domain dedupe on Company Create/Update
+### 12b. Company dedupe on Create/Update: website domain, tax ID + branch
 
 Independent of idempotency keys: `POST /open/companies` (and `PUT` when changing `website`) checks whether the website's domain already belongs to a *different*, existing Company — `https://acme.com`, `http://www.acme.com/about`, and `acme.com` all normalize to the same domain. If it does, you get `409 Conflict` naming the existing Company's id instead of a second row being silently created:
 
@@ -784,9 +793,20 @@ Independent of idempotency keys: `POST /open/companies` (and `PUT` when changing
 
 On a `409` here, `GET`/`PUT` the existing id rather than retrying Create — that's almost certainly the same real-world company your system already has under a different name/spelling. A Company with no `website` (or one whose domain doesn't already exist elsewhere) is unaffected.
 
-**There's no dedupe on `tax_id`.** The same tax ID legitimately appears on several Companies, one per branch, and a second Create with an existing `tax_id` + `branch_code` succeeds. If your system identifies companies by tax ID (for example, companies without a website), look up with `GET /open/companies?tax_id=…&branch_code=…` before creating, and only `POST` (with an `Idempotency-Key`, §12a) when nothing matches.
+**Tax ID + branch.** The same check runs on the `tax_id` + `branch_code` pair, which also catches companies with no website. One tax ID can have several Companies, one per branch, but not two with the same branch:
 
-**No such domain-dedupe exists for Project/Product/Prospect/Lead** — only the Idempotency-Key safeguard above protects those from a retried Create.
+```json
+{ "error": { "code": "CONFLICT", "message": "A company with this tax ID and branch already exists (id 42, \"Acme Corp\")" } }
+```
+
+- Spaces and dashes are ignored (`0-1055-55555-55-5` clashes with `0105555555555`).
+- A Company with a tax ID but no `branch_code` clashes only with another that also has no branch. `null` and `"00000"` (head office) are treated as different.
+- A Company with no `tax_id` is never checked.
+- On `PUT`, the check only runs when you change the pair. Older records that already shared a pair before this check existed can still be edited, as long as you resend their current `tax_id` and `branch_code`.
+
+Unlike the website check, this one has no database constraint behind it, so two Creates sent at exactly the same moment can both succeed. Look up with `GET /open/companies?tax_id=…&branch_code=…` first, and `POST` (with an `Idempotency-Key`, §12a) only when nothing matches.
+
+**No such dedupe exists for Project/Product/Prospect/Lead** — only the Idempotency-Key safeguard above protects those from a retried Create.
 
 ## 13. Error reference
 
@@ -808,8 +828,8 @@ Every error follows the same envelope:
 | 401 | `UNAUTHORIZED` | Missing/invalid/revoked API key |
 | 403 | `FORBIDDEN` | The key's owner (a Sales Rep) tried to create/update/assign a Prospect or Lead they don't own — see §1's ownership note; or read a payment schedule on a Deal assigned to someone else, or the owner is a Production user (§11a) |
 | 404 | `NOT_FOUND` | The record id doesn't exist — or, on Project Create, `company_id` doesn't reference an existing Company, or on a payment schedule read, the Deal doesn't exist |
-| 409 | `CONFLICT` | A Company's website domain already belongs to a different Company (§12b); or an `Idempotency-Key` was reused with a different body, or while its original request is still in flight (§12a) |
-| 422 | `VALIDATION_ERROR` | Missing required field, invalid `website`/`email`/`phone` format, a Company `branch_code`/`postal_code` that isn't 5 digits, invalid `status`, or a `size`/`revenue_size`/`role_title`/`category`/`source`/`business_unit` that isn't a valid/active option |
+| 409 | `CONFLICT` | A Company's website domain, or its `tax_id` + `branch_code` pair, already belongs to a different Company (§12b); or an `Idempotency-Key` was reused with a different body, or while its original request is still in flight (§12a) |
+| 422 | `VALIDATION_ERROR` | An unparseable `updated_since`, missing required field, invalid `website`/`email`/`phone` format, a Company `branch_code`/`postal_code` that isn't 5 digits, invalid `status`, or a `size`/`revenue_size`/`role_title`/`category`/`source`/`business_unit` that isn't a valid/active option |
 | 429 | `TOO_MANY_REQUESTS` | Over 300 requests/minute on this key |
 | 500 | `INTERNAL_ERROR` | Unexpected server error — safe to retry (pair with an `Idempotency-Key`, §12a, on a Create so a retry after a `500` can't double-create) |
 
