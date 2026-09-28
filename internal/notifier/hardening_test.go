@@ -321,3 +321,22 @@ func TestRunEvery_RecoversPanicsAndStopsOnCancel(t *testing.T) {
 	defer mu.Unlock()
 	assert.Equal(t, stopped, passes, "no passes after cancel")
 }
+
+// A Sent quote is still valid through its whole validity date (local time),
+// so on that last day it's inside the expiring window — the rule used to
+// compare the date's UTC-midnight instant with now, which dropped it from
+// 07:00 Bangkok onward.
+func TestQuoteExpiringRule_LastValidDayStillFires(t *testing.T) {
+	bangkok := time.FixedZone("ICT", 7*3600)
+	_, db := testutil.App(t)
+	owner := testutil.CreateUser(t, db, models.RoleSalesRep)
+	deal := seedDealForNotifier(t, db, &owner.ID)
+	now := time.Date(2026, 9, 28, 10, 0, 0, 0, bangkok)
+	lastDay := "2026-09-28"
+	require.NoError(t, db.Create(&models.Quote{DealID: deal.ID, Status: models.QuoteStatusSent, ValidityDate: &lastDay}).Error)
+	rule := seedRule(t, db, models.NotificationEntityQuote, 7, true)
+
+	checkQuoteExpiringRule(db, testutil.Config(), rule, now)
+
+	assert.Len(t, tasksFor(t, db), 1, "a quote on its last valid day is expiring, not expired")
+}

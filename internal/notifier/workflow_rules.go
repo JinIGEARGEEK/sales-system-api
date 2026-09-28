@@ -289,11 +289,17 @@ func checkQuoteExpiringRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 		return
 	}
 
-	cutoff := now.Add(time.Duration(rule.ThresholdDays) * 24 * time.Hour)
+	// Calendar days, as Quote.EffectiveStatusAt reads them: a quote is still
+	// valid through its whole validity date (local time), so it's in the
+	// window from today through today+threshold — not by the UTC-midnight
+	// instant a bare date parses to, which dropped it at 07:00 Bangkok on
+	// its last day.
+	today := utils.Today(now)
+	cutoff := today.AddDate(0, 0, rule.ThresholdDays)
 
 	for _, quote := range quotes {
-		validUntil, ok := models.ParseValidityDate(quote.ValidityDate)
-		if !ok || validUntil.Before(now) || validUntil.After(cutoff) {
+		validUntil, ok := quote.ValidityDay()
+		if !ok || validUntil.Before(today) || validUntil.After(cutoff) {
 			continue
 		}
 		if alreadyNotified(db, rule.ID, quote.ID, "") {
