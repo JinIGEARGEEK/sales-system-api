@@ -11,19 +11,12 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
-// validateExternalEmail rejects a syntactically invalid, non-empty email —
-// unlike User accounts, a Lead's or Prospect's email belongs to an external
-// contact so it isn't restricted to the company domain (see
-// utils.IsValidCompanyEmail), just checked for basic format. Left
-// unvalidated before, a garbage address would silently persist and then be
-// relied on as an exact-match dedupe key by ImportHandler.ImportContacts.
-// Named for what it validates (any external-contact email field), not which
-// resource calls it — shared by LeadHandler and ProspectHandler.
+// validateExternalEmail rejects a syntactically invalid, non-empty email on
+// a Lead or Prospect. It's an external contact's address, so unlike a
+// User's (utils.IsValidCompanyEmail) any domain is fine; the format still
+// matters because ImportHandler.ImportContacts dedupes on it.
 //
-// Returns utils.ErrHandled (see its doc) if invalid, nil if valid — NOT
-// ValidationError's own return value, which is nil even on the invalid path
-// since the JSON write itself succeeds; forwarding that would make the
-// caller's `if err != nil` guard never fire.
+// Returns utils.ErrHandled (see its doc) if invalid, nil if valid.
 func validateExternalEmail(c *fiber.Ctx, email string) error {
 	if email == "" {
 		return nil
@@ -198,12 +191,8 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 		return nil
 	}
 
-	// Auto-assignment: only kicks in when the caller didn't specify an owner
-	// (e.g. a brand-new Lead created without picking someone explicitly).
-	// Explicit-assignee paths — Update, BulkReassign, Kanban drag, Convert —
-	// never hit this because they always pass a concrete AssignedTo (or
-	// intentionally leave it nil, which the same logic would fill in — but
-	// today only Create is reachable with a nil AssignedTo from those flows).
+	// Auto-assign only when the caller picked no owner; other write paths
+	// never auto-assign.
 	if form.AssignedTo == nil {
 		if autoID, err := h.pickAutoAssignee(); err != nil {
 			return utils.Internal(c, "Failed to auto-assign lead")
@@ -234,21 +223,15 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 // computeLeadScore sums the Weight of every active LeadScoringCriterion that
 // matches this Lead (FR-CRM-006). Unknown Field values never match — new
 // match fields are additive, not something existing rows accidentally start
-// matching. "has_company_name" keeps its original Field key (it's an
-// Admin-configurable, already-seeded criterion row — renaming the key would
-// silently stop matching for anyone's existing config) even though it now
-// checks CompanyID rather than the free-text CompanyName it's named after.
+// matching. "has_company_name" checks CompanyID; the key keeps its name so
+// existing Admin-configured criteria keep matching.
 func (h *LeadHandler) computeLeadScore(lead models.Lead) (int, error) {
 	score, _, err := h.computeLeadScoreDetailed(lead)
 	return score, err
 }
 
-// computeLeadScoreDetailed is computeLeadScore's full-detail sibling —
-// FR-CRM-007's score-breakdown UI (GET /leads/:id/score-breakdown below)
-// needs to know *which* criteria matched, not just the sum. Kept as one
-// shared implementation (computeLeadScore just discards the second return
-// value) rather than two independently-maintained copies of the same
-// matching logic.
+// computeLeadScoreDetailed is computeLeadScore plus which criteria matched,
+// for FR-CRM-007's score breakdown (GET /leads/:id/score-breakdown).
 func (h *LeadHandler) computeLeadScoreDetailed(lead models.Lead) (int, []models.LeadScoringCriterion, error) {
 	var criteria []models.LeadScoringCriterion
 	if err := h.DB.Where("is_active = ?", true).Find(&criteria).Error; err != nil {
@@ -483,10 +466,8 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 		return nil
 	}
 
-	// oldStatus/oldCompanyID captured ahead of the mutation below, mirroring
-	// Deal's oldStage pattern (deals.go Update) — the only reliable way to
-	// tell the rep actually changed status on this save, since the form
-	// resubmits the Lead's full state every time.
+	// Captured before the mutation: the form resubmits the full Lead on
+	// every save, so this is how a real status change is told apart.
 	oldStatus := lead.Status
 	oldCompanyID := lead.CompanyID
 	if form.Status == "" {
