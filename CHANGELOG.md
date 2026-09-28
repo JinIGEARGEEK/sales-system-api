@@ -26,7 +26,7 @@ Fixes from a full review of auth, handlers, reports and infrastructure.
 - Searched Lead/Prospect lists keep their sort order (they had no `ORDER BY` with the Company join).
 
 **Reports and dates.**
-- `date_from`/`date_to` on the lead/prospect source-conversion, top-referrers, win/loss, sales-cycle, dashboard summary, lead/prospect summaries and `/audit-log` (and their CSV exports) are inclusive server-local days (`utils.ParseDateRange`). They were UTC midnight, which dropped 00:00–07:00 Bangkok and most of the last day. A malformed or reversed range is `422`.
+- `date_from`/`date_to` on the lead/prospect source-conversion, top-referrers, win/loss, sales-cycle, dashboard summary, lead/prospect summaries and `/audit-log` (and their CSV exports) are inclusive server-local days (`utils.ParseDateRange`). They were UTC midnight, which dropped 00:00–07:00 Bangkok and most of the last day. A malformed or reversed range is `422`, with the same message everywhere (`/pipeline/overview` included, which had its own wording). `from`/`to` are accepted as aliases wherever `date_from`/`date_to` are.
 - A Sent quote stays `sent` through its whole validity date and shows `expired` from the next local day. The same applies to expiring-soon and the `quote` notification rule. Expiring-soon `total_value` is now the grand total (discounts, VAT, WHT).
 - Dashboard trends no longer repeat or skip a month on the 29th–31st, and bucket months at Bangkok midnight.
 - `sort=company_name` with filters on `/deals` and `/contacts` returned `500` ("ambiguous column"). Filter columns are now table-qualified, with an id tie-breaker.
@@ -46,10 +46,21 @@ Fixes from a full review of auth, handlers, reports and infrastructure.
 - The seeded Admin uses `ADMIN_INITIAL_PASSWORD` if set. Otherwise the generated password is printed once to stderr outside development.
 - CI builds the Docker image, boots it against Postgres, and checks `/health` and a clean stop.
 - `TEST_DB_NAME` overrides the test database.
+- A negative or malformed `JWT_EXPIRY_HOURS` now falls back to 720 with a log line (a negative value was accepted before).
 
 **New env vars:** `TRUSTED_PROXIES` (on Railway defaults to the private ranges; elsewhere trusts nothing), `ADMIN_INITIAL_PASSWORD`, `DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`, `DB_CONN_MAX_LIFETIME`, `DB_CONN_MAX_IDLE_TIME`.
 
-Regression-guarded: `tests/{session_invalidation,attachment_access,review_pass_deals,reports_date_range,quote_validity,dashboard_local_month,company_name_sort,reports_soft_delete,boot_backfill,server_config}_test.go`, `internal/notifier/hardening_test.go`, `internal/clientip`, `internal/utils/calendar_date_test.go`, `internal/models/quote_expiry_test.go`, `internal/handlers/dashboard_trend_internal_test.go`. Swagger regenerated.
+**Cleanup.**
+- Calendar-day helpers live in a new leaf package `internal/calendar` (`Day`, `LocalDay`, `Today`, `DaysUntil`, `LocalDaysBetween`, `Parse`, `ParseLocalDay`, `ParseLocalMidnight`), so `models` uses them instead of its own copy. `utils` keeps `DateRange`/`ParseDateRange`, which now returns a `*utils.DateRangeError`. `reportError` is the only place that writes the date-range 422.
+- `Quote.ExpiresWithin` is shared by the expiring-soon report and the quote rule. `models.ParseValidityDate` is removed.
+- Deal status from stage is decided in one place: one `utils.LookupStageFlags` query (replacing `IsWonStage`/`IsLostStage`) and `resolveDealStatus`, used by Create, Update, the Kanban move and Lead Convert. Deal Create and Lead Convert share `validateNewDealForm`.
+- Leads and Prospects share `applyLeadLikeSort`. One `bumpTokenVersion` (`UPDATE … RETURNING`) handles every session revocation.
+- `models.SalesPipelineRoles`, `IsValidRole`, `IsValidLeadStatus` and `utils.MinPasswordLength` replace hand-copied lists and constants.
+- Attachment access is table-driven, and a Quote's owner is resolved in one query.
+- `TRUSTED_PROXIES` is parsed once in `main` and passed to `server.New`/`routes.Setup`. One `database.AdvisoryLock` serves both boot and the tests. Pool defaults are `config.Default*` constants.
+- Tests pin `time.Local` once per package in `TestMain`, and share `listIDs`.
+
+Regression-guarded: `tests/{session_invalidation,attachment_access,review_pass_deals,reports_date_range,quote_validity,dashboard_local_month,company_name_sort,reports_soft_delete,boot_backfill,server_config}_test.go`, `internal/notifier/hardening_test.go`, `internal/clientip`, `internal/calendar`, `internal/utils/date_range_test.go`, `internal/models/quote_expiry_test.go`, `internal/handlers/dashboard_trend_internal_test.go`. Swagger regenerated.
 
 ## 2026-09-27 — Post-release fixes: receivables, installment alerts, dates, PDFs
 

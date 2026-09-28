@@ -58,7 +58,7 @@ See [`.env.example`](.env.example). Notable ones:
 |---|---|
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_SSLMODE` | Postgres connection |
 | `JWT_SECRET` | HMAC secret for signing tokens — **must** be overridden outside local dev; the server refuses to boot with the default value whenever `APP_ENV` is anything other than `development` (deny-by-default — a misspelled/unset `APP_ENV` fails closed instead of silently booting with a guessable secret) |
-| `JWT_EXPIRY_HOURS` | Access token lifetime |
+| `JWT_EXPIRY_HOURS` | Access token lifetime in hours (default 720; a negative or malformed value falls back to 720) |
 | `CORS_ORIGINS` | Comma-separated allow-list of origins. Defaults to `*` (any origin) for local dev; the server refuses to boot with `*` whenever `APP_ENV` is anything other than `development`, same deny-by-default reasoning as `JWT_SECRET` above — set an explicit allow-list in every other environment |
 | `PORT` | HTTP listen port (default `8080`) |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM` | Outbound mail server for the Task due-date reminder emails. Optional — if `SMTP_HOST` is left unset, email is disabled: the server logs that once at startup and every send silently no-ops (no per-message log lines, no errors), while alerts still reach people in-app (Notification Rules create Tasks, `GET /notification-log`). Set all five in production to actually deliver reminder emails. `internal/utils/mailer.go` requires and verifies TLS (implicit TLS on port 465, STARTTLS otherwise) — it refuses to send rather than falling back to a plaintext connection if the server doesn't offer either. |

@@ -542,14 +542,9 @@ definitions:
         type: string
       company_id:
         description: |-
-          CompanyID replaces the free-text CompanyName this Lead used to carry
-          (dropped 2026-08-24) — a real FK to Company, same as Deal/Contact,
-          instead of a bare string. Nullable: unlike Deal/Contact, a Lead can
-          still exist with no company picked yet (matching CompanyName's old
-          optional-ness — Create/Update never required it either). Existing
-          rows were backfilled from their old CompanyName text (exact
-          case-insensitive match against Companies, or a newly created Company
-          when no match existed) — see database.backfillLeadCompanyIDs.
+          CompanyID is a real FK to Company, as on Deal/Contact, but nullable:
+          a Lead can exist before a company is picked. See
+          database.backfillLeadCompanyIDs for rows migrated from free text.
         type: integer
       converted_deal_id:
         description: |-
@@ -1560,30 +1555,7 @@ definitions:
       contact_id:
         type: integer
       deal:
-        properties:
-          assigned_to:
-            type: integer
-          business_unit:
-            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.BusinessUnit'
-          business_unit_item:
-            type: string
-          channel:
-            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource'
-          expected_close_date:
-            type: string
-          lost_reason:
-            allOf:
-            - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason'
-            description: |-
-              LostReason is required only when stage resolves to a Lost stage,
-              same as Deal Create.
-          stage:
-            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage'
-          title:
-            type: string
-          value:
-            type: number
-        type: object
+        $ref: '#/definitions/internal_handlers.dealFields'
     type: object
   internal_handlers.customerProductForm:
     properties:
@@ -1664,6 +1636,29 @@ definitions:
       status:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.CustomerProductStatus'
     type: object
+  internal_handlers.dealFields:
+    properties:
+      assigned_to:
+        type: integer
+      business_unit:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.BusinessUnit'
+      business_unit_item:
+        type: string
+      channel:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource'
+      expected_close_date:
+        type: string
+      lost_reason:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason'
+        description: LostReason is required once stage or status is Lost.
+      stage:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage'
+      title:
+        type: string
+      value:
+        type: number
+    type: object
   internal_handlers.dealForm:
     properties:
       assigned_to:
@@ -1683,7 +1678,9 @@ definitions:
       forecast_category:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ForecastCategory'
       lost_reason:
-        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason'
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason'
+        description: LostReason is required once stage or status is Lost.
       probability:
         type: integer
       stage:
