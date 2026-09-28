@@ -40,7 +40,7 @@ type quoteTemplateForm struct {
 	Items         []models.QuoteItem    `json:"items"`
 	ScopeOfWork   string                `json:"scope_of_work"`
 	PriceType     models.QuotePriceType `json:"price_type"`
-	VatEnabled    bool                  `json:"vat_enabled"`
+	VatEnabled    *bool                 `json:"vat_enabled"` // nil = true, like Quote Create
 	WhtEnabled    bool                  `json:"wht_enabled"`
 	WhtRate       float64               `json:"wht_rate"`
 	DiscountTotal float64               `json:"discount_total"`
@@ -73,7 +73,7 @@ func (h *QuoteTemplateHandler) Create(c *fiber.Ctx) error {
 		Items:         models.JSONItems(snapshotQuoteItems(h.DB, form.Items)),
 		ScopeOfWork:   form.ScopeOfWork,
 		PriceType:     form.PriceType,
-		VatEnabled:    form.VatEnabled,
+		VatEnabled:    form.VatEnabled == nil || *form.VatEnabled,
 		WhtEnabled:    form.WhtEnabled,
 		WhtRate:       form.WhtRate,
 		DiscountTotal: form.DiscountTotal,
@@ -83,7 +83,9 @@ func (h *QuoteTemplateHandler) Create(c *fiber.Ctx) error {
 	if template.PriceType == "" {
 		template.PriceType = models.QuotePriceTypeExclTax
 	}
-	if err := h.DB.Create(&template).Error; err != nil {
+	// CreateKeepingFalse: VatEnabled is NOT NULL DEFAULT true, which a
+	// plain Create would apply over an explicit false.
+	if err := utils.CreateKeepingFalse(h.DB, &template); err != nil {
 		return utils.Internal(c, "Failed to save quote template")
 	}
 	return utils.Created(c, template)
