@@ -62,6 +62,8 @@ type sourceConversionRow struct {
 // emit first. successCondition is always one of this file's own literal SQL
 // fragments (never derived from a request param), so building it into the
 // FILTER clause via string concatenation carries no injection risk.
+// date_from/date_to are inclusive server-local days (dateRangeQuery); a bad
+// one comes back as a dateRangeError, the caller's 422.
 //
 // No company_tag filter on either caller — that only applies to Deal-based
 // reports. Lead gained a real Company FK (CompanyID) 2026-08-24, replacing
@@ -69,19 +71,18 @@ type sourceConversionRow struct {
 // would now be feasible for that one; just not added since this report's
 // filter set wasn't otherwise in scope for that change.
 func fetchSourceConversion(db *gorm.DB, c *fiber.Ctx, model any, successCondition string) ([]sourceConversionRow, error) {
+	window, err := dateRangeQuery(c)
+	if err != nil {
+		return nil, err
+	}
 	query := db.Model(model)
 	if v := c.Query("assigned_to"); v != "" {
 		query = query.Where("assigned_to = ?", v)
 	}
-	if v := c.Query("date_from"); v != "" {
-		query = query.Where("created_at >= ?", v)
-	}
-	if v := c.Query("date_to"); v != "" {
-		query = query.Where("created_at <= ?", v)
-	}
+	query = window.Apply(query, "created_at")
 
 	var rows []sourceConversionRow
-	err := query.
+	err = query.
 		Select("source, count(*) as total, count(*) FILTER (WHERE " + successCondition + ") as successful").
 		Group("source").
 		Order("total DESC").
@@ -120,15 +121,16 @@ func (h *ReportHandler) fetchLeadSourceConversion(c *fiber.Ctx) ([]leadSourceCon
 // @Security BearerAuth
 // @Produce json
 // @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
-// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on created_at"
-// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on created_at"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on created_at"
 // @Success 200 {object} map[string]interface{}
+// @Failure 422 {object} map[string]interface{} "Malformed date_from/date_to, or date_to before date_from"
 // @Failure 500 {object} map[string]interface{} "Failed to compute lead source conversion"
 // @Router /reports/lead-source-conversion [get]
 func (h *ReportHandler) LeadSourceConversion(c *fiber.Ctx) error {
 	result, err := h.fetchLeadSourceConversion(c)
 	if err != nil {
-		return utils.Internal(c, "Failed to compute lead source conversion")
+		return reportError(c, err, "Failed to compute lead source conversion")
 	}
 	return utils.OK(c, result)
 }
@@ -151,8 +153,15 @@ type topReferrerRow struct {
 // table type says." deals.lead_id (set at conversion, leads.go) gives the
 // Lead -> Deal edge; won-ness/revenue then reads deals.status/value directly,
 // same DealStatusWon check every other Won-based report uses. Sorted by
-// leads_referred DESC — the referrer sending the most volume leads.
+// leads_referred DESC — the referrer sending the most volume leads. A raw
+// Table() query gets no soft-delete scoping, so every table checks its own
+// deleted_at: trashed Leads aren't counted, and a trashed Deal/referrer is
+// treated as absent (its revenue drops out, its name goes NULL).
 func (h *ReportHandler) fetchTopReferrers(c *fiber.Ctx) ([]topReferrerRow, error) {
+	window, err := dateRangeQuery(c)
+	if err != nil {
+		return nil, err
+	}
 	query := h.DB.Table("leads").
 		Select(`leads.referred_by_type as referrer_type, leads.referred_by_id as referrer_id,
 			COALESCE(companies.name, contacts.name) as referrer_name,
@@ -161,25 +170,20 @@ func (h *ReportHandler) fetchTopReferrers(c *fiber.Ctx) ([]topReferrerRow, error
 			COUNT(DISTINCT deals.id) FILTER (WHERE deals.status = ?) as deals_won,
 			COALESCE(SUM(deals.value) FILTER (WHERE deals.status = ?), 0) as won_revenue`,
 			models.DealStatusWon, models.DealStatusWon).
-		Joins("LEFT JOIN deals ON deals.lead_id = leads.id").
-		Joins("LEFT JOIN companies ON leads.referred_by_type = 'company' AND leads.referred_by_id = companies.id").
-		Joins("LEFT JOIN contacts ON leads.referred_by_type = 'contact' AND leads.referred_by_id = contacts.id").
-		Where("leads.referred_by_id IS NOT NULL").
+		Joins("LEFT JOIN deals ON deals.lead_id = leads.id AND deals.deleted_at IS NULL").
+		Joins("LEFT JOIN companies ON leads.referred_by_type = 'company' AND leads.referred_by_id = companies.id AND companies.deleted_at IS NULL").
+		Joins("LEFT JOIN contacts ON leads.referred_by_type = 'contact' AND leads.referred_by_id = contacts.id AND contacts.deleted_at IS NULL").
+		Where("leads.referred_by_id IS NOT NULL AND leads.deleted_at IS NULL").
 		Group("leads.referred_by_type, leads.referred_by_id, COALESCE(companies.name, contacts.name)").
 		Order("leads_referred DESC")
 
 	if v := c.Query("assigned_to"); v != "" {
 		query = query.Where("leads.assigned_to = ?", v)
 	}
-	if v := c.Query("date_from"); v != "" {
-		query = query.Where("leads.created_at >= ?", v)
-	}
-	if v := c.Query("date_to"); v != "" {
-		query = query.Where("leads.created_at <= ?", v)
-	}
+	query = window.Apply(query, "leads.created_at")
 
 	rows := []topReferrerRow{}
-	err := query.Scan(&rows).Error
+	err = query.Scan(&rows).Error
 	return rows, err
 }
 
@@ -190,15 +194,16 @@ func (h *ReportHandler) fetchTopReferrers(c *fiber.Ctx) ([]topReferrerRow, error
 // @Security BearerAuth
 // @Produce json
 // @Param assigned_to query string false "Filter by the referred Lead's assigned Sales Rep user ID"
-// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on the Lead's created_at"
-// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on the Lead's created_at"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on the Lead's created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on the Lead's created_at"
 // @Success 200 {object} map[string]interface{}
+// @Failure 422 {object} map[string]interface{} "Malformed date_from/date_to, or date_to before date_from"
 // @Failure 500 {object} map[string]interface{} "Failed to compute top referrers"
 // @Router /reports/top-referrers [get]
 func (h *ReportHandler) TopReferrers(c *fiber.Ctx) error {
 	rows, err := h.fetchTopReferrers(c)
 	if err != nil {
-		return utils.Internal(c, "Failed to compute top referrers")
+		return reportError(c, err, "Failed to compute top referrers")
 	}
 	return utils.OK(c, rows)
 }
@@ -239,15 +244,16 @@ func (h *ReportHandler) fetchProspectSourceConversion(c *fiber.Ctx) ([]prospectS
 // @Security BearerAuth
 // @Produce json
 // @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
-// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on created_at"
-// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on created_at"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on created_at"
 // @Success 200 {object} map[string]interface{}
+// @Failure 422 {object} map[string]interface{} "Malformed date_from/date_to, or date_to before date_from"
 // @Failure 500 {object} map[string]interface{} "Failed to compute prospect source conversion"
 // @Router /reports/prospect-source-conversion [get]
 func (h *ReportHandler) ProspectSourceConversion(c *fiber.Ctx) error {
 	result, err := h.fetchProspectSourceConversion(c)
 	if err != nil {
-		return utils.Internal(c, "Failed to compute prospect source conversion")
+		return reportError(c, err, "Failed to compute prospect source conversion")
 	}
 	return utils.OK(c, result)
 }
@@ -263,10 +269,12 @@ type customerByProductStatus struct {
 // fetchCustomersByProductStatus — shared by CustomersByProductStatus (JSON)
 // and its CSV export. FR-CRM-056, FR-CRM-055 (company-tag filter). Sorted by
 // start_date DESC so the most recently adopted/onboarded rows surface first.
+// A trashed Company's rows are left out (Model() scopes customer_products'
+// own deleted_at, not the joined table's).
 func (h *ReportHandler) fetchCustomersByProductStatus(c *fiber.Ctx) ([]customerByProductStatus, error) {
 	query := h.DB.Model(&models.CustomerProduct{}).
 		Select("customer_products.company_id, companies.name as company_name, customer_products.product_id, customer_products.status, customer_products.start_date").
-		Joins("JOIN companies ON companies.id = customer_products.company_id")
+		Joins("JOIN companies ON companies.id = customer_products.company_id AND companies.deleted_at IS NULL")
 
 	if v := c.Query("product_id"); v != "" {
 		query = query.Where("customer_products.product_id = ?", v)
@@ -327,16 +335,15 @@ type winLossReasonRow struct {
 // so the biggest-volume reason (often "won") leads, with the largest lost
 // reasons right behind it.
 func (h *ReportHandler) fetchWinLossReasons(c *fiber.Ctx) ([]winLossReasonRow, error) {
+	window, err := dateRangeQuery(c)
+	if err != nil {
+		return nil, err
+	}
 	query := h.DB.Model(&models.Deal{}).Where("deals.status IN ('won', 'lost')")
 	if v := c.Query("assigned_to"); v != "" {
 		query = query.Where("deals.assigned_to = ?", v)
 	}
-	if v := c.Query("date_from"); v != "" {
-		query = query.Where("deals.created_at >= ?", v)
-	}
-	if v := c.Query("date_to"); v != "" {
-		query = query.Where("deals.created_at <= ?", v)
-	}
+	query = window.Apply(query, "deals.created_at")
 	if v := c.Query("company_tag"); v != "" {
 		query = query.Joins("JOIN companies ON companies.id = deals.company_id").
 			Where("companies.tags && ARRAY[?]::text[]", v)
@@ -345,7 +352,7 @@ func (h *ReportHandler) fetchWinLossReasons(c *fiber.Ctx) ([]winLossReasonRow, e
 	// Non-nil starting slice — see the comment on fetchCustomersByProductStatus's
 	// identical `rows := []T{}` above for why this matters.
 	rows := []winLossReasonRow{}
-	err := query.
+	err = query.
 		Select(`CASE WHEN deals.status = 'won' THEN 'won' ELSE COALESCE(deals.lost_reason, 'other') END as reason,
 			count(*) as count, COALESCE(SUM(deals.value), 0) as value`).
 		Group("reason").
@@ -361,16 +368,17 @@ func (h *ReportHandler) fetchWinLossReasons(c *fiber.Ctx) ([]winLossReasonRow, e
 // @Security BearerAuth
 // @Produce json
 // @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
-// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on deals.created_at"
-// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on deals.created_at"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on deals.created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on deals.created_at"
 // @Param company_tag query string false "Filter by Company tag"
 // @Success 200 {object} map[string]interface{}
+// @Failure 422 {object} map[string]interface{} "Malformed date_from/date_to, or date_to before date_from"
 // @Failure 500 {object} map[string]interface{} "Failed to compute win/loss reasons"
 // @Router /reports/win-loss-reasons [get]
 func (h *ReportHandler) WinLossReasons(c *fiber.Ctx) error {
 	rows, err := h.fetchWinLossReasons(c)
 	if err != nil {
-		return utils.Internal(c, "Failed to compute win/loss reasons")
+		return reportError(c, err, "Failed to compute win/loss reasons")
 	}
 	return utils.OK(c, rows)
 }
@@ -669,6 +677,12 @@ type quoteExpiringSoonRow struct {
 // quote resolves to, since there's no single SQL query joining all three
 // tables here. Sorted by validity_date ascending so the soonest-to-expire
 // quote (the most urgent one) leads.
+//
+// Validity is a calendar day (models.Quote.ValidityDay): a quote is listed
+// from today through today+within_days, its last valid day included, the
+// same day EffectiveStatus stops calling it Sent. total_value is the
+// quote's grand total (utils.ComputeQuoteTotals: line discounts, quote
+// discount, VAT, WHT), the figure its PDF prints.
 func (h *ReportHandler) fetchQuotesExpiringSoon(c *fiber.Ctx) ([]quoteExpiringSoonRow, error) {
 	withinDays := 7
 	if v := c.Query("within_days"); v != "" {
@@ -684,19 +698,19 @@ func (h *ReportHandler) fetchQuotesExpiringSoon(c *fiber.Ctx) ([]quoteExpiringSo
 		return nil, err
 	}
 
-	now := time.Now()
-	deadline := now.AddDate(0, 0, withinDays)
+	today := utils.Today(time.Now())
+	deadline := today.AddDate(0, 0, withinDays)
 	type quoteWithDeadline struct {
 		quote      models.Quote
 		validUntil time.Time
 	}
 	byDeal := map[uint][]quoteWithDeadline{}
 	for _, q := range quotes {
-		validUntil, ok := models.ParseValidityDate(q.ValidityDate)
+		validUntil, ok := q.ValidityDay()
 		if !ok {
 			continue
 		}
-		if validUntil.Before(now) || validUntil.After(deadline) {
+		if validUntil.Before(today) || validUntil.After(deadline) {
 			continue
 		}
 		byDeal[q.DealID] = append(byDeal[q.DealID], quoteWithDeadline{quote: q, validUntil: validUntil})
@@ -738,10 +752,8 @@ func (h *ReportHandler) fetchQuotesExpiringSoon(c *fiber.Ctx) ([]quoteExpiringSo
 			continue
 		}
 		for _, qwd := range dealQuotes {
-			total := 0.0
-			for _, item := range qwd.quote.Items {
-				total += item.Qty * item.Price
-			}
+			q := qwd.quote
+			total := utils.ComputeQuoteTotals(q.Items, q.DiscountTotal, q.VatEnabled, q.WhtEnabled, q.WhtRate).GrandTotal
 			result = append(result, quoteExpiringSoonRow{
 				QuoteID: qwd.quote.ID, DealID: dealID, DealTitle: deal.Title,
 				CompanyName: companyNameByID[deal.CompanyID], ValidityDate: *qwd.quote.ValidityDate, TotalValue: total,
@@ -930,10 +942,14 @@ func (h *ReportHandler) ProjectsAtRisk(c *fiber.Ctx) error {
 // directly off the jsonb before/after columns (models.JSONMap unmarshals a
 // jsonb column into map[string]interface{}, so string fields like "stage"/
 // "status" come back as plain Go strings via a .(string) assertion below).
+// The type:jsonb tags are load-bearing: without one, GORM's schema parser
+// gets no data type from JSONMap (its Value() of a nil map is nil) and
+// leaves the field unmapped, so Scan silently left Before/After empty and
+// every by_stage bucket and closed-deal cycle came out empty.
 type stageTransition struct {
 	DealID    uint
-	Before    models.JSONMap
-	After     models.JSONMap
+	Before    models.JSONMap `gorm:"type:jsonb"`
+	After     models.JSONMap `gorm:"type:jsonb"`
 	CreatedAt time.Time
 }
 
@@ -972,19 +988,19 @@ type salesCycleBucketRow struct {
 //
 // Deals with no stage_changed entries at all (never moved since creation)
 // contribute nothing to by-stage/by-rep/by-source, same reasoning.
-func (h *ReportHandler) fetchSalesCycle(assignedTo, dateFrom, dateTo string) (fiber.Map, error) {
+//
+// Takes the already-parsed window (not *fiber.Ctx) since Summary calls it
+// from a goroutine. Audit rows are narrowed to the matching Deals in SQL
+// (entity_id IN the Deal subquery) — the log grows with every stage move
+// of every Deal ever, and loading all of it to filter in Go only got slower.
+func (h *ReportHandler) fetchSalesCycle(assignedTo string, window utils.DateRange) (fiber.Map, error) {
 	dealQuery := h.DB.Model(&models.Deal{})
 	if assignedTo != "" {
 		dealQuery = dealQuery.Where("assigned_to = ?", assignedTo)
 	}
-	if dateFrom != "" {
-		dealQuery = dealQuery.Where("created_at >= ?", dateFrom)
-	}
-	if dateTo != "" {
-		dealQuery = dealQuery.Where("created_at <= ?", dateTo)
-	}
+	dealQuery = window.Apply(dealQuery, "created_at")
 	var deals []models.Deal
-	if err := dealQuery.Find(&deals).Error; err != nil {
+	if err := dealQuery.Session(&gorm.Session{}).Find(&deals).Error; err != nil {
 		return nil, err
 	}
 	dealByID := make(map[uint]models.Deal, len(deals))
@@ -996,6 +1012,7 @@ func (h *ReportHandler) fetchSalesCycle(assignedTo, dateFrom, dateTo string) (fi
 	if err := h.DB.Table("audit_log_entries").
 		Select("entity_id as deal_id, before, after, created_at").
 		Where("entity_type = ? AND action = ?", "deal", "stage_changed").
+		Where("entity_id IN (?)", dealQuery.Session(&gorm.Session{}).Select("id")).
 		Order("entity_id ASC, created_at ASC").
 		Scan(&transitions).Error; err != nil {
 		return nil, err
@@ -1004,7 +1021,7 @@ func (h *ReportHandler) fetchSalesCycle(assignedTo, dateFrom, dateTo string) (fi
 	transitionsByDeal := map[uint][]stageTransition{}
 	for _, t := range transitions {
 		if _, ok := dealByID[t.DealID]; !ok {
-			continue // excluded by the assigned_to/date_range filter above
+			continue // created/trashed between the two queries
 		}
 		transitionsByDeal[t.DealID] = append(transitionsByDeal[t.DealID], t)
 	}
@@ -1094,13 +1111,18 @@ func (h *ReportHandler) fetchSalesCycle(assignedTo, dateFrom, dateTo string) (fi
 // @Security BearerAuth
 // @Produce json
 // @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
-// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on deals.created_at"
-// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on deals.created_at"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on deals.created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on deals.created_at"
 // @Success 200 {object} map[string]interface{}
+// @Failure 422 {object} map[string]interface{} "Malformed date_from/date_to, or date_to before date_from"
 // @Failure 500 {object} map[string]interface{} "Failed to compute sales cycle report"
 // @Router /reports/sales-cycle [get]
 func (h *ReportHandler) SalesCycle(c *fiber.Ctx) error {
-	result, err := h.fetchSalesCycle(c.Query("assigned_to"), c.Query("date_from"), c.Query("date_to"))
+	window, err := dateRangeQuery(c)
+	if err != nil {
+		return reportError(c, err, "")
+	}
+	result, err := h.fetchSalesCycle(c.Query("assigned_to"), window)
 	if err != nil {
 		return utils.Internal(c, "Failed to compute sales cycle report")
 	}

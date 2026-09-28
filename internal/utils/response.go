@@ -133,6 +133,11 @@ func orDefault(v, def string) string {
 // is intentionally NOT unified here — Lead.CompanyID is nullable and the join
 // is also needed for its "search" filter, so leads.go keeps its own LEFT JOIN
 // handling rather than forcing this INNER-JOIN-only helper to cover both.
+//
+// The caller's own filters must qualify their columns (deals.status, not
+// status) — companies shares status/name/email/tags/created_at with them,
+// and a bare one becomes ambiguous once this join is added. table.id breaks
+// ties between rows of the same Company, so paging stays stable.
 func ApplyCompanyNameSort(query *gorm.DB, table, sortParam string) (*gorm.DB, bool) {
 	sortField := strings.TrimPrefix(sortParam, "-")
 	if sortField != "company_name" {
@@ -144,6 +149,7 @@ func ApplyCompanyNameSort(query *gorm.DB, table, sortParam string) (*gorm.DB, bo
 	}
 	query = query.Joins("JOIN companies ON companies.id = " + table + ".company_id").
 		Order("companies.name " + dir).
+		Order(table + ".id " + dir).
 		Select(table + ".*")
 	return query, true
 }
@@ -191,5 +197,7 @@ func ApplyNullableCompanySort(query *gorm.DB, table, sortParam, sortField string
 	if strings.HasPrefix(sortParam, "-") {
 		dir = "DESC"
 	}
-	return query.Order("companies.name " + dir)
+	// table.id breaks ties (and orders Company-less rows, whose name is
+	// NULL) so paging is stable, as in ApplyCompanyNameSort.
+	return query.Order("companies.name " + dir).Order(table + ".id " + dir)
 }

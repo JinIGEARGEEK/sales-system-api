@@ -35,7 +35,7 @@ func resolveOverviewWindow(c *fiber.Ctx) (cur, prev overview.Window, fields map[
 		dst  *time.Time
 	}{{"date_from", &from}, {"date_to", &to}} {
 		if v := c.Query(p.name); v != "" {
-			t, err := time.ParseInLocation("2006-01-02", v, time.Local)
+			t, err := utils.ParseLocalDate(v)
 			if err != nil {
 				return overview.Window{}, overview.Window{}, map[string][]string{p.name: {"must be a valid YYYY-MM-DD date"}}
 			}

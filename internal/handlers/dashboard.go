@@ -3,6 +3,7 @@ package handlers
 import (
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,29 +27,24 @@ func NewDashboardHandler(db *gorm.DB) *DashboardHandler {
 // omitted) against the given column. Shared by baseFilter (deals.created_at)
 // and teamPerformance's activity-count query (activities.created_at) so the
 // two aggregates always agree on what date window "this dashboard view"
-// means, rather than each re-deriving it.
-func applyDateWindow(query *gorm.DB, column, dateFrom, dateTo, period string) *gorm.DB {
-	if dateFrom == "" && dateTo == "" {
+// means, rather than each re-deriving it. window is the already-parsed
+// date_from/date_to (dateRangeQuery: inclusive server-local days).
+func applyDateWindow(query *gorm.DB, column string, window utils.DateRange, period string) *gorm.DB {
+	if window.IsZero() {
 		if from, ok := periodStart(period); ok {
 			query = query.Where(column+" >= ?", from)
 		}
-	} else {
-		if dateFrom != "" {
-			query = query.Where(column+" >= ?", dateFrom)
-		}
-		if dateTo != "" {
-			query = query.Where(column+" <= ?", dateTo)
-		}
+		return query
 	}
-	return query
+	return window.Apply(query, column)
 }
 
 // baseFilter applies the shared date_from/date_to (or period), business_unit,
 // business_unit_item, channel, assigned_to (Sales Rep), and company_tag query
 // params — api-system-spec.md §9, FR-CRM-055.
-func (h *DashboardHandler) baseFilter(c *fiber.Ctx) *gorm.DB {
+func (h *DashboardHandler) baseFilter(c *fiber.Ctx, window utils.DateRange) *gorm.DB {
 	query := h.DB.Model(&models.Deal{})
-	query = applyDateWindow(query, "deals.created_at", c.Query("date_from"), c.Query("date_to"), c.Query("period"))
+	query = applyDateWindow(query, "deals.created_at", window, c.Query("period"))
 
 	if v := c.Query("business_unit"); v != "" {
 		query = query.Where("deals.business_unit = ?", v)
@@ -67,26 +63,6 @@ func (h *DashboardHandler) baseFilter(c *fiber.Ctx) *gorm.DB {
 			Where("companies.tags && ARRAY[?]::text[]", v)
 	}
 	return query
-}
-
-// validateDateRangeParams rejects a malformed date_from/date_to before
-// baseFilter ever passes it to Postgres as a query bound. Without this, an
-// invalid string (e.g. "not-a-date") reaches the DB as a comparison operand,
-// fails the query at the driver level, and — since baseFilter's callers
-// (Summary's ~12 concurrent aggregate queries) discard Scan's error return —
-// silently degrades the whole dashboard to zeroed-out figures instead of
-// telling the caller their filter was wrong.
-func validateDateRangeParams(c *fiber.Ctx) (map[string][]string, string) {
-	for _, param := range []string{"date_from", "date_to"} {
-		v := c.Query(param)
-		if v == "" {
-			continue
-		}
-		if _, err := time.Parse("2006-01-02", v); err != nil {
-			return map[string][]string{param: {"must be a valid YYYY-MM-DD date"}}, param + " is invalid"
-		}
-	}
-	return nil, ""
 }
 
 func periodStart(period string) (time.Time, bool) {
@@ -139,36 +115,69 @@ type annualGoalTrendPoint struct {
 // point's Actual also doubles as annual_revenue_actual in Summary's response
 // — one grouped query instead of a duplicate SUM.
 func (h *DashboardHandler) annualRevenueTrend(annualGoal int64) []annualGoalTrendPoint {
-	now := time.Now()
-	yearStart := time.Date(now.Year(), 1, 1, 0, 0, 0, 0, now.Location())
-
-	var rows []struct {
-		MonthKey string
-		Value    float64
-	}
-	h.DB.Model(&models.Deal{}).
-		Where("status = ? AND created_at >= ?", models.DealStatusWon, yearStart).
-		Select("to_char(created_at, 'YYYY-MM') as month_key, COALESCE(SUM(value), 0) as value").
-		Group("month_key").Scan(&rows)
-
-	byMonth := make(map[string]float64, len(rows))
-	for _, r := range rows {
-		byMonth[r.MonthKey] = r.Value
-	}
+	now := time.Now().In(time.Local)
+	yearStart := time.Date(now.Year(), 1, 1, 0, 0, 0, 0, time.Local)
 
 	monthsElapsed := int(now.Month())
+	bounds := monthBounds(yearStart, monthsElapsed)
+	byMonth := sumByLocalMonth(h.DB.Model(&models.Deal{}).Where("status = ?", models.DealStatusWon),
+		"created_at", "value", bounds)
+
 	points := make([]annualGoalTrendPoint, 0, monthsElapsed)
 	cumulative := 0.0
 	for i := 0; i < monthsElapsed; i++ {
-		month := yearStart.AddDate(0, i, 0)
-		cumulative += byMonth[month.Format("2006-01")]
+		cumulative += byMonth[i]
 		points = append(points, annualGoalTrendPoint{
-			Label:    month.Format("Jan"),
+			Label:    bounds[i].Format("Jan"),
 			Actual:   cumulative,
 			GoalPace: float64(annualGoal) * float64(i+1) / 12,
 		})
 	}
 	return points
+}
+
+// monthBounds returns the server-local month starts of n consecutive months
+// from first (itself a month start), plus the start of the month after:
+// n+1 bounds, month i being [bounds[i], bounds[i+1]). Stepping from the 1st
+// is what keeps AddDate from rolling over — now.AddDate(0, -1, 0) on 31
+// March normalizes 31 February to 3 March, repeating March and skipping
+// February in a trend.
+func monthBounds(first time.Time, n int) []time.Time {
+	bounds := make([]time.Time, n+1)
+	for i := range bounds {
+		bounds[i] = first.AddDate(0, i, 0)
+	}
+	return bounds
+}
+
+// sumByLocalMonth sums valueExpr over query's rows into len(bounds)-1
+// monthly buckets by the timestamp column, in one grouped query. The month
+// edges are monthBounds' server-local midnights (TZ, Asia/Bangkok), matched
+// with width_bucket, rather than to_char(column, 'YYYY-MM'), which splits
+// months at the DB session's midnight (UTC) — putting a Deal won before
+// 07:00 Bangkok on the 1st in the previous month. column must be qualified
+// if query joins another table.
+func sumByLocalMonth(query *gorm.DB, column, valueExpr string, bounds []time.Time) []float64 {
+	sums := make([]float64, len(bounds)-1)
+	placeholders := make([]string, len(bounds))
+	args := make([]interface{}, len(bounds))
+	for i, b := range bounds {
+		placeholders[i], args[i] = "?", b
+	}
+	var rows []struct {
+		Bucket int
+		Value  float64
+	}
+	query.Where(column+" >= ? AND "+column+" < ?", bounds[0], bounds[len(bounds)-1]).
+		Select("width_bucket("+column+", ARRAY["+strings.Join(placeholders, ", ")+"]::timestamptz[]) as bucket, "+
+			"COALESCE(SUM("+valueExpr+"), 0) as value", args...).
+		Group("bucket").Scan(&rows)
+	for _, r := range rows {
+		if r.Bucket >= 1 && r.Bucket <= len(sums) {
+			sums[r.Bucket-1] = r.Value
+		}
+	}
+	return sums
 }
 
 // winRate is the won/(won+lost) formula shared by Summary, industryBreakdown,
@@ -269,8 +278,8 @@ func ResetDashboardCacheForTests() {
 // @Tags dashboard
 // @Security BearerAuth
 // @Produce json
-// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), mutually exclusive with period"
-// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD)"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD, from server-local midnight), mutually exclusive with period"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day)"
 // @Param period query string false "One of: month, quarter, last6, year/last12"
 // @Param business_unit query string false "Filter by business unit"
 // @Param business_unit_item query string false "Filter by business unit item"
@@ -279,11 +288,16 @@ func ResetDashboardCacheForTests() {
 // @Param company_tag query string false "Filter by Company tag"
 // @Param upsell_min_stale_days query int false "Upsell Opportunities staleness threshold in days (default 60)"
 // @Success 200 {object} map[string]interface{}
-// @Failure 400 {object} map[string]interface{} "Invalid date_from/date_to"
+// @Failure 422 {object} map[string]interface{} "Malformed date_from/date_to, or date_to before date_from"
 // @Router /dashboard/summary [get]
 func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
-	if fields, msg := validateDateRangeParams(c); fields != nil {
-		return utils.ValidationError(c, msg, fields)
+	// Parsed (and a malformed/reversed range 422'd) before anything reaches
+	// Postgres: an invalid bound would otherwise fail each aggregate at the
+	// driver level, and Summary's helpers discard Scan's error, silently
+	// zeroing the whole dashboard instead of telling the caller.
+	window, err := dateRangeQuery(c)
+	if err != nil {
+		return reportError(c, err, "")
 	}
 
 	cacheKey := string(c.Request().URI().QueryString())
@@ -294,7 +308,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	}
 	summaryCacheMu.Unlock()
 
-	base := h.baseFilter(c)
+	base := h.baseFilter(c, window)
 	// Read every query param the concurrent goroutines below need up front,
 	// on this goroutine, before any of them start. c.Query(...) reads/lazily
 	// parses fasthttp's shared, unsynchronized query-args cache on first
@@ -307,7 +321,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	// Same up-front-synchronous-read rule as companyTagSet above — fetchSalesCycle
 	// (called from a goroutine below) only takes plain strings, not `c`, for
 	// exactly this reason.
-	assignedTo, dateFrom, dateTo, period := c.Query("assigned_to"), c.Query("date_from"), c.Query("date_to"), c.Query("period")
+	assignedTo, period := c.Query("assigned_to"), c.Query("period")
 	// upsell_min_stale_days — the Upsell Opportunities widget's own staleness
 	// filter (FR-CRM-108/109), read up front for the same data-race reason as
 	// companyTagSet/assignedTo above. Defaults to 60 (the old fixed tier1
@@ -409,7 +423,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	run("stage_breakdown", func() { stageBreakdown = h.stageBreakdown(base) })
 	run("forecast_by_category", func() { forecastByCategory = h.forecastByCategory(base) })
 	run("industry_breakdown", func() { industryBreakdown = h.industryBreakdown(base, companyTagSet) })
-	run("team_performance", func() { teamPerformance = h.teamPerformance(base, dateFrom, dateTo, period) })
+	run("team_performance", func() { teamPerformance = h.teamPerformance(base, window, period) })
 	run("annual_revenue_trend", func() { annualRevenueTrend = h.annualRevenueTrend(settings.AnnualRevenueGoal) })
 	// upsellOpportunities is Company-centric (not Deal-scoped), so it's
 	// deliberately independent of `base`/baseFilter's Deal-side query params —
@@ -424,7 +438,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	// leaves this at 0 rather than failing the whole dashboard summary.
 	var avgSalesCycleDaysRaw float64
 	run("avg_sales_cycle_days", func() {
-		if result, err := (&ReportHandler{DB: h.DB}).fetchSalesCycle(assignedTo, dateFrom, dateTo); err == nil {
+		if result, err := (&ReportHandler{DB: h.DB}).fetchSalesCycle(assignedTo, window); err == nil {
 			if v, ok := result["avg_sales_cycle_days"].(float64); ok {
 				avgSalesCycleDaysRaw = v
 			}
@@ -511,31 +525,21 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 // assigned_to/company_tag/date range) — it's a fixed trailing-6-month view
 // independent of those, same as forecastTrend below.
 func (h *DashboardHandler) revenueTrend() []revenueTrendPoint {
-	now := time.Now()
-	thisMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-	rangeStart := thisMonthStart.AddDate(0, -5, 0)
-	rangeEnd := thisMonthStart.AddDate(0, 1, 0)
-
-	var rows []struct {
-		MonthKey string
-		Value    float64
-	}
-	h.DB.Model(&models.Deal{}).
-		Where("status = ? AND created_at >= ? AND created_at < ?", models.DealStatusWon, rangeStart, rangeEnd).
-		Select("to_char(created_at, 'YYYY-MM') as month_key, COALESCE(SUM(value), 0) as value").
-		Group("month_key").Scan(&rows)
-
-	byMonth := make(map[string]float64, len(rows))
-	for _, r := range rows {
-		byMonth[r.MonthKey] = r.Value
-	}
+	bounds := monthBounds(thisMonthStart(time.Now()).AddDate(0, -5, 0), 6)
+	byMonth := sumByLocalMonth(h.DB.Model(&models.Deal{}).Where("status = ?", models.DealStatusWon),
+		"created_at", "value", bounds)
 
 	points := make([]revenueTrendPoint, 0, 6)
-	for i := 5; i >= 0; i-- {
-		month := now.AddDate(0, -i, 0)
-		points = append(points, revenueTrendPoint{Label: month.Format("Jan"), Value: byMonth[month.Format("2006-01")]})
+	for i, v := range byMonth {
+		points = append(points, revenueTrendPoint{Label: bounds[i].Format("Jan"), Value: v})
 	}
 	return points
+}
+
+// thisMonthStart is server-local midnight on the 1st of now's month.
+func thisMonthStart(now time.Time) time.Time {
+	now = now.In(time.Local)
+	return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
 }
 
 // forecastTrend is the forward-looking counterpart to revenueTrend: instead of
@@ -551,45 +555,43 @@ func (h *DashboardHandler) revenueTrend() []revenueTrendPoint {
 // trend's points may sum to less than that headline total. The frontend must
 // not present this breakdown as the complete forecast.
 //
-// Groups by the date string's first 7 characters ("YYYY-MM") rather than
-// casting expected_close_date to a real date type — it's stored as free-form
-// text (see the type note below) and a LEFT()-based string group-by tolerates
-// both the plain "2006-01-02" and full ISO-datetime forms without risking a
-// cast failure aborting the whole query over one malformed row.
+// expected_close_date is free-form text (no explicit gorm type on the
+// nullable *string field), holding either a plain "2006-01-02" date or a
+// full ISO datetime (the frontend submits Date objects, which
+// JSON-serialize to e.g. "2026-08-31T17:00:00.000Z" — 1 September in
+// Bangkok). Taking its first 7 characters put that in August, so each
+// Deal's month is read in Go instead (utils.ParseLocalCalendarDay: a bare
+// date as written, a timestamp by its server-local date). SQL only
+// narrows by a string range padded a day each side (a timestamp's UTC date
+// can be a day before its local one); a malformed row is skipped rather
+// than aborting a cast.
 func (h *DashboardHandler) forecastTrend() []revenueTrendPoint {
-	now := time.Now()
-	thisMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-	rangeStart := thisMonthStart
-	rangeEnd := thisMonthStart.AddDate(0, 6, 0)
+	start := thisMonthStart(time.Now())
+	bounds := monthBounds(start, 6)
 
-	// expected_close_date is stored as text (no explicit gorm type on the
-	// nullable *string field), holding either a plain "2006-01-02" date or a
-	// full ISO datetime (the frontend submits Date objects, which
-	// JSON-serialize to e.g. "2026-08-17T00:00:00.000Z"). Comparing against
-	// plain YYYY-MM-DD bounds still buckets correctly either way: it's a
-	// lexicographic string comparison, and since both forms share the same
-	// zero-padded date prefix, "<bound>" sorts before any same-day timestamp
-	// string and after the prior day's, so month windows land on the right
-	// boundary regardless of which format is stored.
 	var rows []struct {
-		MonthKey string
-		Value    float64
+		ExpectedCloseDate string
+		Value             float64
 	}
 	h.DB.Model(&models.Deal{}).
 		Where("status = ? AND expected_close_date >= ? AND expected_close_date < ?",
-			models.DealStatusOpen, rangeStart.Format("2006-01-02"), rangeEnd.Format("2006-01-02")).
-		Select("LEFT(expected_close_date, 7) as month_key, COALESCE(SUM(value * COALESCE(probability, 0) / 100.0), 0) as value").
-		Group("month_key").Scan(&rows)
+			models.DealStatusOpen, start.AddDate(0, 0, -1).Format("2006-01-02"), bounds[6].AddDate(0, 0, 1).Format("2006-01-02")).
+		Select("expected_close_date, value * COALESCE(probability, 0) / 100.0 as value").
+		Scan(&rows)
 
-	byMonth := make(map[string]float64, len(rows))
-	for _, r := range rows {
-		byMonth[r.MonthKey] = r.Value
+	points := make([]revenueTrendPoint, 6)
+	for i := range points {
+		points[i].Label = bounds[i].Format("Jan")
 	}
-
-	points := make([]revenueTrendPoint, 0, 6)
-	for i := 0; i <= 5; i++ {
-		month := now.AddDate(0, i, 0)
-		points = append(points, revenueTrendPoint{Label: month.Format("Jan"), Value: byMonth[month.Format("2006-01")]})
+	for _, r := range rows {
+		day, ok := utils.ParseLocalCalendarDay(r.ExpectedCloseDate)
+		if !ok {
+			continue
+		}
+		i := (day.Year()-start.Year())*12 + int(day.Month()) - int(start.Month())
+		if i >= 0 && i < len(points) {
+			points[i].Value += r.Value
+		}
 	}
 	return points
 }
@@ -662,7 +664,7 @@ func (h *DashboardHandler) industryBreakdown(base *gorm.DB, companyTagSet bool) 
 	return result
 }
 
-func (h *DashboardHandler) teamPerformance(base *gorm.DB, dateFrom, dateTo, period string) []teamPerformanceItem {
+func (h *DashboardHandler) teamPerformance(base *gorm.DB, window utils.DateRange, period string) []teamPerformanceItem {
 	var rows []struct {
 		UserID    uint
 		WonCount  int64
@@ -695,7 +697,7 @@ func (h *DashboardHandler) teamPerformance(base *gorm.DB, dateFrom, dateTo, peri
 	activityCounts := make(map[uint]int64, len(userIDs))
 	if len(userIDs) > 0 {
 		activityQuery := applyDateWindow(h.DB.Model(&models.Activity{}).Where("created_by_id IN ?", userIDs),
-			"activities.created_at", dateFrom, dateTo, period)
+			"activities.created_at", window, period)
 		var activityRows []struct {
 			CreatedByID uint
 			Count       int64
