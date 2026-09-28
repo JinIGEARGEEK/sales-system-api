@@ -17,16 +17,6 @@ import (
 // DST), fixed so these tests don't depend on the machine running them.
 var ictZone = time.FixedZone("ICT", 7*3600)
 
-// useBangkokTime points time.Local at ictZone for the test, the way the
-// server runs in production. Tests in this package don't run in parallel,
-// so swapping the global is safe.
-func useBangkokTime(t *testing.T) {
-	t.Helper()
-	saved := time.Local
-	time.Local = ictZone
-	t.Cleanup(func() { time.Local = saved })
-}
-
 // dateRangeEdges are four instants around the local day 2026-09-10: the
 // first two fall on it, the last two just outside. The first is the day's
 // first minutes (UTC 9 September, the hours a UTC-midnight date_from
@@ -52,7 +42,6 @@ func setCreatedAt(t *testing.T, db *gorm.DB, model interface{}, id uint, at time
 // date_to. Each endpoint sees the same four rows (dateRangeEdges) and must
 // count exactly the two on 10 September.
 func TestDateRangeFilters_InclusiveServerLocalDays(t *testing.T) {
-	useBangkokTime(t)
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 	referrer := seedCompany(t, db)
@@ -191,7 +180,6 @@ func TestDateRangeFilters_RejectBadRanges(t *testing.T) {
 // stage_changed rows to the window's Deals in SQL: a Deal outside the range
 // contributes nothing, one inside still does.
 func TestSalesCycle_DateRangeNarrowsAuditRows(t *testing.T) {
-	useBangkokTime(t)
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 

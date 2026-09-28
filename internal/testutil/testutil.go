@@ -95,6 +95,9 @@ var tables = []string{
 	"payments",
 	"payment_installments",
 	"quotes",
+	// No seed and nothing else clears it — a test's saved templates would
+	// otherwise show up in the next test's (and run's) List.
+	"quote_templates",
 	"tags",
 	"activities",
 	"deals",

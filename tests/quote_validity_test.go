@@ -17,7 +17,6 @@ import (
 // report listing it that day. A bare date used to parse as UTC midnight,
 // expiring the quote at 07:00 Bangkok on its last valid day.
 func TestQuote_ValidThroughItsLastLocalDay(t *testing.T) {
-	useBangkokTime(t)
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 

@@ -18,7 +18,6 @@ import (
 // landed in the previous month; LEFT(expected_close_date, 7) did the same to
 // a close date stored as a JS Date ("…T17:00:00.000Z" the day before).
 func TestDashboardSummary_TrendsBucketByLocalMonth(t *testing.T) {
-	useBangkokTime(t)
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 

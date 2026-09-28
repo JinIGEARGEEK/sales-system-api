@@ -16,23 +16,12 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/testutil"
 )
 
-// dropQuoteTemplates deletes the named templates when the test ends —
-// quote_templates isn't in testutil's truncate list, so a leftover row shows
-// up in other tests' template listings.
-func dropQuoteTemplates(t *testing.T, db *gorm.DB, names ...string) {
-	t.Helper()
-	t.Cleanup(func() {
-		assert.NoError(t, db.Where("name IN ?", names).Delete(&models.QuoteTemplate{}).Error)
-	})
-}
-
 // Every Create whose model has a `default:true` bool stores an explicit
 // false as false — a plain db.Create let the column default win, so e.g. a
 // product created inactive came back active.
 func TestCreate_ExplicitFalseOnDefaultTrueFlags(t *testing.T) {
 	app, db := testutil.App(t)
 	keepSeedConfig(t, db)
-	dropQuoteTemplates(t, db, "No VAT")
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 
 	cases := []struct {
@@ -74,7 +63,6 @@ func TestCreate_ExplicitFalseOnDefaultTrueFlags(t *testing.T) {
 // true, as on Quote Create.
 func TestQuoteTemplateCreate_OmittedVatEnabledDefaultsTrue(t *testing.T) {
 	app, db := testutil.App(t)
-	dropQuoteTemplates(t, db, "Default VAT")
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 
 	resp := doJSON(t, app, testutil.AuthRequest(t, http.MethodPost, "/api/v1/quote-templates",
