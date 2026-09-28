@@ -35,7 +35,9 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
-const testDBName = "sales_system_test"
+// defaultTestDBName is the test database unless TEST_DB_NAME overrides it —
+// e.g. to run two checkouts' suites side by side without sharing tables.
+const defaultTestDBName = "sales_system_test"
 
 // TestPassword is the plaintext password used for every user CreateUser seeds,
 // so login tests can exercise the real bcrypt-check path.
@@ -125,7 +127,7 @@ func buildConfig() *config.Config {
 		DBPort:      getenv("TEST_DB_PORT", "5432"),
 		DBUser:      getenv("TEST_DB_USER", "postgres"),
 		DBPassword:  getenv("TEST_DB_PASSWORD", "postgres"),
-		DBName:      testDBName,
+		DBName:      getenv("TEST_DB_NAME", defaultTestDBName),
 		DBSSLMode:   "disable",
 		JWTSecret:   "test-jwt-secret-not-for-prod",
 		JWTExpiryHr: 720,
