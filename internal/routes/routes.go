@@ -153,7 +153,11 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// same auth gate in front of a download regardless of where the bytes
 	// actually live, matching the "proxy, not presigned URLs" design in
 	// biz_spec/s3-migration-plan.md.
-	app.Use("/uploads", middleware.RequireAuth(cfg, db))
+	//
+	// RequirePasswordChanged too, same as `authed` below — otherwise an
+	// account still on an Admin-assigned password could download documents
+	// it can't reach through any /api/v1 route yet.
+	app.Use("/uploads", middleware.RequireAuth(cfg, db), middleware.RequirePasswordChanged(db))
 	app.Get("/uploads/:key", func(c *fiber.Ctx) error {
 		f, err := storage.Open(c.Params("key"))
 		if err != nil {
@@ -437,9 +441,11 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	activities.Post("/", activityH.Create)
 	activities.Delete("/:id", activityH.Delete)
 
-	// Attachments — Sales/Admin can upload (not Production), any authenticated
-	// role can list; Delete's own-uploader-or-manager check is field-level
-	// inside the handler (mirrors Activity's CanWrite pattern).
+	// Attachments — Sales/Admin can upload (not Production). List requires a
+	// related_type+related_id and checks the caller can read that record, and
+	// Create that they can write it (attachmentParentAccess); Delete's
+	// own-uploader-or-manager check is field-level inside the handler
+	// (mirrors Activity's CanWrite pattern).
 	attachments := authed.Group("/attachments")
 	attachments.Get("/", attachmentH.List)
 	attachments.Post("/", salesPipelineRoles, attachmentH.Create)
