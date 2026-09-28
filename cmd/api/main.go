@@ -201,11 +201,6 @@ func newStorageBackend(cfg *config.Config) (utils.Storage, error) {
 	}
 }
 
-// minAdminPasswordLength mirrors handlers' minPasswordLength (the
-// change-password rule), so ADMIN_INITIAL_PASSWORD can't be weaker than a
-// password the Admin could set for themselves.
-const minAdminPasswordLength = 8
-
 // seedAdmin creates the first Admin when the users table is empty. The
 // password is ADMIN_INITIAL_PASSWORD if set (never logged); otherwise it's
 // generated and printed once — to the log in development, else to stderr —
@@ -220,8 +215,10 @@ func seedAdmin(db *gorm.DB, cfg *config.Config) {
 
 	const email = "admin@igeargeek.com"
 	password, fromEnv := cfg.AdminInitialPassword, cfg.AdminInitialPassword != ""
-	if fromEnv && len(password) < minAdminPasswordLength {
-		log.Fatalf("ADMIN_INITIAL_PASSWORD must be at least %d characters", minAdminPasswordLength)
+	// Same minimum as change-password, so the seed can't be weaker than a
+	// password the Admin could set for themselves.
+	if fromEnv && len(password) < utils.MinPasswordLength {
+		log.Fatalf("ADMIN_INITIAL_PASSWORD must be at least %d characters", utils.MinPasswordLength)
 	}
 	if !fromEnv {
 		password = utils.NewTempPassword()

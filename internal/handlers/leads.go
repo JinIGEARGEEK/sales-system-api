@@ -11,19 +11,12 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
-// validateExternalEmail rejects a syntactically invalid, non-empty email —
-// unlike User accounts, a Lead's or Prospect's email belongs to an external
-// contact so it isn't restricted to the company domain (see
-// utils.IsValidCompanyEmail), just checked for basic format. Left
-// unvalidated before, a garbage address would silently persist and then be
-// relied on as an exact-match dedupe key by ImportHandler.ImportContacts.
-// Named for what it validates (any external-contact email field), not which
-// resource calls it — shared by LeadHandler and ProspectHandler.
+// validateExternalEmail rejects a syntactically invalid, non-empty email on
+// a Lead or Prospect. It's an external contact's address, so unlike a
+// User's (utils.IsValidCompanyEmail) any domain is fine; the format still
+// matters because ImportHandler.ImportContacts dedupes on it.
 //
-// Returns utils.ErrHandled (see its doc) if invalid, nil if valid — NOT
-// ValidationError's own return value, which is nil even on the invalid path
-// since the JSON write itself succeeds; forwarding that would make the
-// caller's `if err != nil` guard never fire.
+// Returns utils.ErrHandled (see its doc) if invalid, nil if valid.
 func validateExternalEmail(c *fiber.Ctx, email string) error {
 	if email == "" {
 		return nil
@@ -65,28 +58,13 @@ func (h *LeadHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := h.DB.Model(&models.Lead{})
 
-	// The filter shape here is identical to ProspectHandler.List's — see
-	// applyLeadLikeFilters's own doc for why it's shared (including the
-	// Company-name join/sort reasoning previously duplicated in both).
 	query, needsCompanyJoin, sortField := applyLeadLikeFilters(query, c, "leads", "converted_deal_id")
 
 	var total int64
-	// Count() before the Select below — a plain COUNT(*) works fine against
-	// the join as-is; it's only Find() that needs the column list narrowed
-	// (see ApplyNullableCompanySort), and applying that narrowing here too
-	// would break Count() against Postgres ("column leads.* does not exist").
 	query.Count(&total)
 
 	var leads []models.Lead
-	if needsCompanyJoin {
-		query = utils.ApplyNullableCompanySort(query, "leads", c.Query("sort"), sortField)
-	}
-	// Table-qualified: with the companies join (search, not just a
-	// company_name sort) bare created_at/name would be ambiguous, and
-	// without any ORDER BY a searched list paged in no stable order.
-	if sortField != "company_name" {
-		query = utils.ApplyTableSort(query, "leads", c.Query("sort"), map[string]bool{"created_at": true, "name": true, "position": true}, "-created_at")
-	}
+	query = applyLeadLikeSort(query, c, "leads", needsCompanyJoin, sortField)
 	if err := query.Limit(perPage).Offset(offset).Find(&leads).Error; err != nil {
 		return utils.Internal(c, "Failed to list leads")
 	}
@@ -159,14 +137,11 @@ func validateLeadCompanyID(c *fiber.Ctx, db *gorm.DB, companyID *uint) error {
 	return nil
 }
 
-// validateLeadStatus rejects a status outside the fixed models.LeadStatus
-// set. Previously any string was stored as-is — one past the column's 16
-// chars was a 500, anything shorter a Lead in a lane that doesn't exist.
-// Empty is allowed through; each caller decides what it means (Create:
-// New, Update: keep, UpdateStatus: required).
+// validateLeadStatus writes a 422 and returns utils.ErrHandled for a status
+// outside models.ValidLeadStatuses. Empty is allowed through; each caller
+// decides what it means (Create: New, Update: keep, UpdateStatus: required).
 func validateLeadStatus(c *fiber.Ctx, status models.LeadStatus) error {
-	switch status {
-	case "", models.LeadStatusNew, models.LeadStatusContacted, models.LeadStatusQualified, models.LeadStatusDisqualified:
+	if status == "" || models.IsValidLeadStatus(status) {
 		return nil
 	}
 	_ = utils.ValidationError(c, "status must be New, Contacted, Qualified or Disqualified", map[string][]string{"status": {"invalid"}})
@@ -216,12 +191,8 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 		return nil
 	}
 
-	// Auto-assignment: only kicks in when the caller didn't specify an owner
-	// (e.g. a brand-new Lead created without picking someone explicitly).
-	// Explicit-assignee paths — Update, BulkReassign, Kanban drag, Convert —
-	// never hit this because they always pass a concrete AssignedTo (or
-	// intentionally leave it nil, which the same logic would fill in — but
-	// today only Create is reachable with a nil AssignedTo from those flows).
+	// Auto-assign only when the caller picked no owner; other write paths
+	// never auto-assign.
 	if form.AssignedTo == nil {
 		if autoID, err := h.pickAutoAssignee(); err != nil {
 			return utils.Internal(c, "Failed to auto-assign lead")
@@ -252,21 +223,15 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 // computeLeadScore sums the Weight of every active LeadScoringCriterion that
 // matches this Lead (FR-CRM-006). Unknown Field values never match — new
 // match fields are additive, not something existing rows accidentally start
-// matching. "has_company_name" keeps its original Field key (it's an
-// Admin-configurable, already-seeded criterion row — renaming the key would
-// silently stop matching for anyone's existing config) even though it now
-// checks CompanyID rather than the free-text CompanyName it's named after.
+// matching. "has_company_name" checks CompanyID; the key keeps its name so
+// existing Admin-configured criteria keep matching.
 func (h *LeadHandler) computeLeadScore(lead models.Lead) (int, error) {
 	score, _, err := h.computeLeadScoreDetailed(lead)
 	return score, err
 }
 
-// computeLeadScoreDetailed is computeLeadScore's full-detail sibling —
-// FR-CRM-007's score-breakdown UI (GET /leads/:id/score-breakdown below)
-// needs to know *which* criteria matched, not just the sum. Kept as one
-// shared implementation (computeLeadScore just discards the second return
-// value) rather than two independently-maintained copies of the same
-// matching logic.
+// computeLeadScoreDetailed is computeLeadScore plus which criteria matched,
+// for FR-CRM-007's score breakdown (GET /leads/:id/score-breakdown).
 func (h *LeadHandler) computeLeadScoreDetailed(lead models.Lead) (int, []models.LeadScoringCriterion, error) {
 	var criteria []models.LeadScoringCriterion
 	if err := h.DB.Where("is_active = ?", true).Find(&criteria).Error; err != nil {
@@ -501,10 +466,8 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 		return nil
 	}
 
-	// oldStatus/oldCompanyID captured ahead of the mutation below, mirroring
-	// Deal's oldStage pattern (deals.go Update) — the only reliable way to
-	// tell the rep actually changed status on this save, since the form
-	// resubmits the Lead's full state every time.
+	// Captured before the mutation: the form resubmits the full Lead on
+	// every save, so this is how a real status change is told apart.
 	oldStatus := lead.Status
 	oldCompanyID := lead.CompanyID
 	if form.Status == "" {
@@ -728,21 +691,9 @@ func (h *LeadHandler) BulkArchive(c *fiber.Ctx) error {
 }
 
 type convertRequest struct {
-	CompanyID *uint `json:"company_id"`
-	ContactID *uint `json:"contact_id"`
-	Deal      struct {
-		Title             string               `json:"title"`
-		Value             float64              `json:"value"`
-		Stage             models.DealStage     `json:"stage"`
-		ExpectedCloseDate *string              `json:"expected_close_date"`
-		AssignedTo        *uint                `json:"assigned_to"`
-		Channel           models.LeadSource    `json:"channel"`
-		BusinessUnit      *models.BusinessUnit `json:"business_unit"`
-		BusinessUnitItem  *string              `json:"business_unit_item"`
-		// LostReason is required only when stage resolves to a Lost stage,
-		// same as Deal Create.
-		LostReason *models.LostReason `json:"lost_reason"`
-	} `json:"deal"`
+	CompanyID *uint      `json:"company_id"`
+	ContactID *uint      `json:"contact_id"`
+	Deal      dealFields `json:"deal"`
 }
 
 // Convert godoc
@@ -789,33 +740,10 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 		}
 	}
 
-	// The same checks Deal Create runs, on the same dealForm shape, so a
-	// converted deal can't skip any of them (it used to: status hard-coded
-	// open on a Won stage, no signed-contract gate, no lost_reason, no
-	// assignee check).
-	dealH := &DealHandler{DB: h.DB}
-	form := dealForm{
-		Title: req.Deal.Title, Value: req.Deal.Value, Stage: req.Deal.Stage,
-		ExpectedCloseDate: req.Deal.ExpectedCloseDate, AssignedTo: req.Deal.AssignedTo,
-		Channel: req.Deal.Channel, BusinessUnit: req.Deal.BusinessUnit,
-		BusinessUnitItem: req.Deal.BusinessUnitItem, LostReason: req.Deal.LostReason,
-	}
-	if !CanWrite(c, form.AssignedTo) {
-		return utils.Forbidden(c, "Cannot assign a deal to another sales rep")
-	}
-	if err := validateDealValueAndDate(c, form); err != nil {
-		return nil
-	}
-	if err := validateProbabilityAndLostReason(c, h.DB, form); err != nil {
-		return nil
-	}
-	if isWinningForm(h.DB, form) {
-		// dealID 0, as in Deal Create — the deal doesn't exist yet.
-		if err := validateContractSignedBeforeWon(c, h.DB, 0); err != nil {
-			return nil
-		}
-	}
-	if err := dealH.validateStageAndChannel(c, form); err != nil {
+	// Deal Create's checks, so a converted deal can't skip any of them.
+	form := dealForm{dealFields: req.Deal}
+	to, err := validateNewDealForm(c, h.DB, form)
+	if err != nil {
 		return nil
 	}
 
@@ -823,7 +751,7 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 	var contact models.Contact
 	var deal models.Deal
 
-	err := h.DB.Transaction(func(tx *gorm.DB) error {
+	err = h.DB.Transaction(func(tx *gorm.DB) error {
 		// Locked re-read + re-check: two concurrent Converts both passed the
 		// pre-check above; the second waits here and then sees the first's
 		// ConvertedDealID instead of creating a second Deal.
@@ -834,12 +762,8 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 			return errAlreadyConverted
 		}
 
-		// resolveOrCreateCompany's explicitID (req.CompanyID) always wins,
-		// even if it differs from whatever Company the Lead itself was
-		// already linked to; its fallbackID (lead.CompanyID) is the normal
-		// case since 2026-08-24 (the Lead was already linked via the
-		// create/edit combobox) — see its own doc for the full reasoning,
-		// shared with ProspectHandler.Convert's identical resolution.
+		// An explicit req.CompanyID wins over the Lead's own company (the
+		// usual case) — see resolveOrCreateCompany.
 		var err error
 		company, err = resolveOrCreateCompany(tx, req.CompanyID, lead.CompanyID)
 		if err != nil {
@@ -850,10 +774,11 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 			return err
 		}
 
+		status, clearLostReason := resolveDealStatus(to, to, false, models.DealStatusOpen)
 		deal = models.Deal{
 			CompanyID: company.ID, ContactID: contact.ID,
 			Title: form.Title, Value: form.Value, Stage: form.Stage,
-			Status: models.DealStatusOpen, ExpectedCloseDate: form.ExpectedCloseDate,
+			Status: status, ExpectedCloseDate: form.ExpectedCloseDate,
 			AssignedTo: form.AssignedTo, Channel: form.Channel,
 			BusinessUnit: form.BusinessUnit, BusinessUnitItem: form.BusinessUnitItem,
 			LeadID: &lead.ID,
@@ -861,8 +786,7 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 		if deal.Title == "" {
 			deal.Title = lead.Name
 		}
-		dealH.syncStatusWithStageFlags(&deal)
-		if deal.Status == models.DealStatusLost {
+		if !clearLostReason {
 			deal.LostReason = form.LostReason
 		}
 		// Same defaults as Deal Create: the stage's configured probability

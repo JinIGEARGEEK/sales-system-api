@@ -339,9 +339,8 @@ func applyProjectFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 // only the table name (needed for the company_id column-qualification and
 // the Company-name join/sort helpers below) and the "already converted"
 // column name differ between them. Returns the query plus whether a Company
-// join is needed for sort (see utils.ApplyNullableCompanySearch) — the
-// caller still has to apply the final ORDER BY itself since that differs
-// slightly by needsCompanyJoin.
+// join is needed for sort (see utils.ApplyNullableCompanySearch) and the
+// sort field, for applyLeadLikeSort once the caller has counted.
 func applyLeadLikeFilters(query *gorm.DB, c *fiber.Ctx, table, excludeConvertedColumn string) (*gorm.DB, bool, string) {
 	// Every filter column here is qualified with table (not just company_id,
 	// which already was) — status in particular collides with Company's own
@@ -379,4 +378,19 @@ func applyLeadLikeFilters(query *gorm.DB, c *fiber.Ctx, table, excludeConvertedC
 		query = query.Where(table + "." + excludeConvertedColumn + " IS NOT NULL")
 	}
 	return query, needsCompanyJoin, sortField
+}
+
+// applyLeadLikeSort is applyLeadLikeFilters' ORDER BY half. Apply it after
+// Count: the narrowed SELECT list the company join needs breaks COUNT(*) on
+// Postgres ("column leads.* does not exist"). The fallback sort is
+// table-qualified: with the companies join bare created_at/name would be
+// ambiguous, and a searched list needs a stable order to page.
+func applyLeadLikeSort(query *gorm.DB, c *fiber.Ctx, table string, needsCompanyJoin bool, sortField string) *gorm.DB {
+	if needsCompanyJoin {
+		query = utils.ApplyNullableCompanySort(query, table, c.Query("sort"), sortField)
+	}
+	if sortField != "company_name" {
+		query = utils.ApplyTableSort(query, table, c.Query("sort"), map[string]bool{"created_at": true, "name": true, "position": true}, "-created_at")
+	}
+	return query
 }

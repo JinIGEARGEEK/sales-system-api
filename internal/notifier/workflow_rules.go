@@ -475,7 +475,7 @@ func checkPaymentInstallmentDueRule(db *gorm.DB, cfg *config.Config, rule models
 //
 // The "disqualified" exclusion resolves the ProspectStage flagged
 // IsDisqualifiedStage, since stages are Admin-renamable, falling back to the
-// literal name if no row is flagged (like utils.IsWonStage/IsLostStage).
+// literal name if no row is flagged (like utils.LookupStageFlags).
 // "Converted" stays a literal check — it's never a ProspectStage row.
 func checkProspectStaleRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, now time.Time) {
 	disqualifiedStageName := string(models.ProspectStatusDisqualified)

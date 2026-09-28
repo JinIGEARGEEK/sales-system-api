@@ -58,11 +58,7 @@ func (h *UserHandler) List(c *fiber.Ctx) error {
 
 // validateCompanyEmail returns utils.ErrHandled (see its doc) after writing a
 // 422 ValidationError if email isn't a valid address on
-// utils.AllowedEmailDomain, nil otherwise. Previously returned
-// ValidationError's own result directly, which is nil even on the invalid
-// path (the JSON write itself succeeds) — that silently defeated both call
-// sites' `if err != nil { return err }` guard below, letting any email
-// through regardless of domain.
+// utils.AllowedEmailDomain, nil otherwise.
 func validateCompanyEmail(c *fiber.Ctx, email string) error {
 	if utils.IsValidCompanyEmail(email) {
 		return nil
@@ -72,34 +68,16 @@ func validateCompanyEmail(c *fiber.Ctx, email string) error {
 	return utils.ErrHandled
 }
 
-// validUserRoles is every role models defines — the same set RequireRoles
-// gates are written against. Anything else (including empty) would store an
-// account no route group recognises.
-var validUserRoles = map[models.Role]bool{
-	models.RoleAdmin:        true,
-	models.RoleSalesRep:     true,
-	models.RoleSalesManager: true,
-	models.RoleProduction:   true,
-	models.RoleMarketing:    true,
-}
-
 // validateUserRole mirrors validateCompanyEmail: utils.ErrHandled after
-// writing a 422 if role isn't one of validUserRoles, nil otherwise.
+// writing a 422 if role isn't a models.ValidRoles one (anything else would
+// store an account no route group recognises), nil otherwise.
 func validateUserRole(c *fiber.Ctx, role models.Role) error {
-	if validUserRoles[role] {
+	if models.IsValidRole(role) {
 		return nil
 	}
 	msg := "role must be one of Admin, Sales Rep, Sales Manager, Production, Marketing"
 	_ = utils.ValidationError(c, msg, map[string][]string{"role": {msg}})
 	return utils.ErrHandled
-}
-
-// bumpTokenVersion invalidates every token already issued to userID (see
-// models.User.TokenVersion). tx is the same transaction as the write that
-// made those tokens stale; callers still InvalidateAuthCache afterwards.
-func bumpTokenVersion(tx *gorm.DB, userID uint) error {
-	return tx.Model(&models.User{}).Where("id = ?", userID).
-		UpdateColumn("token_version", gorm.Expr("token_version + 1")).Error
 }
 
 type userForm struct {
@@ -260,7 +238,7 @@ func (h *UserHandler) Update(c *fiber.Ctx) error {
 			return err
 		}
 		if revokeSessions {
-			return bumpTokenVersion(tx, user.ID)
+			return bumpTokenVersion(tx, &user)
 		}
 		return nil
 	}); err != nil {
@@ -299,7 +277,7 @@ func (h *UserHandler) Delete(c *fiber.Ctx) error {
 		}
 		// Revoke sessions too, so a later Restore + re-activate doesn't
 		// bring this user's pre-delete tokens back to life.
-		if err := bumpTokenVersion(tx, user.ID); err != nil {
+		if err := bumpTokenVersion(tx, &user); err != nil {
 			return err
 		}
 		return tx.Delete(&user).Error
@@ -344,7 +322,7 @@ func (h *UserHandler) bulkSetActive(c *fiber.Ctx, active bool, action string, fa
 			// Same as Update: deactivating revokes existing sessions, so a
 			// later re-activation doesn't bring the old tokens back to life.
 			if wasActive && !active {
-				return before, after, bumpTokenVersion(tx, item.ID)
+				return before, after, bumpTokenVersion(tx, item)
 			}
 			return before, after, nil
 		})
