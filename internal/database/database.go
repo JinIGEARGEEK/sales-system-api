@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -43,7 +44,64 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
 
+	// Bound the pool — see config.Config's DBMaxOpenConns doc for why the
+	// database/sql defaults (unlimited, forever) don't suit a small managed
+	// Postgres. ConnMaxLifetime/IdleTime also recycle connections a
+	// failover or server-side idle reaper has silently killed, instead of
+	// handing a dead one to the next request.
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("get underlying *sql.DB: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(cfg.DBMaxOpenConns)
+	sqlDB.SetMaxIdleConns(cfg.DBMaxIdleConns)
+	sqlDB.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
+	sqlDB.SetConnMaxIdleTime(cfg.DBConnMaxIdleTime)
+
 	return db, nil
+}
+
+// bootLockKey is the Postgres advisory-lock key WithBootLock holds. Any
+// constant works as long as nothing else in this database uses it
+// (testutil's testDBLockKey is a different value, and only ever taken
+// against the test database).
+const bootLockKey = 4217350
+
+// WithBootLock runs fn while holding a session-level Postgres advisory
+// lock, so when several replicas boot at once (a scaled-out service, or a
+// rolling deploy overlapping the old instance's restart) only one at a time
+// runs AutoMigrate, the backfills and the seeds. Without it two replicas
+// race each other's ALTER TABLEs and count-then-insert seeds (both see an
+// empty users table and both create an Admin). The later replicas block
+// until the first finishes, then find everything already done — every
+// migration step and seed is idempotent, so running them again is a no-op.
+//
+// The lock is taken on one dedicated *sql.Conn (a session-level advisory
+// lock belongs to the connection that took it, so taking and releasing it
+// through the pool could land on two different connections), same as
+// testutil's advisoryLock. fn itself runs on the normal pool.
+func WithBootLock(ctx context.Context, db *gorm.DB, fn func() error) error {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return fmt.Errorf("get underlying *sql.DB: %w", err)
+	}
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("reserve a connection for the boot lock: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", bootLockKey); err != nil {
+		return fmt.Errorf("acquire boot lock: %w", err)
+	}
+	// Unlock explicitly rather than relying on conn.Close: Close only
+	// returns the connection to the pool, where the session (and its lock)
+	// would live on. Background ctx so a cancelled boot still releases it.
+	defer func() {
+		if _, err := conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", bootLockKey); err != nil {
+			log.Printf("database: failed to release boot lock: %v", err)
+		}
+	}()
+	return fn()
 }
 
 // AutoMigrate creates/updates every table this API owns. Kept as a single explicit
@@ -119,7 +177,7 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := NormalizeCompanyTaxIDs(db); err != nil {
 		return err
 	}
-	if err := backfillLowercaseTags(db); err != nil {
+	if err := BackfillLowercaseTags(db); err != nil {
 		return err
 	}
 	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_companies_industry_lower ON companies (LOWER(industry))`).Error; err != nil {
@@ -141,7 +199,7 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := BackfillCardPositions(db); err != nil {
 		return err
 	}
-	if err := backfillStageEnteredAt(db); err != nil {
+	if err := BackfillStageEnteredAt(db); err != nil {
 		return err
 	}
 	if err := MigrateCompanySizeDefaults(db); err != nil {
@@ -258,7 +316,7 @@ func MigrateCompanySizeDefaults(db *gorm.DB) error {
 	})
 }
 
-// backfillStageEnteredAt populates the new Deal/Lead/Prospect
+// BackfillStageEnteredAt (exported for its test) populates the new Deal/Lead/Prospect
 // stage_entered_at column (see models/stage_entered.go) for rows created
 // before it existed. Only touches rows still NULL, so it's safe to re-run on
 // every boot. Best available evidence per table:
@@ -269,7 +327,7 @@ func MigrateCompanySizeDefaults(db *gorm.DB) error {
 //
 // updated_at can only be later than the real move, never earlier, so a
 // backfilled "days in stage" can under-count but never over-count.
-func backfillStageEnteredAt(db *gorm.DB) error {
+func BackfillStageEnteredAt(db *gorm.DB) error {
 	stmts := []struct{ table, sql string }{
 		{"deals", `
 			UPDATE deals d SET stage_entered_at = COALESCE(
@@ -289,15 +347,25 @@ func backfillStageEnteredAt(db *gorm.DB) error {
 		// existed: the "before" stage of their latest stage_changed audit
 		// row. Leads/Prospects have no stage audit, so theirs start filling
 		// in from their next move. Only touches rows still NULL.
+		//
+		// Driven from the NULL deals, one entity_id-indexed lookup each,
+		// rather than a DISTINCT ON over every deal's stage_changed rows —
+		// that scanned and sorted the whole audit log on every boot to find
+		// the handful of rows (usually none) left to fill. Kept re-runnable
+		// rather than runOnce: a stage move made by an instance still on the
+		// old code during a rolling deploy lands after a one-shot run would
+		// have fired, and this picks it up on the next boot.
 		{"deals (previous_stage)", `
-			UPDATE deals d SET previous_stage = a.before->>'stage'
+			UPDATE deals d SET previous_stage = a.stage
 			FROM (
-				SELECT DISTINCT ON (entity_id) entity_id, before
-				FROM audit_log_entries
-				WHERE entity_type = 'deal' AND action = 'stage_changed'
-				ORDER BY entity_id, created_at DESC, id DESC
+				SELECT n.id, (
+					SELECT al.before->>'stage' FROM audit_log_entries al
+					WHERE al.entity_type = 'deal' AND al.entity_id = n.id AND al.action = 'stage_changed'
+					ORDER BY al.created_at DESC, al.id DESC LIMIT 1
+				) AS stage
+				FROM deals n WHERE n.previous_stage IS NULL
 			) a
-			WHERE a.entity_id = d.id AND d.previous_stage IS NULL AND a.before->>'stage' IS NOT NULL`},
+			WHERE a.id = d.id AND a.stage IS NOT NULL`},
 		{"leads (converted)", `
 			UPDATE leads l SET stage_entered_at = d.created_at
 			FROM deals d
@@ -458,22 +526,36 @@ func ensureCompanyDomainUniqueIndex(db *gorm.DB) error {
 // so the case-insensitive `?tag=` filter (handlers/filters.go's tagFilter)
 // can stay a plain `= ANY(tags)` lookup the GIN tags index can serve,
 // instead of an unnest+LOWER() scan needed to also cover not-yet-normalized
-// legacy rows. Idempotent and cheap to re-run on an already-normalized row.
-func backfillLowercaseTags(db *gorm.DB) error {
-	if err := db.Exec(`
-		UPDATE companies SET tags = ARRAY(SELECT DISTINCT LOWER(TRIM(t)) FROM unnest(tags) t WHERE TRIM(t) <> '')
-		WHERE tags IS NOT NULL AND array_length(tags, 1) > 0
-	`).Error; err != nil {
-		return fmt.Errorf("backfill lowercase company tags: %w", err)
-	}
-	if err := db.Exec(`
-		UPDATE contacts SET tags = ARRAY(SELECT DISTINCT LOWER(TRIM(t)) FROM unnest(tags) t WHERE TRIM(t) <> '')
-		WHERE tags IS NOT NULL AND array_length(tags, 1) > 0
-	`).Error; err != nil {
-		return fmt.Errorf("backfill lowercase contact tags: %w", err)
+// legacy rows.
+//
+// Only rewrites rows that actually need it (tagsNeedNormalizing) — it used
+// to rewrite every tagged Company/Contact on every boot, a full-table write
+// (new row versions, index churn, WAL) that changed nothing once the data
+// was clean. Kept re-runnable rather than runOnce so it still heals a row
+// some non-normalizing writer (an old instance mid rolling deploy, a
+// future import path) leaves behind; on clean data it writes nothing.
+// Exported for its test.
+func BackfillLowercaseTags(db *gorm.DB) error {
+	for _, table := range []string{"companies", "contacts"} {
+		if err := db.Exec(fmt.Sprintf(`
+			UPDATE %s SET tags = ARRAY(SELECT DISTINCT LOWER(TRIM(t)) FROM unnest(tags) t WHERE TRIM(t) <> '')
+			WHERE tags IS NOT NULL AND array_length(tags, 1) > 0 AND %s`, table, tagsNeedNormalizing),
+		).Error; err != nil {
+			return fmt.Errorf("backfill lowercase %s tags: %w", table, err)
+		}
 	}
 	return nil
 }
+
+// tagsNeedNormalizing matches a tags array the normalization above would
+// change: an element that isn't already lowercase/trimmed, is blank or
+// NULL, or a duplicate. Compared element-wise rather than as `tags <>
+// ARRAY(SELECT DISTINCT ...)`, since DISTINCT's output order isn't stable
+// and an already-normalized row could still compare unequal.
+const tagsNeedNormalizing = `(
+	EXISTS (SELECT 1 FROM unnest(tags) t WHERE t IS NULL OR t <> LOWER(TRIM(t)) OR TRIM(t) = '')
+	OR (SELECT COUNT(*) FROM unnest(tags)) <> (SELECT COUNT(DISTINCT t) FROM unnest(tags) t)
+)`
 
 // backfillLeadCompanyIDs links every pre-existing Lead's old free-text
 // company_name to a real Company via the new CompanyID column, run once

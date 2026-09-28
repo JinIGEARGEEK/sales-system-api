@@ -134,6 +134,12 @@ func buildConfig() *config.Config {
 		DBSSLMode:   "disable",
 		JWTSecret:   "test-jwt-secret-not-for-prod",
 		JWTExpiryHr: 720,
+		// database.Connect applies these as-is, and a zero MaxIdleConns
+		// would keep no idle connections at all (a fresh dial per query).
+		DBMaxOpenConns:    25,
+		DBMaxIdleConns:    10,
+		DBConnMaxLifetime: 30 * time.Minute,
+		DBConnMaxIdleTime: 5 * time.Minute,
 	}
 }
 
