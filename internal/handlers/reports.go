@@ -153,7 +153,10 @@ type topReferrerRow struct {
 // table type says." deals.lead_id (set at conversion, leads.go) gives the
 // Lead -> Deal edge; won-ness/revenue then reads deals.status/value directly,
 // same DealStatusWon check every other Won-based report uses. Sorted by
-// leads_referred DESC — the referrer sending the most volume leads.
+// leads_referred DESC — the referrer sending the most volume leads. A raw
+// Table() query gets no soft-delete scoping, so every table checks its own
+// deleted_at: trashed Leads aren't counted, and a trashed Deal/referrer is
+// treated as absent (its revenue drops out, its name goes NULL).
 func (h *ReportHandler) fetchTopReferrers(c *fiber.Ctx) ([]topReferrerRow, error) {
 	window, err := dateRangeQuery(c)
 	if err != nil {
@@ -167,10 +170,10 @@ func (h *ReportHandler) fetchTopReferrers(c *fiber.Ctx) ([]topReferrerRow, error
 			COUNT(DISTINCT deals.id) FILTER (WHERE deals.status = ?) as deals_won,
 			COALESCE(SUM(deals.value) FILTER (WHERE deals.status = ?), 0) as won_revenue`,
 			models.DealStatusWon, models.DealStatusWon).
-		Joins("LEFT JOIN deals ON deals.lead_id = leads.id").
-		Joins("LEFT JOIN companies ON leads.referred_by_type = 'company' AND leads.referred_by_id = companies.id").
-		Joins("LEFT JOIN contacts ON leads.referred_by_type = 'contact' AND leads.referred_by_id = contacts.id").
-		Where("leads.referred_by_id IS NOT NULL").
+		Joins("LEFT JOIN deals ON deals.lead_id = leads.id AND deals.deleted_at IS NULL").
+		Joins("LEFT JOIN companies ON leads.referred_by_type = 'company' AND leads.referred_by_id = companies.id AND companies.deleted_at IS NULL").
+		Joins("LEFT JOIN contacts ON leads.referred_by_type = 'contact' AND leads.referred_by_id = contacts.id AND contacts.deleted_at IS NULL").
+		Where("leads.referred_by_id IS NOT NULL AND leads.deleted_at IS NULL").
 		Group("leads.referred_by_type, leads.referred_by_id, COALESCE(companies.name, contacts.name)").
 		Order("leads_referred DESC")
 
@@ -266,10 +269,12 @@ type customerByProductStatus struct {
 // fetchCustomersByProductStatus — shared by CustomersByProductStatus (JSON)
 // and its CSV export. FR-CRM-056, FR-CRM-055 (company-tag filter). Sorted by
 // start_date DESC so the most recently adopted/onboarded rows surface first.
+// A trashed Company's rows are left out (Model() scopes customer_products'
+// own deleted_at, not the joined table's).
 func (h *ReportHandler) fetchCustomersByProductStatus(c *fiber.Ctx) ([]customerByProductStatus, error) {
 	query := h.DB.Model(&models.CustomerProduct{}).
 		Select("customer_products.company_id, companies.name as company_name, customer_products.product_id, customer_products.status, customer_products.start_date").
-		Joins("JOIN companies ON companies.id = customer_products.company_id")
+		Joins("JOIN companies ON companies.id = customer_products.company_id AND companies.deleted_at IS NULL")
 
 	if v := c.Query("product_id"); v != "" {
 		query = query.Where("customer_products.product_id = ?", v)

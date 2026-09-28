@@ -111,10 +111,10 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) (*gorm.DB, error) {
 		}
 	}
 	// has_won_deal — "true"/"false" string param; only companies with (or
-	// without) at least one Deal at status = 'won'.
+	// without) at least one live (not trashed) Deal at status = 'won'.
 	if v := c.Query("has_won_deal"); v != "" {
 		if hasWonDeal, err := strconv.ParseBool(v); err == nil {
-			exists := "EXISTS (SELECT 1 FROM deals WHERE deals.company_id = companies.id AND deals.status = ?)"
+			exists := "EXISTS (SELECT 1 FROM deals WHERE deals.company_id = companies.id AND deals.status = ? AND deals.deleted_at IS NULL)"
 			if !hasWonDeal {
 				exists = "NOT " + exists
 			}
