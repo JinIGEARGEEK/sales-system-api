@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -17,8 +18,7 @@ import (
 )
 
 // Every Create whose model has a `default:true` bool stores an explicit
-// false as false — a plain db.Create let the column default win, so e.g. a
-// product created inactive came back active.
+// false as false (a plain db.Create lets the column default win).
 func TestCreate_ExplicitFalseOnDefaultTrueFlags(t *testing.T) {
 	app, db := testutil.App(t)
 	keepSeedConfig(t, db)
@@ -86,8 +86,8 @@ func seedClosedDeal(t *testing.T, db *gorm.DB, stage models.DealStage, status mo
 	return deal
 }
 
-// Dragging a Won/Lost deal back to an open stage reopens it; it used to
-// keep status won/lost in e.g. Negotiation.
+// Dragging a Won/Lost deal back to an open stage reopens it and drops its
+// lost_reason.
 func TestDealUpdateStage_MoveToOpenStageReopens(t *testing.T) {
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
@@ -154,7 +154,7 @@ func TestDealUpdate_LostAtOpenStageStaysLost(t *testing.T) {
 	assert.Equal(t, models.DealStatusLost, reloaded.Status)
 }
 
-// A Deal PUT without stage/status keeps the stored ones; it used to save "".
+// A Deal PUT without stage/status keeps the stored ones.
 func TestDealUpdate_OmittedStageAndStatusKeepStored(t *testing.T) {
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
@@ -173,8 +173,8 @@ func TestDealUpdate_OmittedStageAndStatusKeepStored(t *testing.T) {
 	assert.Equal(t, "Renamed", reloaded.Title)
 }
 
-// Lead status must be one of the LeadStatus values on every write path; an
-// over-long one used to be a 500 from the varchar(16) column.
+// Lead status must be one of the LeadStatus values on every write path,
+// including one too long for the varchar(16) column.
 func TestLeadStatus_Validated(t *testing.T) {
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
@@ -199,7 +199,7 @@ func TestLeadStatus_Validated(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
-// A Lead PUT without status keeps the stored one; it used to save "".
+// A Lead PUT without status keeps the stored one.
 func TestLeadUpdate_OmittedStatusKeepsStored(t *testing.T) {
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
@@ -314,11 +314,11 @@ func TestProspectConvert_MissingCompanyIs404(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
-// convertConcurrently fires two Converts of the same row while the test
-// holds that row's lock, so both pass the handler's unlocked pre-check
-// before either can convert — then releases it. The in-transaction locked
-// re-check must turn the second into a 409.
-func convertConcurrently(t *testing.T, db *gorm.DB, send func() int, row interface{}, id uint) []int {
+// convertConcurrently fires two POSTs to path (a convert endpoint) as user
+// while the test holds row's lock, so both pass the handler's unlocked
+// pre-check before either can convert — then releases it. The
+// in-transaction locked re-check must turn the second into a 409.
+func convertConcurrently(t *testing.T, app *fiber.App, db *gorm.DB, path string, user *models.User, row interface{}, id uint) []int {
 	t.Helper()
 	blocker := db.Begin()
 	require.NoError(t, blocker.Clauses(clause.Locking{Strength: "UPDATE"}).First(row, id).Error)
@@ -329,7 +329,10 @@ func convertConcurrently(t *testing.T, db *gorm.DB, send func() int, row interfa
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			codes[i] = send()
+			req := testutil.AuthRequest(t, http.MethodPost, path, map[string]interface{}{}, user.ID, user.Role)
+			if resp, err := app.Test(req, -1); err == nil {
+				codes[i] = resp.StatusCode
+			}
 		}(i)
 	}
 
@@ -359,14 +362,7 @@ func TestLeadConvert_ConcurrentSecondIsConflict(t *testing.T) {
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 	lead := seedLead(t, db, nil)
 
-	codes := convertConcurrently(t, db, func() int {
-		req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/leads/"+itoa(lead.ID)+"/convert", map[string]interface{}{}, admin.ID, admin.Role)
-		resp, err := app.Test(req, -1)
-		if err != nil {
-			return 0
-		}
-		return resp.StatusCode
-	}, &models.Lead{}, lead.ID)
+	codes := convertConcurrently(t, app, db, "/api/v1/leads/"+itoa(lead.ID)+"/convert", admin, &models.Lead{}, lead.ID)
 	assert.ElementsMatch(t, []int{http.StatusOK, http.StatusConflict}, codes)
 
 	var deals int64
@@ -379,14 +375,7 @@ func TestProspectConvert_ConcurrentSecondIsConflict(t *testing.T) {
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 	prospect := seedProspect(t, db, nil)
 
-	codes := convertConcurrently(t, db, func() int {
-		req := testutil.AuthRequest(t, http.MethodPost, "/api/v1/prospects/"+itoa(prospect.ID)+"/convert", map[string]interface{}{}, admin.ID, admin.Role)
-		resp, err := app.Test(req, -1)
-		if err != nil {
-			return 0
-		}
-		return resp.StatusCode
-	}, &models.Prospect{}, prospect.ID)
+	codes := convertConcurrently(t, app, db, "/api/v1/prospects/"+itoa(prospect.ID)+"/convert", admin, &models.Prospect{}, prospect.ID)
 	assert.ElementsMatch(t, []int{http.StatusOK, http.StatusConflict}, codes)
 
 	var leads int64
