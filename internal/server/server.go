@@ -2,8 +2,7 @@
 // limit, timeouts, trusted proxies), the global middleware stack, /health,
 // and every route. Shared by cmd/api/main.go and testutil.App so the test
 // suite exercises the exact app production runs — the same error envelope,
-// panic recovery and body limit — instead of a bare fiber.New() that only
-// looked like it.
+// panic recovery and body limit.
 package server
 
 import (
@@ -79,12 +78,9 @@ func New(cfg *config.Config, db *gorm.DB, storage utils.Storage, proxies *client
 	// Stack traces on: a panic is by definition a bug, and the 500 the
 	// client gets (apiErrorHandler) says nothing useful on its own.
 	app.Use(recover.New(recover.Config{EnableStackTrace: true}))
-	// requestid before logger so every access-log line carries the same ID
-	// apiErrorHandler logs below — without this there was no way to
-	// correlate an access-log entry with the corresponding server-side error
-	// log line for the same request when debugging a production incident.
-	// Echoes/generates X-Request-ID; the response header lets a client (or
-	// this API's own frontend) report it back for support purposes too.
+	// requestid before logger, so an access-log line and apiErrorHandler's
+	// error line for the same request share an ID. Echoes/generates
+	// X-Request-ID, which a client can report back for support.
 	app.Use(requestid.New())
 	if accessLog {
 		app.Use(logger.New(logger.Config{

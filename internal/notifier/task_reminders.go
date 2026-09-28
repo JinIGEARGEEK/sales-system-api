@@ -51,10 +51,8 @@ func StartTaskDueReminders(ctx context.Context, db *gorm.DB, cfg *config.Config)
 // permanently failing address, an email attempt every 15 minutes forever).
 //
 // Assignees and related Deal/Contact/Company names are resolved via a
-// handful of batched queries up front (one per distinct related-entity type,
-// plus one for assignees) rather than the two First()-per-task round trips
-// this used to run — the difference between ~4 queries and 2*len(tasks) once
-// there's a real backlog of due tasks.
+// handful of batched queries up front (one per related-entity type, plus
+// one for assignees), not two round trips per task.
 func checkDueTasks(db *gorm.DB, cfg *config.Config) {
 	var tasks []models.Task
 	err := db.Where("status = ? AND due_date <= ? AND notified_at IS NULL", models.TaskStatusPending, time.Now()).

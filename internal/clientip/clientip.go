@@ -2,15 +2,10 @@
 // per-caller rate limiting (routes.go's login limiter), without letting the
 // caller choose it.
 //
-// The old resolver took the leftmost X-Forwarded-For entry from anyone.
-// That header is client-writable: a direct caller can send any value, and a
-// proxy that appends (rather than overwrites) keeps the client's own entry
-// leftmost — so a brute-forcer could rotate a fake X-Forwarded-For per
-// attempt and get a fresh rate-limit bucket every time. This resolver
-// only reads the header when the socket peer is a configured trusted proxy
-// (config.TrustedProxies), and then walks it right to left, skipping
-// trusted hops: the first untrusted entry is the address the outermost
-// trusted proxy actually saw connect. Anything a client prepended sits to
+// X-Forwarded-For is client-writable, so it's only read when the socket
+// peer is a trusted proxy (config.TrustedProxies), and then right to left,
+// skipping trusted hops: the first untrusted entry is the address the
+// outermost trusted proxy saw connect. Anything a client prepended sits to
 // the left of that and is never reached.
 package clientip
 

@@ -48,43 +48,24 @@ const TestPassword = "password123!"
 // in FK-safe order doesn't matter because of CASCADE, but kept aligned for clarity.
 var tables = []string{
 	"api_keys",
-	// idempotency_keys/open_api_request_logs are both scoped by api_key_id,
-	// which gets its identity reset along with every other truncated table
-	// below — leaving these two out would let a leftover idempotency_keys
-	// row from an earlier test collide with api_key_id=1 (say) reused by a
-	// later, unrelated test, tripping its uniqueIndex on (api_key_id, key)
-	// for a key value ("retry-1", say) that test never actually reused.
+	// Scoped by api_key_id, whose identity restarts with api_keys — a
+	// leftover row would collide with a later test's reused key ID.
 	"idempotency_keys",
 	"open_api_request_logs",
 	"attachments",
 	"audit_log_entries",
-	// notification_logs/notification_rules — added alongside the dormant-
-	// company notification rule tests: notification_rules.name is
-	// uniqueIndex'd, so leaving this table out of the truncate list (as it
-	// was before) let one test run's seeded rule name collide with the next
-	// run's.
+	// notification_rules.name is uniqueIndex'd, so a test's rule would
+	// collide with the next run's.
 	"notification_logs",
 	"notification_rules",
 	// lead_scoring_criteria.name is uniqueIndex'd too, same as
-	// notification_rules above — previously missing from this list entirely
-	// (not a deliberate "seed once" exclusion like PipelineStage/
-	// LeadSourceOption below, just an oversight), so a test creating one
-	// left it behind to collide with same-named rows the next test run
-	// created.
+	// notification_rules above.
 	"lead_scoring_criteria",
 	"projects",
 	"customer_products",
 	"products",
-	// industry_options/company_size_options/revenue_size_options/
-	// job_title_options/product_category_options all have a uniqueIndex'd
-	// name and no seedPipelineConfig-style "seed once, exclude from
-	// truncate" entry of their own — unlike PipelineStage/LeadSourceOption/
-	// ProspectSourceOption/ProspectStage, nothing seeds a default set for
-	// these, so leaving them out of this list (as they were) meant a test
-	// creating one (e.g. EnsureActiveIndustry auto-registering a Company's
-	// free-typed industry) collided with the same row left over from an
-	// earlier test run — the same class of bug notification_rules' comment
-	// above describes for its own uniqueIndex'd name.
+	// Uniquely named and, unlike the seedPipelineConfig tables, not seeded
+	// once — so a test's rows (e.g. an auto-registered industry) must go.
 	"industry_options",
 	"company_size_options",
 	"revenue_size_options",
