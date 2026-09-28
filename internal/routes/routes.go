@@ -1,8 +1,8 @@
 package routes
 
 import (
+	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/igeargeek/sales-system-api/docs"
+	"github.com/igeargeek/sales-system-api/internal/clientip"
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/handlers"
 	"github.com/igeargeek/sales-system-api/internal/middleware"
@@ -17,25 +18,22 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
-// clientIP resolves the real client address for rate-limiting purposes. This
-// app's only deployment target is Railway (railway.toml/Dockerfile), which
-// always sits in front as a reverse proxy and sets X-Forwarded-For to the
-// actual client IP on every inbound request — c.IP() alone would return
-// Railway's own edge address for every request in that setup, collapsing all
-// users onto one shared rate-limit bucket (see loginLimiter below) instead of
-// limiting each caller independently. Falls back to c.IP() when the header is
-// absent (local dev, docker-compose, or any direct, non-proxied connection).
-// Take the leftmost hop — Railway's edge sets/overwrites this header itself
-// rather than trusting a client-supplied one, so the leftmost entry is the
-// original caller even if further proxies appended their own hops after it.
-func clientIP(c *fiber.Ctx) string {
-	if xff := c.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.IndexByte(xff, ','); idx != -1 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return strings.TrimSpace(xff)
+// clientIP builds the login limiter's key function. This app's only
+// deployment target is Railway (railway.toml/Dockerfile), whose edge proxy
+// sits in front of every request — the socket address alone would put every
+// user into the proxy's one shared rate-limit bucket (see loginLimiter
+// below). But X-Forwarded-For is client-writable, and trusting its leftmost
+// entry from anyone (as this used to) let a brute-forcer mint a fresh
+// bucket per attempt. internal/clientip only reads the header from
+// cfg.TrustedProxies peers (TRUSTED_PROXIES; Railway's private ranges by
+// default there) and right to left — see its package doc. cmd/api/main.go
+// already validated the list at boot, so a parse error here is a bug.
+func clientIP(cfg *config.Config) func(*fiber.Ctx) string {
+	r, err := clientip.New(cfg.TrustedProxies)
+	if err != nil {
+		panic(fmt.Sprintf("routes: %v", err))
 	}
-	return c.IP()
+	return r.ClientIP
 }
 
 // swaggerUIHTML renders swagger-ui-dist (CDN-hosted, not a Go dependency)
@@ -132,7 +130,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	loginLimiter := limiter.New(limiter.Config{
 		Max:          10,
 		Expiration:   1 * time.Minute,
-		KeyGenerator: clientIP,
+		KeyGenerator: clientIP(cfg),
 		LimitReached: func(c *fiber.Ctx) error {
 			return utils.ErrorResponse(c, fiber.StatusTooManyRequests, "TOO_MANY_REQUESTS", "Too many login attempts — try again shortly")
 		},

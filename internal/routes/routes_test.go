@@ -6,34 +6,29 @@ import (
 	"testing"
 
 	"github.com/gofiber/fiber/v2"
+
+	"github.com/igeargeek/sales-system-api/internal/config"
 )
 
-// TestClientIP guards the Railway-proxy IP resolution used to key the login
-// rate limiter — c.IP() alone would return Railway's edge address for every
-// request, collapsing all users onto one shared limiter bucket instead of
-// limiting each caller independently.
+// TestClientIP checks the login limiter's key function honors
+// cfg.TrustedProxies — the resolution rules themselves are covered in
+// internal/clientip. app.Test's fake connection reports its peer as 0.0.0.0.
 func TestClientIP(t *testing.T) {
-	app := fiber.New()
-	app.Get("/", func(c *fiber.Ctx) error {
-		return c.SendString(clientIP(c))
-	})
-
 	cases := []struct {
-		name   string
-		header string
-		want   string
+		name    string
+		trusted []string
+		want    string
 	}{
-		{"no header falls back to RemoteAddr-derived c.IP()", "", "0.0.0.0"},
-		{"single hop", "203.0.113.7", "203.0.113.7"},
-		{"multi-hop chain takes the leftmost (original client)", "203.0.113.7, 10.0.0.5, 10.0.0.6", "203.0.113.7"},
-		{"trims whitespace around the leftmost hop", "  203.0.113.7  , 10.0.0.5", "203.0.113.7"},
+		{"no trusted proxy keys on the socket peer", nil, "0.0.0.0"},
+		{"trusted peer keys on the rightmost untrusted hop", []string{"0.0.0.0"}, "203.0.113.7"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			key := clientIP(&config.Config{TrustedProxies: tc.trusted})
+			app := fiber.New()
+			app.Get("/", func(c *fiber.Ctx) error { return c.SendString(key(c)) })
 			req := httptest.NewRequest("GET", "/", nil)
-			if tc.header != "" {
-				req.Header.Set("X-Forwarded-For", tc.header)
-			}
+			req.Header.Set("X-Forwarded-For", "1.2.3.4, 203.0.113.7")
 			resp, err := app.Test(req)
 			if err != nil {
 				t.Fatal(err)
@@ -44,7 +39,7 @@ func TestClientIP(t *testing.T) {
 				t.Fatal(err)
 			}
 			if got := string(body); got != tc.want {
-				t.Errorf("clientIP with X-Forwarded-For %q = %q, want %q", tc.header, got, tc.want)
+				t.Errorf("clientIP = %q, want %q", got, tc.want)
 			}
 		})
 	}
