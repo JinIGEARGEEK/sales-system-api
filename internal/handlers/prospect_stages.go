@@ -119,7 +119,9 @@ func (h *ProspectStageHandler) Create(c *fiber.Ctx) error {
 				return err
 			}
 		}
-		return tx.Create(&stage).Error
+		// CreateKeepingFalse: IsActive is NOT NULL DEFAULT true, which a
+		// plain Create would apply over an explicit false.
+		return utils.CreateKeepingFalse(tx, &stage)
 	})
 	if err != nil {
 		return utils.ValidationError(c, "Stage name already in use", map[string][]string{"name": {"Name is already in use"}})

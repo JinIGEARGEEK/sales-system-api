@@ -58,7 +58,9 @@ func (h *LeadScoringCriteriaHandler) Create(c *fiber.Ctx) error {
 	}
 	criterion.CreatedBy = &actorID
 	criterion.UpdatedBy = &actorID
-	if err := h.DB.Create(&criterion).Error; err != nil {
+	// CreateKeepingFalse: IsActive is NOT NULL DEFAULT true, which a plain
+	// Create would apply over an explicit false.
+	if err := utils.CreateKeepingFalse(h.DB, &criterion); err != nil {
 		return utils.ValidationError(c, "Criterion name already in use", map[string][]string{"name": {"Name is already in use"}})
 	}
 	return utils.Created(c, criterion)
