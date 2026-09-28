@@ -76,6 +76,18 @@ func Pagination(c *fiber.Ctx) (page int, perPage int, offset int) {
 // ApplySort parses `sort=-created_at` (leading '-' = descending) into a gorm Order
 // clause, restricted to an allow-list of sortable columns to prevent SQL injection.
 func ApplySort(db *gorm.DB, sortParam string, allowed map[string]bool, defaultSort string) *gorm.DB {
+	return ApplyTableSort(db, "", sortParam, allowed, defaultSort)
+}
+
+// ApplyTableSort is ApplySort with the column (and the id tie-breaker)
+// qualified by table — for queries that join another table sharing column
+// names such as created_at/name, which bare ApplySort would make ambiguous.
+// An empty table leaves the columns bare.
+func ApplyTableSort(db *gorm.DB, table, sortParam string, allowed map[string]bool, defaultSort string) *gorm.DB {
+	prefix := ""
+	if table != "" {
+		prefix = table + "."
+	}
 	sortParam = orDefault(sortParam, defaultSort)
 	if sortParam == "" {
 		return db
@@ -104,9 +116,9 @@ func ApplySort(db *gorm.DB, sortParam string, allowed map[string]bool, defaultSo
 	// id breaks ties so rows sharing a value (e.g. two Kanban cards with the
 	// same position) come back in a stable order across pages and refetches.
 	if col == "id" {
-		return db.Order(col + dir)
+		return db.Order(prefix + col + dir)
 	}
-	return db.Order(col + dir).Order("id" + dir)
+	return db.Order(prefix + col + dir).Order(prefix + "id" + dir)
 }
 
 func orDefault(v, def string) string {

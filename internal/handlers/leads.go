@@ -80,8 +80,12 @@ func (h *LeadHandler) List(c *fiber.Ctx) error {
 	var leads []models.Lead
 	if needsCompanyJoin {
 		query = utils.ApplyNullableCompanySort(query, "leads", c.Query("sort"), sortField)
-	} else {
-		query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true, "position": true}, "-created_at")
+	}
+	// Table-qualified: with the companies join (search, not just a
+	// company_name sort) bare created_at/name would be ambiguous, and
+	// without any ORDER BY a searched list paged in no stable order.
+	if sortField != "company_name" {
+		query = utils.ApplyTableSort(query, "leads", c.Query("sort"), map[string]bool{"created_at": true, "name": true, "position": true}, "-created_at")
 	}
 	if err := query.Limit(perPage).Offset(offset).Find(&leads).Error; err != nil {
 		return utils.Internal(c, "Failed to list leads")

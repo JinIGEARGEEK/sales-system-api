@@ -75,3 +75,49 @@ func TestCompanyNameSort_WithFilters(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode, path)
 	}
 }
+
+// A searched Lead/Prospect list joins companies for the Company-name match,
+// and that path used to apply no ORDER BY at all unless sort=company_name,
+// so pages came back in no stable order. It now honours sort (default
+// newest first) qualified with the list's own table.
+func TestLeadProspectSearch_KeepsSortOrder(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	company := seedCompany(t, db)
+
+	var leadIDs, prospectIDs []uint
+	for i := 0; i < 3; i++ {
+		lead := &models.Lead{Name: "Jordan Lee", CompanyID: &company.ID, Source: models.LeadSourceWebsite, Status: models.LeadStatusNew}
+		require.NoError(t, db.Create(lead).Error)
+		leadIDs = append(leadIDs, lead.ID)
+		prospect := &models.Prospect{Name: "Jordan Lee", Source: "Social Media", Status: models.ProspectStatusNew}
+		require.NoError(t, db.Create(prospect).Error)
+		prospectIDs = append(prospectIDs, prospect.ID)
+	}
+
+	listIDs := func(path string) []uint {
+		t.Helper()
+		var out struct {
+			Data []struct {
+				ID uint `json:"id"`
+			} `json:"data"`
+		}
+		resp := doJSON(t, app, testutil.AuthRequest(t, http.MethodGet, path, nil, admin.ID, admin.Role), &out)
+		require.Equal(t, http.StatusOK, resp.StatusCode, path)
+		ids := make([]uint, len(out.Data))
+		for i, r := range out.Data {
+			ids[i] = r.ID
+		}
+		return ids
+	}
+
+	for _, tc := range []struct {
+		base string
+		ids  []uint
+	}{{"/api/v1/leads", leadIDs}, {"/api/v1/prospects", prospectIDs}} {
+		// Same created_at to the second is likely here, so the id
+		// tie-breaker decides — newest (highest id) first by default.
+		assert.Equal(t, []uint{tc.ids[2], tc.ids[1], tc.ids[0]}, listIDs(tc.base+"?search=jordan"), tc.base+" default")
+		assert.Equal(t, tc.ids, listIDs(tc.base+"?search=jordan&sort=created_at"), tc.base+" created_at")
+	}
+}
