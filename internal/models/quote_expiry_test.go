@@ -8,14 +8,10 @@ import (
 )
 
 // TestEffectiveStatusAt_ExpiresAfterLastValidLocalDay guards validity_date
-// as the quote's last valid day in server-local time (Bangkok): a bare date
-// used to parse as UTC midnight, so the quote showed Expired from 07:00
-// Bangkok on its last valid day.
+// as the quote's last valid day in server-local time (Bangkok), not the
+// UTC-midnight instant a bare date parses to (07:00 Bangkok).
 func TestEffectiveStatusAt_ExpiresAfterLastValidLocalDay(t *testing.T) {
-	saved := time.Local
-	ict := time.FixedZone("ICT", 7*3600)
-	time.Local = ict
-	t.Cleanup(func() { time.Local = saved })
+	ict := time.Local
 
 	cases := []struct {
 		name     string
@@ -44,4 +40,27 @@ func TestEffectiveStatusAt_ExpiresAfterLastValidLocalDay(t *testing.T) {
 	assert.Equal(t, QuoteStatusDraft, draft.EffectiveStatusAt(time.Now()), "only a Sent quote expires")
 	noDate := Quote{Status: QuoteStatusSent}
 	assert.Equal(t, QuoteStatusSent, noDate.EffectiveStatusAt(time.Now()))
+}
+
+// ExpiresWithin is today through today+days, by server-local calendar day.
+func TestExpiresWithin(t *testing.T) {
+	now := time.Date(2026, 9, 28, 23, 30, 0, 0, time.Local)
+	cases := []struct {
+		validity string
+		want     bool
+	}{
+		{"2026-09-27", false},
+		{"2026-09-28", true},
+		{"2026-10-05", true},
+		{"2026-10-06", false},
+		{"2026-10-04T17:00:00.000Z", true}, // JS Date for 5 October in Bangkok
+		{"not-a-date", false},
+	}
+	for _, tc := range cases {
+		q := Quote{ValidityDate: strPtr(tc.validity)}
+		_, ok := q.ExpiresWithin(now, 7)
+		assert.Equal(t, tc.want, ok, tc.validity)
+	}
+	_, ok := (&Quote{}).ExpiresWithin(now, 7)
+	assert.False(t, ok, "no validity date")
 }

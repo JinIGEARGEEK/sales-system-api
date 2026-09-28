@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/igeargeek/sales-system-api/internal/calendar"
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
@@ -273,7 +274,7 @@ func checkDealIdleRule(db *gorm.DB, cfg *config.Config, rule models.Notification
 				"Reminder: the following deal has been in stage \"%s\" for %d+ days.\n\nDeal: %s\nStage: %s\n",
 				deal.Stage, rule.ThresholdDays, deal.Title, deal.Stage,
 			),
-			TaskTitle:   fmt.Sprintf("Deal idle %d days: %s", utils.LocalDaysBetween(since, now), deal.Title),
+			TaskTitle:   fmt.Sprintf("Deal idle %d days: %s", calendar.LocalDaysBetween(since, now), deal.Title),
 			RelatedType: models.RelatedTypeDeal, RelatedID: deal.ID,
 		}, now)
 	}
@@ -289,17 +290,9 @@ func checkQuoteExpiringRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 		return
 	}
 
-	// Calendar days, as Quote.EffectiveStatusAt reads them: a quote is still
-	// valid through its whole validity date (local time), so it's in the
-	// window from today through today+threshold — not by the UTC-midnight
-	// instant a bare date parses to, which dropped it at 07:00 Bangkok on
-	// its last day.
-	today := utils.Today(now)
-	cutoff := today.AddDate(0, 0, rule.ThresholdDays)
-
 	for _, quote := range quotes {
-		validUntil, ok := quote.ValidityDay()
-		if !ok || validUntil.Before(today) || validUntil.After(cutoff) {
+		validUntil, ok := quote.ExpiresWithin(now, rule.ThresholdDays)
+		if !ok {
 			continue
 		}
 		if alreadyNotified(db, rule.ID, quote.ID, "") {
@@ -358,7 +351,7 @@ func checkContractStuckRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 				"Reminder: a contract on the following deal has been unsigned for %d+ days.\n\nDeal: %s\nStatus: %s\n",
 				rule.ThresholdDays, deal.Title, contract.Status,
 			),
-			TaskTitle:   fmt.Sprintf("Contract unsigned %d days: %s", utils.LocalDaysBetween(contract.CreatedAt, now), deal.Title),
+			TaskTitle:   fmt.Sprintf("Contract unsigned %d days: %s", calendar.LocalDaysBetween(contract.CreatedAt, now), deal.Title),
 			RelatedType: models.RelatedTypeDeal, RelatedID: deal.ID,
 		}, now)
 	}
@@ -472,7 +465,7 @@ func checkPaymentInstallmentDueRule(db *gorm.DB, cfg *config.Config, rule models
 	}
 }
 
-// checkProspectStaleRule — FR-CRM-107, added 2026-09-03. A Prospect still
+// checkProspectStaleRule — FR-CRM-107. A Prospect still
 // actively being worked (status not yet Converted/Disqualified) that has
 // gone at least rule.ThresholdDays with no update. Uses UpdatedAt rather
 // than a stage-transition audit lookup like checkDealIdleRule, since
@@ -480,17 +473,10 @@ func checkPaymentInstallmentDueRule(db *gorm.DB, cfg *config.Config, rule models
 // UpdatedAt is the closest available "last touched" signal (any field edit
 // bumps it, not just a status change).
 //
-// **Updated 2026-09-09**: the "disqualified" exclusion resolves the
-// configured ProspectStage row's IsDisqualifiedStage flag instead of the
-// hardcoded models.ProspectStatusDisqualified literal, since Prospect
-// stages became Admin-configurable/renamable the same day (see
-// ProspectStage's own doc) — an Admin renaming "Disqualified" would
-// otherwise leave genuinely-disqualified Prospects incorrectly eligible for
-// this rule. Falls back to the literal name if no row is flagged (e.g.
-// right after a migration, before the seed runs), same fallback shape as
-// utils.IsWonStage/IsLostStage use for Deal stages. "Converted" stays a
-// literal check — it's deliberately never a ProspectStage row (see
-// ProspectStatusConverted's own doc).
+// The "disqualified" exclusion resolves the ProspectStage flagged
+// IsDisqualifiedStage, since stages are Admin-renamable, falling back to the
+// literal name if no row is flagged (like utils.IsWonStage/IsLostStage).
+// "Converted" stays a literal check — it's never a ProspectStage row.
 func checkProspectStaleRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, now time.Time) {
 	disqualifiedStageName := string(models.ProspectStatusDisqualified)
 	var disqualifiedStage models.ProspectStage
@@ -527,24 +513,16 @@ func checkProspectStaleRule(db *gorm.DB, cfg *config.Config, rule models.Notific
 				"Reminder: the following prospect has had no updates in %d+ days.\n\nProspect: %s\nStatus: %s\n",
 				rule.ThresholdDays, prospect.Name, prospect.Status,
 			),
-			TaskTitle:   fmt.Sprintf("Prospect stale %d days: %s", utils.LocalDaysBetween(prospect.UpdatedAt, now), prospect.Name),
+			TaskTitle:   fmt.Sprintf("Prospect stale %d days: %s", calendar.LocalDaysBetween(prospect.UpdatedAt, now), prospect.Name),
 			RelatedType: models.RelatedTypeProspect, RelatedID: prospect.ID,
 		}, now)
 	}
 }
 
 // companyDormantTiers are this rule's own fixed 60/90/120-day escalation
-// boundaries. **Updated 2026-09-09**: these used to be kept deliberately in
-// sync with the dashboard's upsell_opportunities widget, which had the same
-// fixed tiers — but f876697 replaced that widget's tiers with an
-// Admin/user-configurable upsell_min_stale_days threshold
-// (internal/handlers/dashboard.go's upsellOpportunities), so the two are no
-// longer related. This rule still escalates through its own fixed tiers
-// rather than firing once past a single caller-configured threshold, since
-// unlike checkDealIdleRule/checkQuoteExpiringRule/checkContractStuckRule it
-// needs to re-fire as a Company gets progressively more stale;
-// rule.ThresholdDays is still honored as the floor below which nothing fires
-// at all (see the loop below).
+// boundaries (independent of the dashboard's upsell_min_stale_days). Unlike
+// the other rules it re-fires as a Company gets progressively more stale;
+// rule.ThresholdDays is the floor below which nothing fires at all.
 var companyDormantTiers = []int{60, 90, 120}
 
 // checkCompanyDormantRule — dormant-customer / upsell-targeting feature. An

@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/calendar"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
@@ -324,12 +325,9 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	assignedTo, period := c.Query("assigned_to"), c.Query("period")
 	// upsell_min_stale_days — the Upsell Opportunities widget's own staleness
 	// filter (FR-CRM-108/109), read up front for the same data-race reason as
-	// companyTagSet/assignedTo above. Defaults to 60 (the old fixed tier1
-	// cutoff) so an omitted param behaves the same as before this filter
-	// existed. Invalid/non-positive values fall back to the same default
-	// rather than 400ing — this is a display filter, not a validated form
-	// field, so a malformed value degrading to "show the widest reasonable
-	// default" is friendlier than an error.
+	// companyTagSet/assignedTo above. Defaults to 60; invalid/non-positive
+	// values fall back to it rather than 400ing, since this is a display
+	// filter, not a validated form field.
 	upsellMinStaleDays := 60
 	if v, err := strconv.Atoi(c.Query("upsell_min_stale_days")); err == nil && v > 0 {
 		upsellMinStaleDays = v
@@ -343,11 +341,9 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	// These 5 base aggregates plus the 7 breakdown/trend/target helpers below
 	// are all independent read-only queries — run them concurrently instead
 	// of serially so wall-clock time is roughly the slowest single query, not
-	// the sum of all ~12 (currentQuarterTarget's SalesTarget lookup included,
-	// so it's no longer the one query left running after wg.Wait()). None of
-	// them touch `c` (or anything else fiber-request-shaped) from here on,
-	// only `base`/`settings` and
-	// plain values already captured above — see the comment on that.
+	// the sum of all ~12. None of them touch `c` (or anything else
+	// fiber-request-shaped), only `base`/`settings` and plain values already
+	// captured above — see the comment on that.
 	var openPipelineValue, wonValue, avgDealSize, forecastedRevenue float64
 	var openDealsCount, wonCount, lostCount int64
 	var revenueTrend, forecastTrend []revenueTrendPoint
@@ -560,7 +556,7 @@ func thisMonthStart(now time.Time) time.Time {
 // full ISO datetime (the frontend submits Date objects, which
 // JSON-serialize to e.g. "2026-08-31T17:00:00.000Z" — 1 September in
 // Bangkok). Taking its first 7 characters put that in August, so each
-// Deal's month is read in Go instead (utils.ParseLocalCalendarDay: a bare
+// Deal's month is read in Go instead (calendar.ParseLocalDay: a bare
 // date as written, a timestamp by its server-local date). SQL only
 // narrows by a string range padded a day each side (a timestamp's UTC date
 // can be a day before its local one); a malformed row is skipped rather
@@ -584,7 +580,7 @@ func (h *DashboardHandler) forecastTrend() []revenueTrendPoint {
 		points[i].Label = bounds[i].Format("Jan")
 	}
 	for _, r := range rows {
-		day, ok := utils.ParseLocalCalendarDay(r.ExpectedCloseDate)
+		day, ok := calendar.ParseLocalDay(r.ExpectedCloseDate)
 		if !ok {
 			continue
 		}
@@ -598,12 +594,9 @@ func (h *DashboardHandler) forecastTrend() []revenueTrendPoint {
 
 // stageBreakdown, industryBreakdown, and teamPerformance all take the already
 // -built base filter query (from Summary's single synchronous h.baseFilter(c)
-// call) rather than *fiber.Ctx — Summary runs these concurrently via
-// goroutines, and re-deriving the filter from c in each one used to mean
-// several goroutines calling c.Query(...) at once, which is a data race on
-// fasthttp's shared, lazily-parsed query-args cache (it mutates on first
-// access per request with no locking). Passing the pre-built *gorm.DB in
-// avoids touching c from any of these at all.
+// call) rather than *fiber.Ctx — Summary runs these concurrently, and
+// c.Query from several goroutines at once is a data race on fasthttp's
+// lazily-parsed query-args cache.
 func (h *DashboardHandler) stageBreakdown(base *gorm.DB) []stageBreakdownItem {
 	var rows []stageBreakdownItem
 	base.Session(&gorm.Session{}).
@@ -735,12 +728,8 @@ type upsellCompany struct {
 // (FR-CRM-108): active Companies whose last_activity_at (company_activity.go's
 // withLastActivityAt — company-scoped Activities only, NOT rolled up from
 // Deals/Contacts) is NULL (never contacted) or at least minStaleDays old,
-// most-stale first, capped at upsellCap. **Updated 2026-09-09**: used to
-// always return 3 fixed 60/90/120-day tiers, always all three even when
-// empty, so the frontend could render a fixed 3-column layout — replaced by
-// a single minStaleDays threshold (the widget's own filter dropdown, sent as
-// ?upsell_min_stale_days) now that the frontend shows one filtered list
-// instead of three fixed columns.
+// most-stale first, capped at upsellCap. minStaleDays is the widget's own
+// filter dropdown (?upsell_min_stale_days).
 //
 // Deliberately independent of Summary's baseFilter (business_unit/channel/
 // assigned_to/company_tag/date range) — this is Company-centric, not

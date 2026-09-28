@@ -37,29 +37,6 @@ type sourcePerformanceRow struct {
 	DirectWonValue float64 `json:"direct_won_value"`
 }
 
-// sourcePerformanceWindow is dateRangeQuery plus the from/to aliases this
-// report accepts: date_from/date_to (or from/to), both YYYY-MM-DD and
-// inclusive server-local days (utils.ParseDateRange). Returns ok=false after
-// writing a 422 for a malformed or reversed range.
-func sourcePerformanceWindow(c *fiber.Ctx) (window utils.DateRange, ok bool) {
-	pick := func(names ...string) (string, string) {
-		for _, name := range names {
-			if v := c.Query(name); v != "" {
-				return name, v
-			}
-		}
-		return names[0], ""
-	}
-	fromName, fromValue := pick("date_from", "from")
-	toName, toValue := pick("date_to", "to")
-	window, msg, fields := utils.ParseDateRange(fromName, fromValue, toName, toValue)
-	if fields != nil {
-		_ = utils.ValidationError(c, msg, fields)
-		return utils.DateRange{}, false
-	}
-	return window, true
-}
-
 // fetchSourcePerformance — shared by SourcePerformance and its CSV export.
 //
 // Deal → source link: a Lead-originated Deal is attributed to its Lead's
@@ -166,9 +143,9 @@ func mergeSourcePerformance(cohort, direct []sourcePerformanceRow) []sourcePerfo
 // @Failure 500 {object} map[string]interface{} "Failed to compute source performance"
 // @Router /reports/source-performance [get]
 func (h *ReportHandler) SourcePerformance(c *fiber.Ctx) error {
-	window, ok := sourcePerformanceWindow(c)
-	if !ok {
-		return nil
+	window, err := dateRangeQuery(c)
+	if err != nil {
+		return reportError(c, err, "")
 	}
 	rows, err := h.fetchSourcePerformance(c, window)
 	if err != nil {
@@ -191,9 +168,9 @@ func (h *ReportHandler) SourcePerformance(c *fiber.Ctx) error {
 // @Failure 500 {object} map[string]interface{} "Failed to export source performance"
 // @Router /reports/source-performance/export [get]
 func (h *ReportHandler) SourcePerformanceExport(c *fiber.Ctx) error {
-	window, ok := sourcePerformanceWindow(c)
-	if !ok {
-		return nil
+	window, err := dateRangeQuery(c)
+	if err != nil {
+		return reportError(c, err, "")
 	}
 	rows, err := h.fetchSourcePerformance(c, window)
 	if err != nil {

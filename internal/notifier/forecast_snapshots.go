@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/igeargeek/sales-system-api/internal/calendar"
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
@@ -36,15 +37,11 @@ func StartForecastSnapshots(ctx context.Context, db *gorm.DB, cfg *config.Config
 }
 
 // takeForecastSnapshot writes now's day's snapshot unless one exists. Any
-// query failure skips the day's row entirely (retried next tick): it used
-// to carry on and write zeros, and since snapshot_date is unique that
-// wrong row then blocked the correct one for the rest of the day.
+// query failure skips the day's row entirely (retried next tick) rather than
+// writing zeros, which the unique snapshot_date would keep for the day.
 func takeForecastSnapshot(db *gorm.DB, now time.Time) {
-	// The server-local calendar day (TZ, Asia/Bangkok in the image) — this
-	// used to be time.Now().Truncate(24h), which is midnight UTC: from
-	// 00:00 to 07:00 Bangkok time that was still "yesterday", so the day's
-	// snapshot was taken 7 hours late and stamped with the previous date.
-	today := utils.Today(now)
+	// The server-local calendar day, not UTC's.
+	today := calendar.Today(now)
 
 	var existing int64
 	if err := db.Model(&models.ForecastSnapshot{}).Where("snapshot_date = ?", today).Count(&existing).Error; err != nil {
