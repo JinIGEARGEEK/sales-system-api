@@ -488,7 +488,7 @@ func checkPaymentInstallmentDueRule(db *gorm.DB, cfg *config.Config, rule models
 // otherwise leave genuinely-disqualified Prospects incorrectly eligible for
 // this rule. Falls back to the literal name if no row is flagged (e.g.
 // right after a migration, before the seed runs), same fallback shape as
-// utils.IsWonStage/IsLostStage use for Deal stages. "Converted" stays a
+// utils.LookupStageFlags uses for Deal stages. "Converted" stays a
 // literal check — it's deliberately never a ProspectStage row (see
 // ProspectStatusConverted's own doc).
 func checkProspectStaleRule(db *gorm.DB, cfg *config.Config, rule models.NotificationRule, now time.Time) {

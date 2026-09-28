@@ -728,21 +728,9 @@ func (h *LeadHandler) BulkArchive(c *fiber.Ctx) error {
 }
 
 type convertRequest struct {
-	CompanyID *uint `json:"company_id"`
-	ContactID *uint `json:"contact_id"`
-	Deal      struct {
-		Title             string               `json:"title"`
-		Value             float64              `json:"value"`
-		Stage             models.DealStage     `json:"stage"`
-		ExpectedCloseDate *string              `json:"expected_close_date"`
-		AssignedTo        *uint                `json:"assigned_to"`
-		Channel           models.LeadSource    `json:"channel"`
-		BusinessUnit      *models.BusinessUnit `json:"business_unit"`
-		BusinessUnitItem  *string              `json:"business_unit_item"`
-		// LostReason is required only when stage resolves to a Lost stage,
-		// same as Deal Create.
-		LostReason *models.LostReason `json:"lost_reason"`
-	} `json:"deal"`
+	CompanyID *uint      `json:"company_id"`
+	ContactID *uint      `json:"contact_id"`
+	Deal      dealFields `json:"deal"`
 }
 
 // Convert godoc
@@ -789,33 +777,10 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 		}
 	}
 
-	// The same checks Deal Create runs, on the same dealForm shape, so a
-	// converted deal can't skip any of them (it used to: status hard-coded
-	// open on a Won stage, no signed-contract gate, no lost_reason, no
-	// assignee check).
-	dealH := &DealHandler{DB: h.DB}
-	form := dealForm{
-		Title: req.Deal.Title, Value: req.Deal.Value, Stage: req.Deal.Stage,
-		ExpectedCloseDate: req.Deal.ExpectedCloseDate, AssignedTo: req.Deal.AssignedTo,
-		Channel: req.Deal.Channel, BusinessUnit: req.Deal.BusinessUnit,
-		BusinessUnitItem: req.Deal.BusinessUnitItem, LostReason: req.Deal.LostReason,
-	}
-	if !CanWrite(c, form.AssignedTo) {
-		return utils.Forbidden(c, "Cannot assign a deal to another sales rep")
-	}
-	if err := validateDealValueAndDate(c, form); err != nil {
-		return nil
-	}
-	if err := validateProbabilityAndLostReason(c, h.DB, form); err != nil {
-		return nil
-	}
-	if isWinningForm(h.DB, form) {
-		// dealID 0, as in Deal Create — the deal doesn't exist yet.
-		if err := validateContractSignedBeforeWon(c, h.DB, 0); err != nil {
-			return nil
-		}
-	}
-	if err := dealH.validateStageAndChannel(c, form); err != nil {
+	// Deal Create's checks, so a converted deal can't skip any of them.
+	form := dealForm{dealFields: req.Deal}
+	to, err := validateNewDealForm(c, h.DB, form)
+	if err != nil {
 		return nil
 	}
 
@@ -823,7 +788,7 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 	var contact models.Contact
 	var deal models.Deal
 
-	err := h.DB.Transaction(func(tx *gorm.DB) error {
+	err = h.DB.Transaction(func(tx *gorm.DB) error {
 		// Locked re-read + re-check: two concurrent Converts both passed the
 		// pre-check above; the second waits here and then sees the first's
 		// ConvertedDealID instead of creating a second Deal.
@@ -834,12 +799,8 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 			return errAlreadyConverted
 		}
 
-		// resolveOrCreateCompany's explicitID (req.CompanyID) always wins,
-		// even if it differs from whatever Company the Lead itself was
-		// already linked to; its fallbackID (lead.CompanyID) is the normal
-		// case since 2026-08-24 (the Lead was already linked via the
-		// create/edit combobox) — see its own doc for the full reasoning,
-		// shared with ProspectHandler.Convert's identical resolution.
+		// An explicit req.CompanyID wins over the Lead's own company (the
+		// usual case) — see resolveOrCreateCompany.
 		var err error
 		company, err = resolveOrCreateCompany(tx, req.CompanyID, lead.CompanyID)
 		if err != nil {
@@ -850,10 +811,11 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 			return err
 		}
 
+		status, clearLostReason := resolveDealStatus(to, to, false, models.DealStatusOpen)
 		deal = models.Deal{
 			CompanyID: company.ID, ContactID: contact.ID,
 			Title: form.Title, Value: form.Value, Stage: form.Stage,
-			Status: models.DealStatusOpen, ExpectedCloseDate: form.ExpectedCloseDate,
+			Status: status, ExpectedCloseDate: form.ExpectedCloseDate,
 			AssignedTo: form.AssignedTo, Channel: form.Channel,
 			BusinessUnit: form.BusinessUnit, BusinessUnitItem: form.BusinessUnitItem,
 			LeadID: &lead.ID,
@@ -861,8 +823,7 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 		if deal.Title == "" {
 			deal.Title = lead.Name
 		}
-		dealH.syncStatusWithStageFlags(&deal)
-		if deal.Status == models.DealStatusLost {
+		if !clearLostReason {
 			deal.LostReason = form.LostReason
 		}
 		// Same defaults as Deal Create: the stage's configured probability
