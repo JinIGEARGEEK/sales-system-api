@@ -259,6 +259,11 @@ func (h *DealHandler) syncStatusWithStageFlags(deal *models.Deal) {
 	}
 }
 
+// isTerminalStage reports whether stage resolves to a Won or Lost stage.
+func isTerminalStage(db *gorm.DB, stage models.DealStage) bool {
+	return utils.IsWonStage(db, stage) || utils.IsLostStage(db, stage)
+}
+
 // Create godoc
 // @Summary Create a deal (Admin/Sales Rep/Sales Manager)
 // @Description Creates a Deal. value must be >= 0; expected_close_date, if supplied, must parse as YYYY-MM-DD or RFC3339; stage/channel must be an active PipelineStage/LeadSourceOption; probability (if supplied) must be 0-100; lost_reason is required once stage/status moves to Lost; a Sales Rep cannot assign to another rep. api-system-spec.md §7.1.
@@ -353,7 +358,7 @@ func (h *DealHandler) Get(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Update a deal (Admin/Sales Rep/Sales Manager)
-// @Description Full update of a Deal — same validation as Create. Writes a stage_changed audit log entry when the submitted stage differs from the deal's current one. Only the assigned Sales Rep (or Admin/Sales Manager) may update; a Sales Rep cannot reassign to another rep. api-system-spec.md §7.1.
+// @Description Full update of a Deal — same validation as Create. An omitted stage/status keeps the stored value; moving from a Won/Lost stage to an open one sets status open. Writes a stage_changed audit log entry when the submitted stage differs from the deal's current one. Only the assigned Sales Rep (or Admin/Sales Manager) may update; a Sales Rep cannot reassign to another rep. api-system-spec.md §7.1.
 // @Tags deals
 // @Security BearerAuth
 // @Accept json
@@ -377,6 +382,24 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	var form dealForm
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
+	}
+	// An omitted stage/status keeps the stored one (previously it saved ""
+	// — a deal in no lane, with no status). Filled in before validation so
+	// the Won/Lost gates below see the deal's real state.
+	if form.Stage == "" {
+		form.Stage = deal.Stage
+	}
+	if form.Status == "" {
+		form.Status = deal.Status
+	}
+	// Moving out of a Won/Lost stage into an open one reopens the deal, as
+	// UpdateStage does. The form resubmits the deal's current status on
+	// every save, so without this a Won deal edited back to Negotiation kept
+	// status "won" (and a Lost one still demanded a lost_reason). Only on
+	// that transition: status "lost" with an open stage the deal was
+	// already in (lost at that stage) is still honored.
+	if form.Stage != deal.Stage && isTerminalStage(h.DB, deal.Stage) && !isTerminalStage(h.DB, form.Stage) {
+		form.Status = models.DealStatusOpen
 	}
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a deal to another sales rep")
@@ -617,7 +640,7 @@ type dealStageForm struct {
 
 // UpdateStage godoc
 // @Summary Move a deal to a new pipeline stage (Admin/Sales Rep/Sales Manager)
-// @Description Dedicated endpoint for the Kanban drag-and-drop quick-move. Sets status to won/lost alongside stage (and re-derives probability) in the same transaction; writes a stage_changed audit log entry per §8.5's explicit minimum scope. Moving into a stage resolved as Won is blocked (422-style validation error) if AppSettings.RequireSignedContractBeforeWon is enabled and the deal has no Contract with status Signed. Only the assigned Sales Rep (or Admin/Sales Manager) may move it.
+// @Description Dedicated endpoint for the Kanban drag-and-drop quick-move. Sets status to won/lost alongside stage — or open (clearing lost_reason) on a move into any other stage — and re-derives probability in the same transaction; writes a stage_changed audit log entry per §8.5's explicit minimum scope. Moving into a stage resolved as Won is blocked (422-style validation error) if AppSettings.RequireSignedContractBeforeWon is enabled and the deal has no Contract with status Signed. Only the assigned Sales Rep (or Admin/Sales Manager) may move it.
 // @Tags deals
 // @Security BearerAuth
 // @Accept json
@@ -690,9 +713,12 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 			deal.LostReason = form.LostReason
 		}
 	default:
-		if deal.Status != models.DealStatusWon && deal.Status != models.DealStatusLost {
-			deal.Status = models.DealStatusOpen
-		}
+		// A move into an open stage reopens the deal — including one that
+		// was Won/Lost (keeping the old status here left a "won" deal sitting
+		// in e.g. Negotiation, counted as closed revenue). Its lost_reason
+		// belonged to the Lost stint, so it goes too (same as Update).
+		deal.Status = models.DealStatusOpen
+		deal.LostReason = nil
 	}
 	// Re-derive probability for the new stage on every drag/quick-move (Kanban
 	// has no probability input of its own) — the Deal's Overview tab can still
