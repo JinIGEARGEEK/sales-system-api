@@ -30,18 +30,13 @@ type LeadDashboardSummary struct {
 // GET /reports/lead-source-conversion (fetchLeadSourceConversion, reused
 // directly below for SourceBreakdown). Returns a fresh query each call so
 // each aggregate below applies its own filter without the others bleeding in.
-func (h *DashboardHandler) leadSummaryFilter(c *fiber.Ctx) *gorm.DB {
+// window is parsed once up front (dateRangeQuery), so a bad date is a 422.
+func (h *DashboardHandler) leadSummaryFilter(c *fiber.Ctx, window utils.DateRange) *gorm.DB {
 	query := h.DB.Model(&models.Lead{})
 	if v := c.Query("assigned_to"); v != "" {
 		query = query.Where("assigned_to = ?", v)
 	}
-	if v := c.Query("date_from"); v != "" {
-		query = query.Where("created_at >= ?", v)
-	}
-	if v := c.Query("date_to"); v != "" {
-		query = query.Where("created_at <= ?", v)
-	}
-	return query
+	return window.Apply(query, "created_at")
 }
 
 // LeadSummary — GET /dashboard/lead-summary?assigned_to=&date_from=&date_to=
@@ -49,11 +44,15 @@ func (h *DashboardHandler) leadSummaryFilter(c *fiber.Ctx) *gorm.DB {
 // openness as GET /dashboard/summary and /dashboard/prospect-summary; the
 // frontend decides which role sees which dashboard tab.
 func (h *DashboardHandler) LeadSummary(c *fiber.Ctx) error {
+	window, err := dateRangeQuery(c)
+	if err != nil {
+		return reportError(c, err, "")
+	}
 	var total int64
-	h.leadSummaryFilter(c).Count(&total)
+	h.leadSummaryFilter(c, window).Count(&total)
 
 	var statusRows []leadStatusCount
-	if err := h.leadSummaryFilter(c).
+	if err := h.leadSummaryFilter(c, window).
 		Select("status, count(*) as count").
 		Group("status").
 		Scan(&statusRows).Error; err != nil {

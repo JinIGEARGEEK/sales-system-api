@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // Role reconciles the spec's flagged mismatch (api-system-spec.md §2.1 note): the RBAC
 // rules in §1.7 are defined against Admin/Sales Rep/Sales Manager/Production, so those
@@ -14,10 +17,21 @@ const (
 	RoleSalesManager Role = "Sales Manager"
 	RoleProduction   Role = "Production"
 	// RoleMarketing owns the Prospect funnel (pre-Lead Company/Contact
-	// outreach) — added 2026-09-01, not part of the original spec's §1.7 RBAC
-	// table; see biz_spec/feature-spec.md's Prospect Management section.
+	// outreach); see biz_spec/feature-spec.md's Prospect Management section
+	// (it isn't in spec §1.7's RBAC table).
 	RoleMarketing Role = "Marketing"
 )
+
+// ValidRoles is every Role — the set RequireRoles gates are written against.
+var ValidRoles = []Role{RoleAdmin, RoleSalesRep, RoleSalesManager, RoleProduction, RoleMarketing}
+
+func IsValidRole(r Role) bool {
+	return slices.Contains(ValidRoles, r)
+}
+
+// SalesPipelineRoles may work Leads, Deals and Prospects (and their
+// attachments) — every role but Production.
+var SalesPipelineRoles = []Role{RoleAdmin, RoleSalesRep, RoleSalesManager, RoleMarketing}
 
 // User is the staff account model — api-system-spec.md §2.1.
 type User struct {

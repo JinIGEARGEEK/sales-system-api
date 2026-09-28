@@ -85,7 +85,9 @@ func (h *ProductHandler) Create(c *fiber.Ctx) error {
 	}
 	product.CreatedBy = &actorID
 	product.UpdatedBy = &actorID
-	if err := h.DB.Create(&product).Error; err != nil {
+	// CreateKeepingFalse: IsActive is DEFAULT true, which a plain Create
+	// would apply over an explicit false.
+	if err := utils.CreateKeepingFalse(h.DB, &product); err != nil {
 		return utils.Internal(c, "Failed to create product")
 	}
 	return utils.Created(c, product)

@@ -1,6 +1,8 @@
 package database
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -43,7 +45,68 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
 
+	// Bound the pool — see config.Config's DBMaxOpenConns doc for why the
+	// database/sql defaults (unlimited, forever) don't suit a small managed
+	// Postgres. ConnMaxLifetime/IdleTime also recycle connections a
+	// failover or server-side idle reaper has silently killed, instead of
+	// handing a dead one to the next request.
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("get underlying *sql.DB: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(cfg.DBMaxOpenConns)
+	sqlDB.SetMaxIdleConns(cfg.DBMaxIdleConns)
+	sqlDB.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
+	sqlDB.SetConnMaxIdleTime(cfg.DBConnMaxIdleTime)
+
 	return db, nil
+}
+
+// bootLockKey is the advisory-lock key WithBootLock holds — any constant
+// nothing else in this database uses (testutil's testDBLockKey differs).
+const bootLockKey = 4217350
+
+// WithBootLock runs fn while holding the bootLockKey advisory lock, so when
+// several replicas boot at once only one at a time runs AutoMigrate, the
+// backfills and the seeds (otherwise they race each other's ALTER TABLEs and
+// count-then-insert seeds, e.g. both creating an Admin). Later replicas
+// block until the first finishes, then find every idempotent step already
+// done. ctx only bounds waiting for the lock; fn runs on the normal pool.
+func WithBootLock(ctx context.Context, db *gorm.DB, fn func() error) error {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return fmt.Errorf("get underlying *sql.DB: %w", err)
+	}
+	release, err := AdvisoryLock(ctx, sqlDB, bootLockKey)
+	if err != nil {
+		return fmt.Errorf("boot lock: %w", err)
+	}
+	defer release()
+	return fn()
+}
+
+// AdvisoryLock blocks until it holds the session-level Postgres advisory
+// lock key, and returns the function that releases it. The lock lives on
+// one dedicated connection: a session lock belongs to the connection that
+// took it, so locking and unlocking through the pool could hit two
+// different ones, and conn.Close alone would return the still-locked
+// session to the pool. Postgres scopes the lock to sqlDB's database.
+func AdvisoryLock(ctx context.Context, sqlDB *sql.DB, key int64) (release func(), err error) {
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reserve a connection for advisory lock %d: %w", key, err)
+	}
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", key); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("acquire advisory lock %d: %w", key, err)
+	}
+	return func() {
+		// Background, so a cancelled ctx can't skip the unlock.
+		if _, err := conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key); err != nil {
+			log.Printf("database: failed to release advisory lock %d: %v", key, err)
+		}
+		_ = conn.Close()
+	}, nil
 }
 
 // AutoMigrate creates/updates every table this API owns. Kept as a single explicit
@@ -119,7 +182,7 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := NormalizeCompanyTaxIDs(db); err != nil {
 		return err
 	}
-	if err := backfillLowercaseTags(db); err != nil {
+	if err := BackfillLowercaseTags(db); err != nil {
 		return err
 	}
 	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_companies_industry_lower ON companies (LOWER(industry))`).Error; err != nil {
@@ -141,7 +204,7 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := BackfillCardPositions(db); err != nil {
 		return err
 	}
-	if err := backfillStageEnteredAt(db); err != nil {
+	if err := BackfillStageEnteredAt(db); err != nil {
 		return err
 	}
 	if err := MigrateCompanySizeDefaults(db); err != nil {
@@ -157,8 +220,8 @@ func AutoMigrate(db *gorm.DB) error {
 // data_migrations row.
 const installmentAlertContextsBackfill = "installment_alert_contexts_backfill"
 
-// BackfillInstallmentAlertContexts (called from AutoMigrate; exported for
-// its test) re-keys payment_installment NotificationLog rows written before
+// BackfillInstallmentAlertContexts (called from AutoMigrate)
+// re-keys payment_installment NotificationLog rows written before
 // the rule's context became the alert state ("due_soon"/"overdue"). Those
 // rows have context "", so without this every installment already alerted
 // would alert again under its new key. Each row gets the state it fired in:
@@ -196,8 +259,8 @@ var companySizeLegacyNames = map[string]string{
 // presence also marks this migration as done (see below).
 const companySizeCatchAll = "> 100 คน"
 
-// MigrateCompanySizeDefaults (called from AutoMigrate; exported for its
-// test) brings a database seeded before 2026-09-22 up to the current
+// MigrateCompanySizeDefaults (called from AutoMigrate)
+// brings a database seeded before 2026-09-22 up to the current
 // Company Size defaults. The defaults are only inserted into an
 // empty table (cmd/api/main.go), so existing databases kept the old
 // unit-less names and never got the "> 100 คน" bucket.
@@ -258,7 +321,7 @@ func MigrateCompanySizeDefaults(db *gorm.DB) error {
 	})
 }
 
-// backfillStageEnteredAt populates the new Deal/Lead/Prospect
+// BackfillStageEnteredAt populates the new Deal/Lead/Prospect
 // stage_entered_at column (see models/stage_entered.go) for rows created
 // before it existed. Only touches rows still NULL, so it's safe to re-run on
 // every boot. Best available evidence per table:
@@ -269,7 +332,7 @@ func MigrateCompanySizeDefaults(db *gorm.DB) error {
 //
 // updated_at can only be later than the real move, never earlier, so a
 // backfilled "days in stage" can under-count but never over-count.
-func backfillStageEnteredAt(db *gorm.DB) error {
+func BackfillStageEnteredAt(db *gorm.DB) error {
 	stmts := []struct{ table, sql string }{
 		{"deals", `
 			UPDATE deals d SET stage_entered_at = COALESCE(
@@ -289,15 +352,25 @@ func backfillStageEnteredAt(db *gorm.DB) error {
 		// existed: the "before" stage of their latest stage_changed audit
 		// row. Leads/Prospects have no stage audit, so theirs start filling
 		// in from their next move. Only touches rows still NULL.
+		//
+		// Driven from the NULL deals, one entity_id-indexed lookup each,
+		// rather than a DISTINCT ON over every deal's stage_changed rows —
+		// that scanned and sorted the whole audit log on every boot to find
+		// the handful of rows (usually none) left to fill. Kept re-runnable
+		// rather than runOnce: a stage move made by an instance still on the
+		// old code during a rolling deploy lands after a one-shot run would
+		// have fired, and this picks it up on the next boot.
 		{"deals (previous_stage)", `
-			UPDATE deals d SET previous_stage = a.before->>'stage'
+			UPDATE deals d SET previous_stage = a.stage
 			FROM (
-				SELECT DISTINCT ON (entity_id) entity_id, before
-				FROM audit_log_entries
-				WHERE entity_type = 'deal' AND action = 'stage_changed'
-				ORDER BY entity_id, created_at DESC, id DESC
+				SELECT n.id, (
+					SELECT al.before->>'stage' FROM audit_log_entries al
+					WHERE al.entity_type = 'deal' AND al.entity_id = n.id AND al.action = 'stage_changed'
+					ORDER BY al.created_at DESC, al.id DESC LIMIT 1
+				) AS stage
+				FROM deals n WHERE n.previous_stage IS NULL
 			) a
-			WHERE a.entity_id = d.id AND d.previous_stage IS NULL AND a.before->>'stage' IS NOT NULL`},
+			WHERE a.id = d.id AND a.stage IS NOT NULL`},
 		{"leads (converted)", `
 			UPDATE leads l SET stage_entered_at = d.created_at
 			FROM deals d
@@ -337,7 +410,7 @@ func runOnce(db *gorm.DB, name string, fn func(tx *gorm.DB) error) error {
 // cardPositionsBackfill names BackfillCardPositions' data_migrations row.
 const cardPositionsBackfill = "card_positions_backfill"
 
-// BackfillCardPositions (called from AutoMigrate; exported for its test)
+// BackfillCardPositions (called from AutoMigrate)
 // gives every Deal/Lead/Prospect still at position 0 a real Kanban position
 // (see Deal.Position's doc comment), appended after the lane's highest
 // non-zero position in created_at order. Partitioned per lane (Stage for
@@ -399,7 +472,7 @@ func backfillCompanyDomains(db *gorm.DB) error {
 	return nil
 }
 
-// NormalizeCompanyTaxIDs (called from AutoMigrate; exported for its test)
+// NormalizeCompanyTaxIDs (called from AutoMigrate)
 // rewrites every stored tax_id into utils.NormalizeTaxID's form, the form
 // Create/Update now save and ?tax_id= matches, so a row saved earlier as
 // "0-1055-55555-55-5" is still found by its 13 digits. A value that
@@ -452,28 +525,34 @@ func ensureCompanyDomainUniqueIndex(db *gorm.DB) error {
 	return nil
 }
 
-// backfillLowercaseTags normalizes every pre-existing Company/Contact Tags
-// array to lowercase/trimmed/deduplicated — the same normalization
-// normalizeTags (handlers/companies.go) now applies on every Create/Update —
-// so the case-insensitive `?tag=` filter (handlers/filters.go's tagFilter)
-// can stay a plain `= ANY(tags)` lookup the GIN tags index can serve,
-// instead of an unnest+LOWER() scan needed to also cover not-yet-normalized
-// legacy rows. Idempotent and cheap to re-run on an already-normalized row.
-func backfillLowercaseTags(db *gorm.DB) error {
-	if err := db.Exec(`
-		UPDATE companies SET tags = ARRAY(SELECT DISTINCT LOWER(TRIM(t)) FROM unnest(tags) t WHERE TRIM(t) <> '')
-		WHERE tags IS NOT NULL AND array_length(tags, 1) > 0
-	`).Error; err != nil {
-		return fmt.Errorf("backfill lowercase company tags: %w", err)
-	}
-	if err := db.Exec(`
-		UPDATE contacts SET tags = ARRAY(SELECT DISTINCT LOWER(TRIM(t)) FROM unnest(tags) t WHERE TRIM(t) <> '')
-		WHERE tags IS NOT NULL AND array_length(tags, 1) > 0
-	`).Error; err != nil {
-		return fmt.Errorf("backfill lowercase contact tags: %w", err)
+// BackfillLowercaseTags normalizes every Company/Contact Tags array to
+// lowercase/trimmed/deduplicated — what normalizeTags (handlers/companies.go)
+// applies on every write — so the case-insensitive `?tag=` filter can stay a
+// plain `= ANY(tags)` the GIN index serves. Only rewrites rows that need it
+// (tagsNeedNormalizing), so on clean data it writes nothing; kept
+// re-runnable rather than runOnce to heal rows a non-normalizing writer
+// (e.g. an old instance mid rolling deploy) leaves behind.
+func BackfillLowercaseTags(db *gorm.DB) error {
+	for _, table := range []string{"companies", "contacts"} {
+		if err := db.Exec(fmt.Sprintf(`
+			UPDATE %s SET tags = ARRAY(SELECT DISTINCT LOWER(TRIM(t)) FROM unnest(tags) t WHERE TRIM(t) <> '')
+			WHERE tags IS NOT NULL AND array_length(tags, 1) > 0 AND %s`, table, tagsNeedNormalizing),
+		).Error; err != nil {
+			return fmt.Errorf("backfill lowercase %s tags: %w", table, err)
+		}
 	}
 	return nil
 }
+
+// tagsNeedNormalizing matches a tags array the normalization above would
+// change: an element that isn't already lowercase/trimmed, is blank or
+// NULL, or a duplicate. Compared element-wise rather than as `tags <>
+// ARRAY(SELECT DISTINCT ...)`, since DISTINCT's output order isn't stable
+// and an already-normalized row could still compare unequal.
+const tagsNeedNormalizing = `(
+	EXISTS (SELECT 1 FROM unnest(tags) t WHERE t IS NULL OR t <> LOWER(TRIM(t)) OR TRIM(t) = '')
+	OR (SELECT COUNT(*) FROM unnest(tags)) <> (SELECT COUNT(DISTINCT t) FROM unnest(tags) t)
+)`
 
 // backfillLeadCompanyIDs links every pre-existing Lead's old free-text
 // company_name to a real Company via the new CompanyID column, run once

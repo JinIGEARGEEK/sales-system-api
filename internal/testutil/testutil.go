@@ -26,16 +26,19 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/clientip"
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/database"
 	"github.com/igeargeek/sales-system-api/internal/handlers"
 	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
-	"github.com/igeargeek/sales-system-api/internal/routes"
+	"github.com/igeargeek/sales-system-api/internal/server"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
-const testDBName = "sales_system_test"
+// defaultTestDBName is the test database unless TEST_DB_NAME overrides it —
+// e.g. to run two checkouts' suites side by side without sharing tables.
+const defaultTestDBName = "sales_system_test"
 
 // TestPassword is the plaintext password used for every user CreateUser seeds,
 // so login tests can exercise the real bcrypt-check path.
@@ -45,43 +48,24 @@ const TestPassword = "password123!"
 // in FK-safe order doesn't matter because of CASCADE, but kept aligned for clarity.
 var tables = []string{
 	"api_keys",
-	// idempotency_keys/open_api_request_logs are both scoped by api_key_id,
-	// which gets its identity reset along with every other truncated table
-	// below — leaving these two out would let a leftover idempotency_keys
-	// row from an earlier test collide with api_key_id=1 (say) reused by a
-	// later, unrelated test, tripping its uniqueIndex on (api_key_id, key)
-	// for a key value ("retry-1", say) that test never actually reused.
+	// Scoped by api_key_id, whose identity restarts with api_keys — a
+	// leftover row would collide with a later test's reused key ID.
 	"idempotency_keys",
 	"open_api_request_logs",
 	"attachments",
 	"audit_log_entries",
-	// notification_logs/notification_rules — added alongside the dormant-
-	// company notification rule tests: notification_rules.name is
-	// uniqueIndex'd, so leaving this table out of the truncate list (as it
-	// was before) let one test run's seeded rule name collide with the next
-	// run's.
+	// notification_rules.name is uniqueIndex'd, so a test's rule would
+	// collide with the next run's.
 	"notification_logs",
 	"notification_rules",
 	// lead_scoring_criteria.name is uniqueIndex'd too, same as
-	// notification_rules above — previously missing from this list entirely
-	// (not a deliberate "seed once" exclusion like PipelineStage/
-	// LeadSourceOption below, just an oversight), so a test creating one
-	// left it behind to collide with same-named rows the next test run
-	// created.
+	// notification_rules above.
 	"lead_scoring_criteria",
 	"projects",
 	"customer_products",
 	"products",
-	// industry_options/company_size_options/revenue_size_options/
-	// job_title_options/product_category_options all have a uniqueIndex'd
-	// name and no seedPipelineConfig-style "seed once, exclude from
-	// truncate" entry of their own — unlike PipelineStage/LeadSourceOption/
-	// ProspectSourceOption/ProspectStage, nothing seeds a default set for
-	// these, so leaving them out of this list (as they were) meant a test
-	// creating one (e.g. EnsureActiveIndustry auto-registering a Company's
-	// free-typed industry) collided with the same row left over from an
-	// earlier test run — the same class of bug notification_rules' comment
-	// above describes for its own uniqueIndex'd name.
+	// Uniquely named and, unlike the seedPipelineConfig tables, not seeded
+	// once — so a test's rows (e.g. an auto-registered industry) must go.
 	"industry_options",
 	"company_size_options",
 	"revenue_size_options",
@@ -93,6 +77,9 @@ var tables = []string{
 	"payments",
 	"payment_installments",
 	"quotes",
+	// No seed and nothing else clears it — a test's saved templates would
+	// otherwise show up in the next test's (and run's) List.
+	"quote_templates",
 	"tags",
 	"activities",
 	"deals",
@@ -102,6 +89,9 @@ var tables = []string{
 	"prospects",
 	"users",
 	"data_migrations",
+	// uniqueIndex'd on snapshot_date — one test's snapshot for today would
+	// otherwise make every later test's pass skip the day.
+	"forecast_snapshots",
 }
 
 var (
@@ -125,10 +115,16 @@ func buildConfig() *config.Config {
 		DBPort:      getenv("TEST_DB_PORT", "5432"),
 		DBUser:      getenv("TEST_DB_USER", "postgres"),
 		DBPassword:  getenv("TEST_DB_PASSWORD", "postgres"),
-		DBName:      testDBName,
+		DBName:      getenv("TEST_DB_NAME", defaultTestDBName),
 		DBSSLMode:   "disable",
 		JWTSecret:   "test-jwt-secret-not-for-prod",
 		JWTExpiryHr: 720,
+		// database.Connect applies these as-is, and a zero MaxIdleConns
+		// would keep no idle connections at all (a fresh dial per query).
+		DBMaxOpenConns:    config.DefaultDBMaxOpenConns,
+		DBMaxIdleConns:    config.DefaultDBMaxIdleConns,
+		DBConnMaxLifetime: config.DefaultDBConnMaxLifetime,
+		DBConnMaxIdleTime: config.DefaultDBConnMaxIdleTime,
 	}
 }
 
@@ -165,25 +161,6 @@ func ensureDatabase(cfg *config.Config) error {
 	return nil
 }
 
-// advisoryLock takes the cross-process testDBLockKey advisory lock on a
-// dedicated connection from sqlDB and returns the function that releases it.
-// Postgres scopes advisory locks to the current database, so the lock only
-// excludes holders connected to the same database as sqlDB.
-func advisoryLock(ctx context.Context, sqlDB *sql.DB) (func(), error) {
-	conn, err := sqlDB.Conn(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("reserve a dedicated connection for the advisory lock: %w", err)
-	}
-	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", testDBLockKey); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("acquire advisory lock: %w", err)
-	}
-	return func() {
-		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", testDBLockKey)
-		_ = conn.Close()
-	}, nil
-}
-
 // setup runs once per test binary (per sync.Once), but `go test ./...` runs
 // each package's test binary as its own OS process against the same shared
 // database — so multiple packages' setup() calls can run concurrently with
@@ -208,7 +185,7 @@ func setup() {
 		panic(fmt.Sprintf("testutil: open admin conn: %v", err))
 	}
 	defer adminDB.Close()
-	unlockAdmin, err := advisoryLock(ctx, adminDB)
+	unlockAdmin, err := database.AdvisoryLock(ctx, adminDB, testDBLockKey)
 	if err != nil {
 		panic(fmt.Sprintf("testutil: setup lock on admin database: %v", err))
 	}
@@ -226,7 +203,7 @@ func setup() {
 	if err != nil {
 		panic(fmt.Sprintf("testutil: get underlying *sql.DB: %v", err))
 	}
-	unlock, err := advisoryLock(ctx, sqlDB)
+	unlock, err := database.AdvisoryLock(ctx, sqlDB, testDBLockKey)
 	if err != nil {
 		panic(fmt.Sprintf("testutil: setup lock on test database: %v", err))
 	}
@@ -316,38 +293,47 @@ func TruncateAll(db *gorm.DB) error {
 	return nil
 }
 
-// testDBLockKey is an arbitrary constant used with Postgres's session-level
-// advisory lock (pg_advisory_lock/pg_advisory_unlock) to serialize every
-// caller of App across the whole test run — not just within one package.
-// Originally only the `tests` package touched this shared DB, so `go test`'s
-// default per-package parallelism (each package is its own OS process) never
-// raced. Once internal/middleware and internal/notifier grew their own tests
-// against the same DB, running plain `go test ./...` (as CI's `go test ./...
-// -v -race` does) could run those packages' test binaries concurrently,
-// racing TruncateAll's RESTART IDENTITY against another package's in-flight
-// inserts — surfaced as a sporadic "duplicate key value violates unique
-// constraint" on a table's serial primary key. The advisory lock is
-// acquired on a single dedicated connection held for the whole test (via
-// t.Cleanup) so a second process's App() call blocks until the first one's
-// test fully finishes, regardless of how many test binaries `go test` runs
-// side by side.
+// testDBLockKey is the advisory-lock key that serializes every App caller
+// across the whole test run, not just within one package: `go test ./...`
+// runs each package's test binary as its own process against this shared
+// DB, so without it one package's TruncateAll (RESTART IDENTITY) races
+// another's in-flight inserts. Held on a dedicated connection for the whole
+// test (t.Cleanup), so a second process's App() blocks until it finishes.
 const testDBLockKey = 725310
 
-// App returns a fresh Fiber app wired via routes.Setup against the shared
-// test DB connection, with all tables truncated first so each test starts
-// from a clean slate. Safe to call once per test (or subtest) from any
-// package — acquireDBLock below serializes concurrent callers across
+// App returns a fresh Fiber app built by server.New — the same constructor
+// cmd/api/main.go uses, so tests see production's error handler, panic
+// recovery, body limit and middleware (minus the access log) — against the
+// shared test DB connection, with all tables truncated first so each test
+// starts from a clean slate. Safe to call once per test (or subtest) from
+// any package — acquireDBLock below serializes concurrent callers across
 // processes, not just within one.
 func App(t *testing.T) (*fiber.App, *gorm.DB) {
+	t.Helper()
+	return AppWithConfig(t, nil)
+}
+
+// AppWithConfig is App with a per-test tweak to (a copy of) the test
+// config — e.g. TrustedProxies for the login rate-limit tests. modify may
+// be nil.
+func AppWithConfig(t *testing.T, modify func(*config.Config)) (*fiber.App, *gorm.DB) {
 	t.Helper()
 	once.Do(setup)
 	acquireDBLock(t)
 	require.NoError(t, TruncateAll(testDB), "truncate tables before test")
 
-	app := fiber.New()
+	cfg := testCfg
+	if modify != nil {
+		copied := *testCfg
+		modify(&copied)
+		cfg = &copied
+	}
 	// MemoryStorage — no real disk or bucket needed for the suite to pass;
 	// see utils.Storage's doc.
-	routes.Setup(app, testDB, testCfg, utils.NewMemoryStorage())
+	proxies, err := clientip.New(cfg.TrustedProxies)
+	require.NoError(t, err, "parse TrustedProxies")
+	// accessLog off: the suite's thousands of requests would bury failures.
+	app := server.New(cfg, testDB, utils.NewMemoryStorage(), proxies, false)
 	return app, testDB
 }
 
@@ -357,7 +343,7 @@ func acquireDBLock(t *testing.T) {
 	t.Helper()
 	sqlDB, err := testDB.DB()
 	require.NoError(t, err, "get underlying *sql.DB")
-	unlock, err := advisoryLock(context.Background(), sqlDB)
+	unlock, err := database.AdvisoryLock(context.Background(), sqlDB, testDBLockKey)
 	require.NoError(t, err, "acquire cross-process test DB lock")
 	t.Cleanup(unlock)
 }

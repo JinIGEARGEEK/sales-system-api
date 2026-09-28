@@ -9,6 +9,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/calendar"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
@@ -135,8 +136,7 @@ func validateQuoteForm(c *fiber.Ctx, form quoteForm) bool {
 // without a ProductID are left exactly as submitted (pure free text).
 //
 // Batches the Product lookup into a single `IN (...)` query over the
-// distinct referenced ids instead of one `First()` per line item — a
-// 30-line quote previously issued 30 sequential round trips here.
+// distinct referenced ids rather than one round trip per line item.
 func snapshotQuoteItems(db *gorm.DB, items []models.QuoteItem) []models.QuoteItem {
 	productIDs := make([]uint, 0, len(items))
 	seen := make(map[uint]bool, len(items))
@@ -445,7 +445,7 @@ func duplicateQuoteDates(src models.Quote, now time.Time) (issue string, validit
 	days := -1
 	if from, ok := models.ParseFlexDate(src.IssueDate); ok {
 		if until, ok := models.ParseFlexDate(src.ValidityDate); ok {
-			if d := utils.DaysUntil(from, until); d >= 0 {
+			if d := calendar.DaysUntil(from, until); d >= 0 {
 				days = d
 			}
 		}
@@ -566,9 +566,7 @@ func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 	pdf.SetFont(utils.PDFFont, "", 11)
 	pdf.Cell(0, 6, fmt.Sprintf("Deal: %s", deal.Title))
 	pdf.Ln(6)
-	// Same party-info block Contract's export already renders (name/address/
-	// tax ID) — previously missing here, closing that gap as part of this
-	// rebuild rather than leaving Quote's PDF thinner than Contract's.
+	// Same party-info block (name/address/tax ID) as Contract's export.
 	utils.RenderPartyBlock(pdf, fmt.Sprintf("Company: %s", utils.StringOrDefault(company.LegalName, company.Name)), company)
 	pdf.Cell(0, 6, fmt.Sprintf("Contact: %s", contact.Name))
 	pdf.Ln(6)

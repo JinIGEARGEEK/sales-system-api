@@ -5,5 +5,15 @@ dockerfilePath = "Dockerfile"
 [deploy]
 healthcheckPath = "/health"
 healthcheckTimeout = 30
-restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 3
+# ALWAYS rather than ON_FAILURE with 3 retries: a long-running API has no
+# legitimate reason to exit on its own, and boot fails fast (log.Fatal) on
+# anything it can't reach yet — a Postgres restart or brief outage burns
+# through 3 retries in seconds and then leaves the service down until
+# someone redeploys by hand. Railway still backs off between restarts, and
+# doesn't restart a deployment it stopped itself (redeploy/removal).
+restartPolicyType = "ALWAYS"
+# Time between Railway's SIGTERM and its SIGKILL. main.go drains in-flight
+# requests for up to 20s, then gives a background job pass 5s — this keeps
+# that whole budget inside the window, so an upload or export mid-flight
+# during a redeploy finishes instead of being cut off.
+drainingSeconds = 30

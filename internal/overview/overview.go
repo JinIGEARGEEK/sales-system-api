@@ -598,7 +598,7 @@ func buildSummary(db *gorm.DB, f Filters, cur, prev Window) (Summary, error) {
 
 	// Won uses deals.status rather than a stage name, so a renamed or custom
 	// Won stage still counts (status is kept in sync with the stage's
-	// is_won_stage flag on every write — DealHandler.syncStatusWithStageFlags).
+	// is_won_stage flag on every write — handlers.resolveDealStatus).
 	const inCur = "deals.stage_entered_at >= ? AND deals.stage_entered_at < ?"
 	if err := dealEntity.base(db, f).
 		Where("deals.status = ? AND deals.stage_entered_at >= ? AND deals.stage_entered_at < ?", models.DealStatusWon, prev.From, cur.To).

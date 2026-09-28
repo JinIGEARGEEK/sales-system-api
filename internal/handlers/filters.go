@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/calendar"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
@@ -27,9 +29,10 @@ import (
 // already lowercases every tag at write time, and database.go's
 // backfillLowercaseTags normalized every pre-existing row the same way.
 // Shared by applyCompanyFilters and applyContactFilters, which both store
-// Tags the same way (pq.StringArray).
-func tagFilter(query *gorm.DB, v string) *gorm.DB {
-	return query.Where("? = ANY(tags)", strings.ToLower(v))
+// Tags the same way (pq.StringArray); table qualifies the column, since a
+// Contact list sorted by company_name joins companies, which has tags too.
+func tagFilter(query *gorm.DB, table, v string) *gorm.DB {
+	return query.Where("? = ANY("+table+".tags)", strings.ToLower(v))
 }
 
 // applyCompanyFilters applies the filters shared by CompanyHandler.List and
@@ -43,7 +46,7 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) (*gorm.DB, error) {
 		// active/archived (now enforced on write, see normalizeCompanyStatus),
 		// but older/imported rows may not be, so match defensively rather
 		// than silently excluding them.
-		query = query.Where("LOWER(status) = LOWER(?)", v)
+		query = query.Where("LOWER(companies.status) = LOWER(?)", v)
 	}
 	if v := c.Query("industry"); v != "" {
 		// Case-insensitive: industry is free text that auto-registers
@@ -51,19 +54,19 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) (*gorm.DB, error) {
 		// "Tech" and "tech" can both exist on stored rows even though
 		// they're meant to be the same industry. Backed by an expression
 		// index (database.go) since this can't use industry's plain index.
-		query = query.Where("LOWER(industry) = LOWER(?)", v)
+		query = query.Where("LOWER(companies.industry) = LOWER(?)", v)
 	}
 	if v := c.Query("tag"); v != "" {
-		query = tagFilter(query, v)
+		query = tagFilter(query, "companies", v)
 	}
 	if v := c.Query("search"); v != "" {
 		like := utils.LikePattern(v)
-		clause, args := "name ILIKE ? ESCAPE '\\' OR website ILIKE ? ESCAPE '\\'", []interface{}{like, like}
+		clause, args := "companies.name ILIKE ? ESCAPE '\\' OR companies.website ILIKE ? ESCAPE '\\'", []interface{}{like, like}
 		// Tax IDs are stored without spaces/dashes, so the term is normalized
 		// the same way before matching that column. Skipped when nothing is
 		// left ("-"), since an empty pattern would match every tax ID.
 		if taxID := utils.NormalizeTaxID(v); taxID != "" {
-			clause += " OR tax_id ILIKE ? ESCAPE '\\'"
+			clause += " OR companies.tax_id ILIKE ? ESCAPE '\\'"
 			args = append(args, utils.LikePattern(taxID))
 		}
 		query = query.Where(clause, args...)
@@ -78,10 +81,10 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) (*gorm.DB, error) {
 	// normalization store blank as NULL). An empty ?tax_id= is still "no
 	// filter", like every other parameter.
 	if raw := c.Query("tax_id"); raw != "" {
-		query = query.Where("tax_id = ?", utils.NormalizeTaxID(raw))
+		query = query.Where("companies.tax_id = ?", utils.NormalizeTaxID(raw))
 	}
 	if v := strings.TrimSpace(c.Query("branch_code")); v != "" {
-		query = query.Where("branch_code = ?", v)
+		query = query.Where("companies.branch_code = ?", v)
 	}
 	// updated_since (inclusive, RFC 3339 or YYYY-MM-DD) — lets a sync pull
 	// only the Companies changed since its last run.
@@ -109,10 +112,10 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) (*gorm.DB, error) {
 		}
 	}
 	// has_won_deal — "true"/"false" string param; only companies with (or
-	// without) at least one Deal at status = 'won'.
+	// without) at least one live (not trashed) Deal at status = 'won'.
 	if v := c.Query("has_won_deal"); v != "" {
 		if hasWonDeal, err := strconv.ParseBool(v); err == nil {
-			exists := "EXISTS (SELECT 1 FROM deals WHERE deals.company_id = companies.id AND deals.status = ?)"
+			exists := "EXISTS (SELECT 1 FROM deals WHERE deals.company_id = companies.id AND deals.status = ? AND deals.deleted_at IS NULL)"
 			if !hasWonDeal {
 				exists = "NOT " + exists
 			}
@@ -123,53 +126,58 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) (*gorm.DB, error) {
 }
 
 // applyContactFilters applies company_id/status/tag/search filters shared by
-// ContactHandler.List and ExportHandler.Contacts.
+// ContactHandler.List and ExportHandler.Contacts. Every column is qualified
+// with contacts.: sort=company_name joins companies (utils.
+// ApplyCompanyNameSort), which also has status/name/email/tags, and a bare
+// column there is a 500 ("column reference is ambiguous").
 func applyContactFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 	if v := c.Query("company_id"); v != "" {
-		query = query.Where("company_id = ?", v)
+		query = query.Where("contacts.company_id = ?", v)
 	}
 	if v := c.Query("status"); v != "" {
 		// Case-insensitive: Status is meant to be the canonical lowercase
 		// active/archived (now enforced on write, see
 		// normalizeActiveArchivedStatus), but older/imported rows may not
 		// be, so match defensively rather than silently excluding them.
-		query = query.Where("LOWER(status) = LOWER(?)", v)
+		query = query.Where("LOWER(contacts.status) = LOWER(?)", v)
 	}
 	if v := c.Query("tag"); v != "" {
-		query = tagFilter(query, v)
+		query = tagFilter(query, "contacts", v)
 	}
 	if v := c.Query("search"); v != "" {
 		like := utils.LikePattern(v)
-		query = query.Where("name ILIKE ? ESCAPE '\\' OR email ILIKE ? ESCAPE '\\'", like, like)
+		query = query.Where("contacts.name ILIKE ? ESCAPE '\\' OR contacts.email ILIKE ? ESCAPE '\\'", like, like)
 	}
 	return query
 }
 
 // applyDealFilters applies stage/status/company_id/assigned_to/business_unit/
 // channel/search filters shared by DealHandler.List and ExportHandler.Deals.
+// Columns are qualified with deals. for the same reason as
+// applyContactFilters: sort=company_name joins companies (status, ...).
 func applyDealFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 	if v := c.Query("stage"); v != "" {
-		query = query.Where("stage = ?", v)
+		query = query.Where("deals.stage = ?", v)
 	}
 	if v := c.Query("status"); v != "" {
-		query = query.Where("status = ?", v)
+		query = query.Where("deals.status = ?", v)
 	}
 	if v := c.Query("company_id"); v != "" {
-		query = query.Where("company_id = ?", v)
+		query = query.Where("deals.company_id = ?", v)
 	}
 	if v := c.Query("assigned_to"); v == "unassigned" {
-		query = query.Where("assigned_to IS NULL")
+		query = query.Where("deals.assigned_to IS NULL")
 	} else if v != "" {
-		query = query.Where("assigned_to = ?", v)
+		query = query.Where("deals.assigned_to = ?", v)
 	}
 	if v := c.Query("business_unit"); v != "" {
-		query = query.Where("business_unit = ?", v)
+		query = query.Where("deals.business_unit = ?", v)
 	}
 	if v := c.Query("channel"); v != "" {
-		query = query.Where("channel = ?", v)
+		query = query.Where("deals.channel = ?", v)
 	}
 	if v := c.Query("search"); v != "" {
-		query = query.Where("title ILIKE ? ESCAPE '\\'", utils.LikePattern(v))
+		query = query.Where("deals.title ILIKE ? ESCAPE '\\'", utils.LikePattern(v))
 	}
 	return query
 }
@@ -213,14 +221,43 @@ func relatedRecordNameArgs(like string) []interface{} {
 // parseTimeBound accepts either a full RFC 3339 timestamp (what the Tasks
 // page sends: the viewer's local midnight, with offset, so "today" means the
 // viewer's today rather than the server's) or a bare YYYY-MM-DD date, read
-// as server-local midnight (TZ, Asia/Bangkok) — the same reading as the
-// reports' date_from/date_to (sourcePerformanceWindow). UTC midnight would
-// be 07:00 Bangkok, silently skipping the first seven hours of the day.
+// as server-local midnight (calendar.ParseLocalMidnight) — the same reading
+// as the reports' date_from/date_to (utils.ParseDateRange).
 func parseTimeBound(v string) (time.Time, error) {
 	if t, err := time.Parse(time.RFC3339, v); err == nil {
 		return t, nil
 	}
-	return time.ParseInLocation("2006-01-02", v, time.Local)
+	return calendar.ParseLocalMidnight(v)
+}
+
+// dateRangeQuery reads ?date_from=&date_to= (or the from/to aliases),
+// YYYY-MM-DD, both inclusive server-local days — the one parser every
+// report, dashboard and the audit log filter created_at through, via
+// DateRange.Apply. A bad range is a *utils.DateRangeError, which a fetch
+// function shared by a JSON and a CSV handler hands back like any other
+// error; reportError turns it into the 422.
+func dateRangeQuery(c *fiber.Ctx) (utils.DateRange, error) {
+	pick := func(names ...string) (string, string) {
+		for _, name := range names {
+			if v := c.Query(name); v != "" {
+				return name, v
+			}
+		}
+		return names[0], ""
+	}
+	fromName, fromValue := pick("date_from", "from")
+	toName, toValue := pick("date_to", "to")
+	return utils.ParseDateRange(fromName, fromValue, toName, toValue)
+}
+
+// reportError writes err as a 422 when it's a *utils.DateRangeError,
+// otherwise the 500 with internalMsg.
+func reportError(c *fiber.Ctx, err error, internalMsg string) error {
+	var dre *utils.DateRangeError
+	if errors.As(err, &dre) {
+		return utils.ValidationError(c, dre.Message, dre.Fields)
+	}
+	return utils.Internal(c, internalMsg)
 }
 
 // applyTaskFilters applies the GET /tasks filter block:
@@ -302,9 +339,8 @@ func applyProjectFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 // only the table name (needed for the company_id column-qualification and
 // the Company-name join/sort helpers below) and the "already converted"
 // column name differ between them. Returns the query plus whether a Company
-// join is needed for sort (see utils.ApplyNullableCompanySearch) — the
-// caller still has to apply the final ORDER BY itself since that differs
-// slightly by needsCompanyJoin.
+// join is needed for sort (see utils.ApplyNullableCompanySearch) and the
+// sort field, for applyLeadLikeSort once the caller has counted.
 func applyLeadLikeFilters(query *gorm.DB, c *fiber.Ctx, table, excludeConvertedColumn string) (*gorm.DB, bool, string) {
 	// Every filter column here is qualified with table (not just company_id,
 	// which already was) — status in particular collides with Company's own
@@ -342,4 +378,19 @@ func applyLeadLikeFilters(query *gorm.DB, c *fiber.Ctx, table, excludeConvertedC
 		query = query.Where(table + "." + excludeConvertedColumn + " IS NOT NULL")
 	}
 	return query, needsCompanyJoin, sortField
+}
+
+// applyLeadLikeSort is applyLeadLikeFilters' ORDER BY half. Apply it after
+// Count: the narrowed SELECT list the company join needs breaks COUNT(*) on
+// Postgres ("column leads.* does not exist"). The fallback sort is
+// table-qualified: with the companies join bare created_at/name would be
+// ambiguous, and a searched list needs a stable order to page.
+func applyLeadLikeSort(query *gorm.DB, c *fiber.Ctx, table string, needsCompanyJoin bool, sortField string) *gorm.DB {
+	if needsCompanyJoin {
+		query = utils.ApplyNullableCompanySort(query, table, c.Query("sort"), sortField)
+	}
+	if sortField != "company_name" {
+		query = utils.ApplyTableSort(query, table, c.Query("sort"), map[string]bool{"created_at": true, "name": true, "position": true}, "-created_at")
+	}
+	return query
 }

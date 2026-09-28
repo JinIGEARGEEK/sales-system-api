@@ -35,18 +35,13 @@ type ProspectDashboardSummary struct {
 // ReportHandler.fetchSalesCycle). Returns a fresh query each call rather
 // than a query cloned/reused across calls, so each aggregate below applies
 // its own additional filter (e.g. status) without the others bleeding in.
-func (h *DashboardHandler) prospectSummaryFilter(c *fiber.Ctx) *gorm.DB {
+// window is parsed once up front (dateRangeQuery), so a bad date is a 422.
+func (h *DashboardHandler) prospectSummaryFilter(c *fiber.Ctx, window utils.DateRange) *gorm.DB {
 	query := h.DB.Model(&models.Prospect{})
 	if v := c.Query("assigned_to"); v != "" {
 		query = query.Where("assigned_to = ?", v)
 	}
-	if v := c.Query("date_from"); v != "" {
-		query = query.Where("created_at >= ?", v)
-	}
-	if v := c.Query("date_to"); v != "" {
-		query = query.Where("created_at <= ?", v)
-	}
-	return query
+	return window.Apply(query, "created_at")
 }
 
 // ProspectSummary — GET /dashboard/prospect-summary?assigned_to=&date_from=&date_to=
@@ -54,14 +49,18 @@ func (h *DashboardHandler) prospectSummaryFilter(c *fiber.Ctx) *gorm.DB {
 // openness as GET /dashboard/summary itself; the frontend decides which
 // role sees which dashboard tab.
 func (h *DashboardHandler) ProspectSummary(c *fiber.Ctx) error {
+	window, err := dateRangeQuery(c)
+	if err != nil {
+		return reportError(c, err, "")
+	}
 	var total int64
-	h.prospectSummaryFilter(c).Count(&total)
+	h.prospectSummaryFilter(c, window).Count(&total)
 
 	var converted int64
-	h.prospectSummaryFilter(c).Where("status = ?", models.ProspectStatusConverted).Count(&converted)
+	h.prospectSummaryFilter(c, window).Where("status = ?", models.ProspectStatusConverted).Count(&converted)
 
 	var statusRows []prospectStatusCount
-	if err := h.prospectSummaryFilter(c).
+	if err := h.prospectSummaryFilter(c, window).
 		Select("status, count(*) as count").
 		Group("status").
 		Scan(&statusRows).Error; err != nil {

@@ -8,6 +8,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/calendar"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
@@ -60,14 +61,14 @@ func applyContractEndDate(c *fiber.Ctx, contract *models.Contract, endDate *stri
 }
 
 // parseOptionalCalendarDate parses an optional date-column field (Contract
-// end_date, CustomerProduct renewal_date) with utils.ParseCalendarDate: nil
+// end_date, CustomerProduct renewal_date) with calendar.Parse: nil
 // or "" is (nil, true) — clear it — and an unparseable value writes the 422
 // for field and returns ok=false.
 func parseOptionalCalendarDate(c *fiber.Ctx, field string, v *string) (*time.Time, bool) {
 	if v == nil || *v == "" {
 		return nil, true
 	}
-	d, err := utils.ParseCalendarDate(*v)
+	d, err := calendar.Parse(*v)
 	if err != nil {
 		_ = utils.ValidationError(c, field+" is invalid", map[string][]string{field: {err.Error()}})
 		return nil, false

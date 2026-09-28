@@ -44,7 +44,7 @@ cp .env.example .env      # adjust DB_* / JWT_SECRET as needed
 go run ./cmd/api
 ```
 
-On first run, if the `users` table is empty, the server seeds an Admin account and logs its generated email/password to stdout — use that to log in and start creating data.
+On first run, if the `users` table is empty, the server seeds an Admin account and logs its email and generated password to stdout (or uses `ADMIN_INITIAL_PASSWORD`, see below) — use that to log in and start creating data.
 
 Migrations run automatically on boot via `database.AutoMigrate` — no separate migration step needed for local dev.
 
@@ -58,7 +58,7 @@ See [`.env.example`](.env.example). Notable ones:
 |---|---|
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_SSLMODE` | Postgres connection |
 | `JWT_SECRET` | HMAC secret for signing tokens — **must** be overridden outside local dev; the server refuses to boot with the default value whenever `APP_ENV` is anything other than `development` (deny-by-default — a misspelled/unset `APP_ENV` fails closed instead of silently booting with a guessable secret) |
-| `JWT_EXPIRY_HOURS` | Access token lifetime |
+| `JWT_EXPIRY_HOURS` | Access token lifetime in hours (default 720; a negative or malformed value falls back to 720) |
 | `CORS_ORIGINS` | Comma-separated allow-list of origins. Defaults to `*` (any origin) for local dev; the server refuses to boot with `*` whenever `APP_ENV` is anything other than `development`, same deny-by-default reasoning as `JWT_SECRET` above — set an explicit allow-list in every other environment |
 | `PORT` | HTTP listen port (default `8080`) |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM` | Outbound mail server for the Task due-date reminder emails. Optional — if `SMTP_HOST` is left unset, email is disabled: the server logs that once at startup and every send silently no-ops (no per-message log lines, no errors), while alerts still reach people in-app (Notification Rules create Tasks, `GET /notification-log`). Set all five in production to actually deliver reminder emails. `internal/utils/mailer.go` requires and verifies TLS (implicit TLS on port 465, STARTTLS otherwise) — it refuses to send rather than falling back to a plaintext connection if the server doesn't offer either. |
@@ -67,6 +67,9 @@ See [`.env.example`](.env.example). Notable ones:
 | `STORAGE_BACKEND` | `local` (default) or `s3` — where Quote/Contract/Attachment uploads are stored. See [`biz_spec/s3-migration-plan.md`](biz_spec/s3-migration-plan.md). |
 | `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | Required when `STORAGE_BACKEND=s3` — the app fails fast at boot if any is missing rather than erroring on the first upload. |
 | `S3_ENDPOINT`, `S3_FORCE_PATH_STYLE` | Optional — set for an S3-compatible provider other than AWS (Cloudflare R2, Backblaze B2, MinIO); leave both unset/`false` for real AWS S3. |
+| `TRUSTED_PROXIES` | Comma-separated IPs/CIDRs of the reverse proxies in front of the app, whose `X-Forwarded-For` the login rate limiter believes (read right to left, skipping trusted hops — `internal/clientip`). Unset: on Railway (detected via its `RAILWAY_ENVIRONMENT*` vars) it defaults to the private ranges `10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,fc00::/7`; anywhere else nothing is trusted and callers are keyed by socket address. `none` trusts nothing explicitly. If the server logs `ignoring X-Forwarded-For from untrusted peer <ip>`, your proxy isn't covered — add that address, or every caller shares one login bucket. |
+| `ADMIN_INITIAL_PASSWORD` | Optional (min 8 chars) — the password for the Admin seeded on first boot (empty `users` table), never printed. Unset: a random one is generated and logged in development, or printed once to stderr as a framed one-time notice elsewhere. Either way it must be changed at first login. |
+| `DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`, `DB_CONN_MAX_LIFETIME`, `DB_CONN_MAX_IDLE_TIME` | Postgres connection-pool limits per instance (defaults `25`, `10`, `30m`, `5m`; durations in Go syntax). Keep replicas × `DB_MAX_OPEN_CONNS` under the server's `max_connections`. |
 
 ### Task due-date reminders
 
@@ -119,8 +122,8 @@ The repo builds via the included `Dockerfile` and `railway.toml` (health check a
 3. **Set environment variables** on the service (Railway dashboard → Variables): `JWT_SECRET` (required — a real secret, not the default), `JWT_EXPIRY_HOURS`, `APP_ENV=production`. Leave `PORT` unset — Railway injects it and `config.Load()` already reads it.
 4. **File uploads**: Quote PDFs, signed Contracts, and Attachments go through the `utils.Storage` interface (`internal/utils/storage.go`), selected via `STORAGE_BACKEND` (see the env var table above). Defaults to `local` — writes to `./uploads`, served back at `/uploads/<key>` (auth-required — any authenticated role). Local disk does **not** persist across redeploys or scale across replicas on Railway's ephemeral filesystem, so before handling real production traffic:
    - Set `STORAGE_BACKEND=s3` plus the `S3_*` vars once a bucket/credentials exist (AWS S3, Cloudflare R2, Backblaze B2, or any S3-compatible provider — see [`biz_spec/s3-migration-plan.md`](biz_spec/s3-migration-plan.md) for the provider tradeoffs and open decisions, since provisioning the bucket itself is outside this repo), or
-   - Add a [Railway Volume](https://docs.railway.app/reference/volumes) mounted at `/app/uploads` as a stopgap (fine for a single instance only — still doesn't scale past one replica).
-5. **First deploy**: the app auto-runs `AutoMigrate` and seeds an initial Admin account on boot if `users` is empty — check the deploy logs for the generated email/password.
+   - Add a [Railway Volume](https://docs.railway.app/reference/volumes) mounted at `/app/uploads` as a stopgap (fine for a single instance only — still doesn't scale past one replica). The image runs as the non-root `app` user and Railway mounts volumes root-owned, so confirm an upload works after attaching it (Railway's `RAILWAY_RUN_UID=0` variable is the documented workaround).
+5. **First deploy**: the app auto-runs `AutoMigrate` and seeds an initial Admin account on boot if `users` is empty. Set `ADMIN_INITIAL_PASSWORD` first so the password never reaches the logs; otherwise check the deploy logs for the one-time notice with the generated email/password. Also set `TRUSTED_PROXIES` if the logs show `clientip: ignoring X-Forwarded-For from untrusted peer` (otherwise every caller shares one login rate-limit bucket).
 6. **Frontend**: the `sales-system` Nuxt app builds to a static SPA (`ssr: false`) — Railway can serve it too (small Dockerfile + static file server, or Nixpacks auto-detection), but S3+CloudFront/Vercel/Netlify are typically simpler/cheaper for a pure static build. Whichever host you pick, set its `API_URL` build-time env var to this service's Railway-issued domain (or custom domain once attached).
 
 ## Notes for contributors

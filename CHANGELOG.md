@@ -4,6 +4,64 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-09-28 — Review pass: sessions, access, deal states, report dates, deploy hardening
+
+Fixes from a full review of auth, handlers, reports and infrastructure.
+
+**Sessions and access.**
+- The caller's role now comes from the DB on every request (cached with `is_active`/`token_version`), not the login token's claim. A role change, Admin password reset, deactivation (single or bulk) or delete bumps `token_version`, so the user's existing tokens stop working immediately.
+- `POST /auth/change-password` also revokes the caller's older tokens and returns a fresh one in `data.access_token`. **The frontend must store it**, or the user is signed out after changing their password.
+- `POST`/`PUT /users` return `422` for an empty or unknown `role`. Creating a user with `status: "inactive"` now really stores them inactive.
+- Login checks the password before reporting "Account is inactive".
+- `GET /attachments` requires `related_type` + `related_id` (`422`) and checks access to the parent record. Deal, quote and prospect attachments are `403` for Production, and a missing parent is `404`. `POST /attachments` checks the parent exists and the caller may write to it (`404`/`403`) before storing a file. `external_url` must be http(s). `/uploads/:key` now also requires a changed password.
+- The login rate limit keys on the real client: `X-Forwarded-For` is only read from `TRUSTED_PROXIES` peers, right to left, so a client-sent value can't pick a fresh bucket.
+
+**Explicit `false` on Create.** Products, quote templates, option-list items, pipeline/prospect stages and lead scoring criteria now keep `is_active`/`vat_enabled: false` (`utils.CreateKeepingFalse`), like users above.
+
+**Deals, Leads, Prospects.**
+- Moving a Won/Lost deal to an open stage (Kanban `PATCH /deals/:id/stage` or `PUT`) sets status `open` and clears `lost_reason`. A `PUT` that omits `stage`/`status` keeps the stored values instead of blanking them.
+- `POST /leads/:id/convert` runs Deal Create's checks: value/date, stage/channel/business unit, `lost_reason` for Lost (new optional `deal.lost_reason`), the signed-contract gate for Won, `CanWrite` on `assigned_to`. The status follows the stage.
+- Both convert endpoints lock the row, so a concurrent second convert is `409` instead of a duplicate Deal/Company/Contact. A missing explicit `company_id`/`contact_id` is `404` (was `500`); a contact from another Company is `422`.
+- Lead `status` must be New/Contacted/Qualified/Disqualified (`422`; over 16 chars was a `500`). A Lead or Prospect `PUT` without `status` keeps it.
+- Searched Lead/Prospect lists keep their sort order (they had no `ORDER BY` with the Company join).
+
+**Reports and dates.**
+- `date_from`/`date_to` on the lead/prospect source-conversion, top-referrers, win/loss, sales-cycle, dashboard summary, lead/prospect summaries and `/audit-log` (and their CSV exports) are inclusive server-local days (`utils.ParseDateRange`). They were UTC midnight, which dropped 00:00–07:00 Bangkok and most of the last day. A malformed or reversed range is `422`, with the same message everywhere (`/pipeline/overview` included, which had its own wording). `from`/`to` are accepted as aliases wherever `date_from`/`date_to` are.
+- A Sent quote stays `sent` through its whole validity date and shows `expired` from the next local day. The same applies to expiring-soon and the `quote` notification rule. Expiring-soon `total_value` is now the grand total (discounts, VAT, WHT).
+- Dashboard trends no longer repeat or skip a month on the 29th–31st, and bucket months at Bangkok midnight.
+- `sort=company_name` with filters on `/deals` and `/contacts` returned `500` ("ambiguous column"). Filter columns are now table-qualified, with an id tie-breaker.
+- Top referrers, customers-by-product-status, campaign progress and the `has_won_deal` filter ignore soft-deleted rows.
+- **Sales cycle never worked:** the audit JSON was never scanned, so `by_stage` was empty and `avg_sales_cycle_days` 0 (also on the dashboard). It now returns real figures and narrows audit rows in SQL.
+
+**Deploy and background jobs.**
+- `internal/server.New` builds the app for both `main` and the tests (error handler, recover, body limit), so the test suite exercises the production stack.
+- The body limit is 11 MB (the 10 MB upload limit was unreachable behind Fiber's default 4 MB), with 2-minute read/write/idle timeouts.
+- The Dockerfile creates a writable `/app/uploads`; local-storage uploads failed with "permission denied" as the non-root user.
+- Graceful shutdown on SIGTERM (20s drain, jobs stopped via context). Every job tick recovers from panics. `railway.toml`: restart `ALWAYS`, `drainingSeconds = 30`.
+- `/health` pings the DB (`503` when unreachable).
+- The DB pool is bounded (`DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`, `DB_CONN_MAX_LIFETIME`, `DB_CONN_MAX_IDLE_TIME`).
+- Boot migrations, backfills and seeds run under a Postgres advisory lock, so replicas booting together don't race. The tag-lowercasing and `previous_stage` backfills no longer rewrite or scan every row on each boot.
+- Task due reminders claim each task before emailing (at most once across instances). A deleted, inactive or email-less assignee is stamped rather than retried every 15 minutes.
+- Forecast snapshots skip the day on a query error (instead of writing zeros), use the local date, and retry hourly.
+- The seeded Admin uses `ADMIN_INITIAL_PASSWORD` if set. Otherwise the generated password is printed once to stderr outside development.
+- CI builds the Docker image, boots it against Postgres, and checks `/health` and a clean stop.
+- `TEST_DB_NAME` overrides the test database.
+- A negative or malformed `JWT_EXPIRY_HOURS` now falls back to 720 with a log line (a negative value was accepted before).
+
+**New env vars:** `TRUSTED_PROXIES` (on Railway defaults to the private ranges; elsewhere trusts nothing), `ADMIN_INITIAL_PASSWORD`, `DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`, `DB_CONN_MAX_LIFETIME`, `DB_CONN_MAX_IDLE_TIME`.
+
+**Cleanup.**
+- Calendar-day helpers live in a new leaf package `internal/calendar` (`Day`, `LocalDay`, `Today`, `DaysUntil`, `LocalDaysBetween`, `Parse`, `ParseLocalDay`, `ParseLocalMidnight`), so `models` uses them instead of its own copy. `utils` keeps `DateRange`/`ParseDateRange`, which now returns a `*utils.DateRangeError`. `reportError` is the only place that writes the date-range 422.
+- `Quote.ExpiresWithin` is shared by the expiring-soon report and the quote rule. `models.ParseValidityDate` is removed.
+- Deal status from stage is decided in one place: one `utils.LookupStageFlags` query (replacing `IsWonStage`/`IsLostStage`) and `resolveDealStatus`, used by Create, Update, the Kanban move and Lead Convert. Deal Create and Lead Convert share `validateNewDealForm`.
+- Leads and Prospects share `applyLeadLikeSort`. One `bumpTokenVersion` (`UPDATE … RETURNING`) handles every session revocation.
+- `models.SalesPipelineRoles`, `IsValidRole`, `IsValidLeadStatus` and `utils.MinPasswordLength` replace hand-copied lists and constants.
+- Attachment access is table-driven, and a Quote's owner is resolved in one query.
+- `TRUSTED_PROXIES` is parsed once in `main` and passed to `server.New`/`routes.Setup`. One `database.AdvisoryLock` serves both boot and the tests. Pool defaults are `config.Default*` constants.
+- Tests pin `time.Local` once per package in `TestMain`, and share `listIDs`.
+
+Regression-guarded: `tests/{session_invalidation,attachment_access,review_pass_deals,reports_date_range,quote_validity,dashboard_local_month,company_name_sort,reports_soft_delete,boot_backfill,server_config}_test.go`, `internal/notifier/hardening_test.go`, `internal/clientip`, `internal/calendar`, `internal/utils/date_range_test.go`, `internal/models/quote_expiry_test.go`, `internal/handlers/dashboard_trend_internal_test.go`. Swagger regenerated.
+
 ## 2026-09-27 — Post-release fixes: receivables, installment alerts, dates, PDFs
 
 Fixes found reviewing the release below, plus the cleanup around them.

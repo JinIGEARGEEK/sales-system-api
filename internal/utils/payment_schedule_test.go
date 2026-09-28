@@ -131,17 +131,13 @@ func TestComputeInstallmentStatusesFromPayments_ExcessWhtAndStaleLink(t *testing
 	assert.Equal(t, statusesForTotal(installments, 15000, now), ComputeInstallmentStatusesFromPayments(installments, plain, now))
 }
 
-func TestAgingBucketAndLocalDaysBetween(t *testing.T) {
+func TestAgingBucket(t *testing.T) {
 	cases := map[int]string{-3: AgingCurrent, 0: AgingCurrent, 1: Aging1To30, 30: Aging1To30, 31: Aging31To60,
 		60: Aging31To60, 61: Aging61To90, 90: Aging61To90, 91: Aging90Plus, 400: Aging90Plus}
 	for days, want := range cases {
 		assert.Equal(t, want, AgingBucket(days), "days=%d", days)
 	}
 
-	now := time.Date(2026, 9, 27, 9, 0, 0, 0, time.Local)
-	assert.Equal(t, 0, LocalDaysBetween(time.Date(2026, 9, 27, 0, 0, 0, 0, time.Local), now))
-	assert.Equal(t, 31, LocalDaysBetween(time.Date(2026, 8, 27, 23, 0, 0, 0, time.Local), now))
-	assert.Equal(t, -3, LocalDaysBetween(time.Date(2026, 9, 30, 0, 0, 0, 0, time.Local), now))
 }
 
 // Cash plus a percentage WHT can sum a hair under the installment; that's

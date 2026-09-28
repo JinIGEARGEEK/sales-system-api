@@ -4,7 +4,6 @@ import (
 	"encoding/csv"
 	"sort"
 	"strconv"
-	"time"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -38,46 +37,6 @@ type sourcePerformanceRow struct {
 	DirectWonValue float64 `json:"direct_won_value"`
 }
 
-// sourcePerformanceWindow parses date_from/date_to (the sibling reports'
-// params; from/to accepted as aliases), both YYYY-MM-DD and inclusive —
-// date_to covers its whole day, unlike the older reports' raw
-// `created_at <= date_to`, which silently dropped the end date itself.
-// Returns ok=false after writing a 422 for a malformed or reversed range.
-func sourcePerformanceWindow(c *fiber.Ctx) (from, toExclusive *time.Time, ok bool) {
-	parse := func(names ...string) (*time.Time, string, bool) {
-		for _, name := range names {
-			v := c.Query(name)
-			if v == "" {
-				continue
-			}
-			t, err := time.ParseInLocation("2006-01-02", v, time.Local)
-			if err != nil {
-				_ = utils.ValidationError(c, name+" is invalid", map[string][]string{name: {"must be a valid YYYY-MM-DD date"}})
-				return nil, name, false
-			}
-			return &t, name, true
-		}
-		return nil, "", true
-	}
-	from, _, ok = parse("date_from", "from")
-	if !ok {
-		return nil, nil, false
-	}
-	to, toName, ok := parse("date_to", "to")
-	if !ok {
-		return nil, nil, false
-	}
-	if from != nil && to != nil && to.Before(*from) {
-		_ = utils.ValidationError(c, toName+" is before date_from", map[string][]string{toName: {"must not be before date_from"}})
-		return nil, nil, false
-	}
-	if to != nil {
-		end := to.AddDate(0, 0, 1)
-		toExclusive = &end
-	}
-	return from, toExclusive, true
-}
-
 // fetchSourcePerformance — shared by SourcePerformance and its CSV export.
 //
 // Deal → source link: a Lead-originated Deal is attributed to its Lead's
@@ -87,7 +46,7 @@ func sourcePerformanceWindow(c *fiber.Ctx) (from, toExclusive *time.Time, ok boo
 // deals.channel, which the rep can edit afterwards and which defaults to
 // whatever the convert form sent. Deals with no Lead at all fall back to
 // deals.channel and are reported in the direct_* columns.
-func (h *ReportHandler) fetchSourcePerformance(c *fiber.Ctx, from, toExclusive *time.Time) ([]sourcePerformanceRow, error) {
+func (h *ReportHandler) fetchSourcePerformance(c *fiber.Ctx, window utils.DateRange) ([]sourcePerformanceRow, error) {
 	assignedTo := c.Query("assigned_to")
 
 	cohort := h.DB.Table("leads").
@@ -103,12 +62,7 @@ func (h *ReportHandler) fetchSourcePerformance(c *fiber.Ctx, from, toExclusive *
 	if assignedTo != "" {
 		cohort = cohort.Where("leads.assigned_to = ?", assignedTo)
 	}
-	if from != nil {
-		cohort = cohort.Where("leads.created_at >= ?", *from)
-	}
-	if toExclusive != nil {
-		cohort = cohort.Where("leads.created_at < ?", *toExclusive)
-	}
+	cohort = window.Apply(cohort, "leads.created_at")
 	var cohortRows []sourcePerformanceRow
 	if err := cohort.Scan(&cohortRows).Error; err != nil {
 		return nil, err
@@ -122,12 +76,7 @@ func (h *ReportHandler) fetchSourcePerformance(c *fiber.Ctx, from, toExclusive *
 	if assignedTo != "" {
 		direct = direct.Where("deals.assigned_to = ?", assignedTo)
 	}
-	if from != nil {
-		direct = direct.Where("deals.created_at >= ?", *from)
-	}
-	if toExclusive != nil {
-		direct = direct.Where("deals.created_at < ?", *toExclusive)
-	}
+	direct = window.Apply(direct, "deals.created_at")
 	var directRows []sourcePerformanceRow
 	if err := direct.Scan(&directRows).Error; err != nil {
 		return nil, err
@@ -194,11 +143,11 @@ func mergeSourcePerformance(cohort, direct []sourcePerformanceRow) []sourcePerfo
 // @Failure 500 {object} map[string]interface{} "Failed to compute source performance"
 // @Router /reports/source-performance [get]
 func (h *ReportHandler) SourcePerformance(c *fiber.Ctx) error {
-	from, to, ok := sourcePerformanceWindow(c)
-	if !ok {
-		return nil
+	window, err := dateRangeQuery(c)
+	if err != nil {
+		return reportError(c, err, "")
 	}
-	rows, err := h.fetchSourcePerformance(c, from, to)
+	rows, err := h.fetchSourcePerformance(c, window)
 	if err != nil {
 		return utils.Internal(c, "Failed to compute source performance")
 	}
@@ -219,11 +168,11 @@ func (h *ReportHandler) SourcePerformance(c *fiber.Ctx) error {
 // @Failure 500 {object} map[string]interface{} "Failed to export source performance"
 // @Router /reports/source-performance/export [get]
 func (h *ReportHandler) SourcePerformanceExport(c *fiber.Ctx) error {
-	from, to, ok := sourcePerformanceWindow(c)
-	if !ok {
-		return nil
+	window, err := dateRangeQuery(c)
+	if err != nil {
+		return reportError(c, err, "")
 	}
-	rows, err := h.fetchSourcePerformance(c, from, to)
+	rows, err := h.fetchSourcePerformance(c, window)
 	if err != nil {
 		return utils.Internal(c, "Failed to export source performance")
 	}

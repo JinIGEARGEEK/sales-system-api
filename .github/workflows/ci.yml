@@ -39,6 +39,61 @@ jobs:
           TEST_DB_USER: postgres
           TEST_DB_PASSWORD: postgres
 
+  # Builds the production image (what Railway deploys — railway.toml's
+  # DOCKERFILE builder) so a Dockerfile break fails here, not on deploy;
+  # then boots it against a throwaway Postgres and checks /health (which
+  # pings the DB) and that SIGTERM shuts it down cleanly. Nothing is pushed.
+  docker:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: sales_system
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - run: docker build -t sales-system-api:ci .
+
+      - name: Smoke test (boot, /health, graceful stop)
+        run: |
+          # --network host: reach the Postgres service on localhost:5432.
+          docker run -d --name api --network host \
+            -e APP_ENV=production \
+            -e PORT=8080 \
+            -e DB_HOST=localhost -e DB_PORT=5432 -e DB_USER=postgres -e DB_PASSWORD=postgres -e DB_NAME=sales_system \
+            -e JWT_SECRET=ci-smoke-test-secret \
+            -e CORS_ORIGINS=http://localhost:3000 \
+            -e ADMIN_INITIAL_PASSWORD=ci-smoke-password \
+            sales-system-api:ci
+          # First boot runs every migration; give it up to 90s.
+          for i in $(seq 1 45); do
+            if curl -fsS http://localhost:8080/health; then
+              echo "healthy after ~$((i * 2))s"
+              break
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' api)" != "true" ]; then
+              echo "container exited during boot"; docker logs api; exit 1
+            fi
+            sleep 2
+          done
+          curl -fsS http://localhost:8080/health || { docker logs api; exit 1; }
+          # docker stop sends SIGTERM (as Railway does); a graceful shutdown
+          # exits 0 well within the 30s grace period.
+          docker stop -t 30 api
+          code="$(docker inspect -f '{{.State.ExitCode}}' api)"
+          docker logs api
+          [ "$code" = "0" ] || { echo "exit code $code, want 0"; exit 1; }
+
   lint:
     runs-on: ubuntu-latest
     steps:

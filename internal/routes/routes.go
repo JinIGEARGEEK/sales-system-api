@@ -2,7 +2,6 @@ package routes
 
 import (
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -10,33 +9,13 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/igeargeek/sales-system-api/docs"
+	"github.com/igeargeek/sales-system-api/internal/clientip"
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/handlers"
 	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
-
-// clientIP resolves the real client address for rate-limiting purposes. This
-// app's only deployment target is Railway (railway.toml/Dockerfile), which
-// always sits in front as a reverse proxy and sets X-Forwarded-For to the
-// actual client IP on every inbound request — c.IP() alone would return
-// Railway's own edge address for every request in that setup, collapsing all
-// users onto one shared rate-limit bucket (see loginLimiter below) instead of
-// limiting each caller independently. Falls back to c.IP() when the header is
-// absent (local dev, docker-compose, or any direct, non-proxied connection).
-// Take the leftmost hop — Railway's edge sets/overwrites this header itself
-// rather than trusting a client-supplied one, so the leftmost entry is the
-// original caller even if further proxies appended their own hops after it.
-func clientIP(c *fiber.Ctx) string {
-	if xff := c.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.IndexByte(xff, ','); idx != -1 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return strings.TrimSpace(xff)
-	}
-	return c.IP()
-}
 
 // swaggerUIHTML renders swagger-ui-dist (CDN-hosted, not a Go dependency)
 // against the embedded /swagger/doc.json — see docs.JSON's doc for why this
@@ -58,8 +37,9 @@ const swaggerUIHTML = `<!DOCTYPE html>
 
 // Setup registers every route under /api/v1 — api-system-spec.md. storage
 // backs Quote/Contract/Attachment uploads and the /uploads download route —
-// see biz_spec/s3-migration-plan.md and utils.Storage.
-func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storage) {
+// see biz_spec/s3-migration-plan.md and utils.Storage. proxies keys the
+// login rate limiter (see internal/clientip).
+func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storage, proxies *clientip.Resolver) {
 	authH := handlers.NewAuthHandler(db, cfg)
 	userH := handlers.NewUserHandler(db)
 	leadH := handlers.NewLeadHandler(db)
@@ -128,11 +108,13 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// Auth — POST /auth/login is the only unauthenticated route, so it's the
 	// only one a brute-force credential-stuffing attempt could hit without a
 	// token at all. Rate-limit by IP: generous enough for a mistyped password
-	// but not for scripted guessing.
+	// but not for scripted guessing. Behind Railway's edge proxy the socket
+	// peer is the proxy, so the key comes from X-Forwarded-For — read only
+	// from TRUSTED_PROXIES peers, right to left (see internal/clientip).
 	loginLimiter := limiter.New(limiter.Config{
 		Max:          10,
 		Expiration:   1 * time.Minute,
-		KeyGenerator: clientIP,
+		KeyGenerator: proxies.ClientIP,
 		LimitReached: func(c *fiber.Ctx) error {
 			return utils.ErrorResponse(c, fiber.StatusTooManyRequests, "TOO_MANY_REQUESTS", "Too many login attempts — try again shortly")
 		},
@@ -153,7 +135,11 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// same auth gate in front of a download regardless of where the bytes
 	// actually live, matching the "proxy, not presigned URLs" design in
 	// biz_spec/s3-migration-plan.md.
-	app.Use("/uploads", middleware.RequireAuth(cfg, db))
+	//
+	// RequirePasswordChanged too, same as `authed` below — otherwise an
+	// account still on an Admin-assigned password could download documents
+	// it can't reach through any /api/v1 route yet.
+	app.Use("/uploads", middleware.RequireAuth(cfg, db), middleware.RequirePasswordChanged(db))
 	app.Get("/uploads/:key", func(c *fiber.Ctx) error {
 		f, err := storage.Open(c.Params("key"))
 		if err != nil {
@@ -275,14 +261,11 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	openLeads.Get("/:id", leadH.Get)
 	openLeads.Put("/:id", leadH.Update)
 
-	// Sales-pipeline roles — the Lead/Deal gate: Admin, Sales Rep, Sales
-	// Manager and Marketing. **2026-09-23**: Marketing joined this set (full
-	// Sales Rep parity on Leads/Deals, alongside the Overview Pipeline page —
-	// feature-spec.md FR-CRM-123), reversing spec §1.7's earlier "Marketing
-	// has no access to Leads/Deals" rule. Production stays out, which is what
-	// this gate still blocks. Declared here, ahead of `authed`, so the Open
-	// API's Deal route below shares it with the staff /deals group.
-	salesPipelineRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager, models.RoleMarketing)
+	// Sales-pipeline roles — the Lead/Deal gate: every role but Production
+	// (Marketing has Sales Rep parity here, feature-spec.md FR-CRM-123).
+	// Declared ahead of `authed` so the Open API's Deal route below shares
+	// it with the staff /deals group.
+	salesPipelineRoles := middleware.RequireRoles(models.SalesPipelineRoles...)
 
 	// Deal payment schedules — read-only, the one Deal sub-resource exposed
 	// here, so an integration can follow a Project's deal_id to its planned
@@ -350,7 +333,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// of the Lead hand-off the same way they work Leads/Deals); Marketing
 	// owns it day-to-day. Bulk/trash/restore stay on the existing
 	// Admin/Sales-Manager-only bulkRoles, same as Leads.
-	prospectRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleMarketing, models.RoleSalesManager, models.RoleSalesRep)
+	prospectRoles := middleware.RequireRoles(models.SalesPipelineRoles...)
 	prospects := authed.Group("/prospects", prospectRoles)
 	prospects.Get("/", prospectH.List)
 	prospects.Post("/", prospectH.Create)
@@ -437,9 +420,11 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	activities.Post("/", activityH.Create)
 	activities.Delete("/:id", activityH.Delete)
 
-	// Attachments — Sales/Admin can upload (not Production), any authenticated
-	// role can list; Delete's own-uploader-or-manager check is field-level
-	// inside the handler (mirrors Activity's CanWrite pattern).
+	// Attachments — Sales/Admin can upload (not Production). List requires a
+	// related_type+related_id and checks the caller can read that record, and
+	// Create that they can write it (attachmentParentAccess); Delete's
+	// own-uploader-or-manager check is field-level inside the handler
+	// (mirrors Activity's CanWrite pattern).
 	attachments := authed.Group("/attachments")
 	attachments.Get("/", attachmentH.List)
 	attachments.Post("/", salesPipelineRoles, attachmentH.Create)

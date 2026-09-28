@@ -58,17 +58,25 @@ func (h *UserHandler) List(c *fiber.Ctx) error {
 
 // validateCompanyEmail returns utils.ErrHandled (see its doc) after writing a
 // 422 ValidationError if email isn't a valid address on
-// utils.AllowedEmailDomain, nil otherwise. Previously returned
-// ValidationError's own result directly, which is nil even on the invalid
-// path (the JSON write itself succeeds) — that silently defeated both call
-// sites' `if err != nil { return err }` guard below, letting any email
-// through regardless of domain.
+// utils.AllowedEmailDomain, nil otherwise.
 func validateCompanyEmail(c *fiber.Ctx, email string) error {
 	if utils.IsValidCompanyEmail(email) {
 		return nil
 	}
 	msg := "email must be a valid @" + utils.AllowedEmailDomain + " address"
 	_ = utils.ValidationError(c, msg, map[string][]string{"email": {msg}})
+	return utils.ErrHandled
+}
+
+// validateUserRole mirrors validateCompanyEmail: utils.ErrHandled after
+// writing a 422 if role isn't a models.ValidRoles one (anything else would
+// store an account no route group recognises), nil otherwise.
+func validateUserRole(c *fiber.Ctx, role models.Role) error {
+	if models.IsValidRole(role) {
+		return nil
+	}
+	msg := "role must be one of Admin, Sales Rep, Sales Manager, Production, Marketing"
+	_ = utils.ValidationError(c, msg, map[string][]string{"role": {msg}})
 	return utils.ErrHandled
 }
 
@@ -92,7 +100,8 @@ type userForm struct {
 // @Produce json
 // @Param body body userForm true "User fields (first_name, last_name, email, tel, password, role, status, notes)"
 // @Success 201 {object} models.User
-// @Failure 400 {object} map[string]interface{} "Invalid body or missing required fields"
+// @Failure 400 {object} map[string]interface{} "Invalid body"
+// @Failure 422 {object} map[string]interface{} "Missing first_name/email, email not on the company domain or already in use, or role not one of Admin/Sales Rep/Sales Manager/Production/Marketing"
 // @Router /users [post]
 func (h *UserHandler) Create(c *fiber.Ctx) error {
 	var form userForm
@@ -106,6 +115,9 @@ func (h *UserHandler) Create(c *fiber.Ctx) error {
 		return err
 	}
 	if err := validateCompanyEmail(c, form.Email); err != nil {
+		return nil
+	}
+	if err := validateUserRole(c, form.Role); err != nil {
 		return nil
 	}
 
@@ -133,7 +145,9 @@ func (h *UserHandler) Create(c *fiber.Ctx) error {
 	user.CreatedBy = &actorID
 	user.UpdatedBy = &actorID
 
-	if err := h.DB.Create(&user).Error; err != nil {
+	// CreateKeepingFalse, not Create: is_active is `default:true`, so a
+	// plain Create would silently store status "inactive" as active.
+	if err := utils.CreateKeepingFalse(h.DB, &user); err != nil {
 		return utils.ValidationError(c, "Email already in use", map[string][]string{
 			"email": {"Email already in use"},
 		})
@@ -161,7 +175,7 @@ func (h *UserHandler) Get(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Update a user (Admin only)
-// @Description Admin only. Full update; email must be on the allowed company domain. Password is only changed if provided (forces must_change_password true). The response never includes password_hash (excluded via json:"-").
+// @Description Admin only. Full update; email must be on the allowed company domain and role one of the known roles. Password is only changed if provided (forces must_change_password true). Changing role, resetting the password, or deactivating signs the user out of every existing session (their tokens stop working immediately). The response never includes password_hash (excluded via json:"-").
 // @Tags users
 // @Security BearerAuth
 // @Accept json
@@ -169,8 +183,9 @@ func (h *UserHandler) Get(c *fiber.Ctx) error {
 // @Param id path int true "User ID"
 // @Param body body userForm true "User fields"
 // @Success 200 {object} models.User
-// @Failure 400 {object} map[string]interface{} "Invalid body or missing required fields"
+// @Failure 400 {object} map[string]interface{} "Invalid body"
 // @Failure 404 {object} map[string]interface{} "User not found"
+// @Failure 422 {object} map[string]interface{} "Missing email, email not on the company domain, or role not one of Admin/Sales Rep/Sales Manager/Production/Marketing"
 // @Router /users/{id} [put]
 func (h *UserHandler) Update(c *fiber.Ctx) error {
 	var user models.User
@@ -188,6 +203,14 @@ func (h *UserHandler) Update(c *fiber.Ctx) error {
 	if err := validateCompanyEmail(c, form.Email); err != nil {
 		return nil
 	}
+	if err := validateUserRole(c, form.Role); err != nil {
+		return nil
+	}
+
+	// Any of these makes the user's existing tokens stale: a token minted
+	// under the old role, the old password, or while still active.
+	revokeSessions := form.Role != user.Role || form.Password != "" ||
+		(user.IsActive && form.Status == "inactive")
 
 	actorID := middleware.CurrentUserID(c)
 	user.FirstName = form.FirstName
@@ -210,14 +233,21 @@ func (h *UserHandler) Update(c *fiber.Ctx) error {
 		user.MustChangePassword = true
 	}
 
-	if err := h.DB.Save(&user).Error; err != nil {
+	if err := h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&user).Error; err != nil {
+			return err
+		}
+		if revokeSessions {
+			return bumpTokenVersion(tx, &user)
+		}
+		return nil
+	}); err != nil {
 		return utils.Internal(c, "Failed to update user")
 	}
 	middleware.InvalidateMustChangePassword(user.ID)
-	// IsActive may have just flipped to false (or a password reset above
-	// should force existing sessions to re-authenticate) — drop the cached
-	// auth state so RequireAuth re-reads it on this user's very next request
-	// rather than up to authCacheTTL later.
+	// is_active, role, or token_version may have just changed — drop the
+	// cached auth state so RequireAuth re-reads it on this user's very next
+	// request rather than up to authCacheTTL later.
 	middleware.InvalidateAuthCache(user.ID)
 	return utils.OK(c, user)
 }
@@ -243,6 +273,11 @@ func (h *UserHandler) Delete(c *fiber.Ctx) error {
 			"is_active":  false,
 			"deleted_by": actorID,
 		}).Error; err != nil {
+			return err
+		}
+		// Revoke sessions too, so a later Restore + re-activate doesn't
+		// bring this user's pre-delete tokens back to life.
+		if err := bumpTokenVersion(tx, &user); err != nil {
 			return err
 		}
 		return tx.Delete(&user).Error
@@ -278,9 +313,18 @@ func (h *UserHandler) bulkSetActive(c *fiber.Ctx, active bool, action string, fa
 	err := utils.BulkUpdate(h.DB, ids, "user", action, actorID,
 		func(tx *gorm.DB, item *models.User) (models.JSONMap, models.JSONMap, error) {
 			before := models.JSONMap{"is_active": item.IsActive}
+			wasActive := item.IsActive
 			item.IsActive = active
 			after := models.JSONMap{"is_active": item.IsActive}
-			return before, after, tx.Save(item).Error
+			if err := tx.Save(item).Error; err != nil {
+				return before, after, err
+			}
+			// Same as Update: deactivating revokes existing sessions, so a
+			// later re-activation doesn't bring the old tokens back to life.
+			if wasActive && !active {
+				return before, after, bumpTokenVersion(tx, item)
+			}
+			return before, after, nil
 		})
 	if err != nil {
 		return utils.Internal(c, failMsg)
@@ -311,7 +355,7 @@ func (h *UserHandler) BulkActivate(c *fiber.Ctx) error {
 
 // BulkDeactivate godoc
 // @Summary Bulk deactivate users (Admin only)
-// @Description Sets is_active false for every listed user in one transaction (same effect as Delete's is_active flip, without the soft-delete), writing a bulk_deactivated audit entry per row.
+// @Description Sets is_active false for every listed user in one transaction (same effect as Delete's is_active flip, without the soft-delete), writing a bulk_deactivated audit entry per row. Revokes every deactivated user's existing sessions, so re-activating them later does not revive old tokens.
 // @Tags users
 // @Security BearerAuth
 // @Accept json

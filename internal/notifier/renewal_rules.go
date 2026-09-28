@@ -11,16 +11,16 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/calendar"
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/models"
-	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
 // renewalWindow is the inclusive range of calendar dates a renewal-style
 // rule alerts on today (server-local): at most thresholdDays ahead and at
 // most models.RenewalGraceDays behind, as YYYY-MM-DD.
 func renewalWindow(now time.Time, thresholdDays int) (from, to string) {
-	today := utils.Today(now)
+	today := calendar.Today(now)
 	return today.AddDate(0, 0, -models.RenewalGraceDays).Format("2006-01-02"),
 		today.AddDate(0, 0, thresholdDays).Format("2006-01-02")
 }
@@ -40,7 +40,7 @@ func dateInRenewalWindow(column string, now time.Time, thresholdDays int) func(*
 // date itself, so each renewal/end date fires once, and next cycle's date
 // (a different context) fires again.
 func renewalContext(date time.Time) string {
-	return utils.CalendarDay(date).Format("2006-01-02")
+	return calendar.Day(date).Format("2006-01-02")
 }
 
 // whenLabel phrases a day offset for titles: "today", "in 5 days",
@@ -74,7 +74,7 @@ func checkCustomerProductRenewalRule(db *gorm.DB, cfg *config.Config, rule model
 	}
 
 	for _, cp := range records {
-		days := utils.DaysUntil(utils.Today(now), *cp.RenewalDate)
+		days := calendar.DaysUntil(calendar.Today(now), *cp.RenewalDate)
 		context := renewalContext(*cp.RenewalDate)
 		if alreadyNotified(db, rule.ID, cp.ID, context) {
 			continue
@@ -133,7 +133,7 @@ func checkContractExpiryRule(db *gorm.DB, cfg *config.Config, rule models.Notifi
 	}
 
 	for _, contract := range contracts {
-		days := utils.DaysUntil(utils.Today(now), *contract.EndDate)
+		days := calendar.DaysUntil(calendar.Today(now), *contract.EndDate)
 		context := renewalContext(*contract.EndDate)
 		if alreadyNotified(db, rule.ID, contract.ID, context) {
 			continue

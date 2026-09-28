@@ -37,20 +37,13 @@ func (h *ProspectHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := h.DB.Model(&models.Prospect{})
 
-	// The filter shape here is identical to LeadHandler.List's — see
-	// applyLeadLikeFilters's own doc for why it's shared (including the
-	// Company-name join/sort reasoning previously duplicated in both).
 	query, needsCompanyJoin, sortField := applyLeadLikeFilters(query, c, "prospects", "converted_lead_id")
 
 	var total int64
 	query.Count(&total)
 
 	var prospects []models.Prospect
-	if needsCompanyJoin {
-		query = utils.ApplyNullableCompanySort(query, "prospects", c.Query("sort"), sortField)
-	} else {
-		query = utils.ApplySort(query, c.Query("sort"), map[string]bool{"created_at": true, "name": true, "position": true}, "-created_at")
-	}
+	query = applyLeadLikeSort(query, c, "prospects", needsCompanyJoin, sortField)
 	if err := query.Limit(perPage).Offset(offset).Find(&prospects).Error; err != nil {
 		return utils.Internal(c, "Failed to list prospects")
 	}
@@ -168,7 +161,7 @@ func (h *ProspectHandler) Get(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Update a prospect (Admin/Marketing/Sales Manager/Sales Rep)
-// @Description Updates a Prospect, including status transitions. status "Converted" cannot be set directly (only via POST /prospects/:id/convert), except re-submitting an already-Converted record's unchanged status. source must be an active Prospect source and status an active Prospect stage. A Sales Rep may only act on/assign to their own prospects.
+// @Description Updates a Prospect, including status transitions. status "Converted" cannot be set directly (only via POST /prospects/:id/convert), except re-submitting an already-Converted record's unchanged status. source must be an active Prospect source and status an active Prospect stage; omitting status keeps the stored one. A Sales Rep may only act on/assign to their own prospects.
 // @Tags prospects
 // @Security BearerAuth
 // @Accept json
@@ -192,6 +185,9 @@ func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 	var form prospectForm
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
+	}
+	if form.Status == "" {
+		form.Status = prospect.Status // omitted keeps the stored status, not ""
 	}
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a prospect to another team member")
@@ -433,7 +429,7 @@ type prospectConvertRequest struct {
 
 // Convert godoc
 // @Summary Convert a prospect into a lead (Admin/Marketing/Sales Manager/Sales Rep)
-// @Description Converts a Prospect into a Lead (and a Company/Contact if not supplied or not already linked) in one transaction: resolve-or-create Company, resolve-or-create Contact, create the Lead with a back-reference to the source Prospect, carry over Attachments, then mark the Prospect "Converted" and stamp its converted_lead_id. Fails with 409 if already converted. Source/tags are carried over as-is even if they aren't among the Lead's own configured options.
+// @Description Converts a Prospect into a Lead (and a Company/Contact if not supplied or not already linked) in one transaction: resolve-or-create Company, resolve-or-create Contact, create the Lead with a back-reference to the source Prospect, carry over Attachments, then mark the Prospect "Converted" and stamp its converted_lead_id. Fails with 409 if already converted, including by a concurrent request. An explicit company_id/contact_id must exist (404), and the contact must belong to that company (422). Source/tags are carried over as-is even if they aren't among the Lead's own configured options.
 // @Tags prospects
 // @Security BearerAuth
 // @Accept json
@@ -443,8 +439,9 @@ type prospectConvertRequest struct {
 // @Success 200 {object} map[string]interface{} "lead, company, contact"
 // @Failure 400 {object} map[string]interface{} "Invalid request body"
 // @Failure 403 {object} map[string]interface{} "Not authorized to convert this prospect"
-// @Failure 404 {object} map[string]interface{} "Prospect not found"
+// @Failure 404 {object} map[string]interface{} "Prospect, company or contact not found"
 // @Failure 409 {object} map[string]interface{} "Prospect has already been converted"
+// @Failure 422 {object} map[string]interface{} "contact_id does not belong to the company"
 // @Router /prospects/{id}/convert [post]
 func (h *ProspectHandler) Convert(c *fiber.Ctx) error {
 	var prospect models.Prospect
@@ -454,6 +451,8 @@ func (h *ProspectHandler) Convert(c *fiber.Ctx) error {
 	if !CanWrite(c, prospect.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to convert this prospect")
 	}
+	// Fast path only — the authoritative check is the locked re-read inside
+	// the transaction below.
 	if prospect.ConvertedLeadID != nil {
 		return utils.Conflict(c, "Prospect has already been converted")
 	}
@@ -468,6 +467,13 @@ func (h *ProspectHandler) Convert(c *fiber.Ctx) error {
 	var lead models.Lead
 
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		// Locked re-read + re-check — see LeadHandler.Convert.
+		if err := lockForConvert(tx, &prospect, prospect.ID); err != nil {
+			return err
+		}
+		if prospect.ConvertedLeadID != nil {
+			return errAlreadyConverted
+		}
 		var err error
 		company, err = resolveOrCreateCompany(tx, req.CompanyID, prospect.CompanyID)
 		if err != nil {
@@ -526,6 +532,9 @@ func (h *ProspectHandler) Convert(c *fiber.Ctx) error {
 		return utils.LogCompanyActivity(tx, company.ID, "Prospect converted to Lead", middleware.CurrentUserID(c))
 	})
 	if err != nil {
+		if writeConvertTxError(c, err, "Prospect has already been converted") {
+			return nil
+		}
 		return utils.Internal(c, "Failed to convert prospect")
 	}
 

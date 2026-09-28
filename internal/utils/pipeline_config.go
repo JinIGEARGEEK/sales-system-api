@@ -44,8 +44,8 @@ func DisqualifiedProspectStage(db *gorm.DB) models.ProspectStatus {
 }
 
 // IsActivePipelineStage reports whether name matches an active PipelineStage
-// row — the DB-backed replacement for the old hardcoded DealStage whitelist.
-// Empty name is allowed through (unset stage falls back to its model default).
+// row. Empty name is allowed through (unset stage falls back to its model
+// default).
 func IsActivePipelineStage(db *gorm.DB, name string) bool {
 	if name == "" {
 		return true
@@ -56,8 +56,8 @@ func IsActivePipelineStage(db *gorm.DB, name string) bool {
 }
 
 // IsActiveLeadSource reports whether name matches an active LeadSourceOption
-// row — the DB-backed replacement for the old hardcoded LeadSource whitelist.
-// Empty name is allowed through (channel/source is optional on Deal/Lead).
+// row. Empty name is allowed through (channel/source is optional on
+// Deal/Lead).
 func IsActiveLeadSource(db *gorm.DB, name string) bool {
 	if name == "" {
 		return true
@@ -81,8 +81,7 @@ func IsActiveProspectSource(db *gorm.DB, name string) bool {
 }
 
 // IsActiveProspectStage reports whether name matches an active ProspectStage
-// row — the DB-backed replacement for the old hardcoded ProspectStatus
-// working-stage whitelist. Empty name is allowed through, same as the other
+// row. Empty name is allowed through, same as the other
 // option checks here, and "Converted" is always allowed through too since
 // it's a system-set terminal status (see ProspectStage's own doc) that never
 // gets a row in this table.
@@ -202,28 +201,33 @@ func IsActiveProductCategory(db *gorm.DB, name string) bool {
 	return count > 0
 }
 
-// IsWonStage and IsLostStage report whether stage should be treated as the
-// Won/Lost terminal state — preferring the configured PipelineStage row's
-// IsWonStage/IsLostStage flag (so a custom, admin-renamed stage still behaves
-// like Won/Lost), and falling back to the hardcoded name match if no
-// PipelineStage row exists yet (e.g. right after a migration, before the seed
-// runs). Mirrors the resolution DealHandler.UpdateStage already used, now
-// shared so Create/Update's lost_reason validation stays in sync with it.
-func IsWonStage(db *gorm.DB, stage models.DealStage) bool {
-	var row models.PipelineStage
-	hasRow := db.Where("name = ?", stage).First(&row).Error == nil
-	return (hasRow && row.IsWonStage) || (!hasRow && stage == models.DealStageWon)
+// StageFlags is what a Deal stage name resolves to.
+type StageFlags struct {
+	Won, Lost bool
+	// Active is true when an active PipelineStage row has this name.
+	Active bool
 }
 
-func IsLostStage(db *gorm.DB, stage models.DealStage) bool {
+// Terminal reports whether the stage is a Won or Lost one.
+func (f StageFlags) Terminal() bool { return f.Won || f.Lost }
+
+// LookupStageFlags resolves stage with one query. The configured
+// PipelineStage row's flags win, so a renamed or custom stage can act as
+// Won/Lost; with no row (e.g. before the seed runs) only the seeded
+// "Won"/"Lost" names are terminal. An empty stage resolves to no flags.
+func LookupStageFlags(db *gorm.DB, stage models.DealStage) StageFlags {
+	if stage == "" {
+		return StageFlags{}
+	}
 	var row models.PipelineStage
-	hasRow := db.Where("name = ?", stage).First(&row).Error == nil
-	return (hasRow && row.IsLostStage) || (!hasRow && stage == models.DealStageLost)
+	if err := db.Where("name = ?", stage).First(&row).Error; err != nil {
+		return StageFlags{Won: stage == models.DealStageWon, Lost: stage == models.DealStageLost}
+	}
+	return StageFlags{Won: row.IsWonStage, Lost: row.IsLostStage, Active: row.IsActive}
 }
 
 // StageDefaultProbability resolves the win-probability default (0-100) for a
-// stage the same way IsWonStage/IsLostStage resolve their terminal-state
-// flags: prefer the configured PipelineStage row over the hardcoded stage
+// stage the same way LookupStageFlags resolves its flags: prefer the configured PipelineStage row over the hardcoded stage
 // name, so a custom Admin-added stage — or a hardcoded stage the Admin
 // renamed away from "Won"/"Lost" while keeping its flag — still gets a
 // sensible value instead of models.StageDefaultProbability's flat 10 for
@@ -232,7 +236,7 @@ func IsLostStage(db *gorm.DB, stage models.DealStage) bool {
 // Resolution order:
 //  1. No PipelineStage row for this name at all (e.g. pre-seed) — fall back
 //     to the hardcoded models.StageDefaultProbability(stage) switch, same
-//     fallback IsWonStage/IsLostStage use.
+//     fallback LookupStageFlags uses.
 //  2. Row found and flagged Won/Lost — 100/0, regardless of the row's name.
 //  3. Row found, in-between — interpolate 10-90 across the row's sort_order
 //     position among all active non-Won/non-Lost stages, earliest stage

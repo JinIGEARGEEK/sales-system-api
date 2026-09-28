@@ -18,7 +18,7 @@ import (
 // also records PreviousStage (the lane it left); it stays nil on a record
 // that has never moved. A same-lane reorder
 // or an unrelated field edit leaves it alone. Rows created before this column
-// existed are backfilled once by database.backfillStageEnteredAt.
+// existed are backfilled by database.BackfillStageEnteredAt.
 
 func stageEnteredNow() *time.Time {
 	now := time.Now()

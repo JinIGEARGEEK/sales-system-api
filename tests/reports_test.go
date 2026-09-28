@@ -201,7 +201,7 @@ func TestQuotesExpiringSoon_OnlyWithinWindow(t *testing.T) {
 		ids[r.DealID] = r.TotalValue
 	}
 	require.Contains(t, ids, soon.ID)
-	assert.Equal(t, 100.0, ids[soon.ID])
+	assert.Equal(t, 107.0, ids[soon.ID], "grand total incl. VAT (vat_enabled defaults on), as on the PDF")
 	assert.NotContains(t, ids, later.ID, "a quote expiring outside the window must not be reported")
 }
 

@@ -69,6 +69,69 @@ definitions:
           default; it only ever sends when SMTP is configured.
         type: boolean
     type: object
+  github_com_igeargeek_sales-system-api_internal_models.Attachment:
+    properties:
+      category:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.AttachmentCategory'
+      created_at:
+        type: string
+      external_url:
+        type: string
+      file_name:
+        type: string
+      file_size:
+        type: integer
+      file_url:
+        type: string
+      id:
+        type: integer
+      mime_type:
+        type: string
+      related_id:
+        type: integer
+      related_type:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.AttachmentRelatedType'
+        description: |-
+          Composite index on (related_type, related_id) — every List query filters
+          on both together (see AttachmentHandler.List), same reasoning as Activity's.
+      updated_at:
+        type: string
+      uploaded_by:
+        type: integer
+    type: object
+  github_com_igeargeek_sales-system-api_internal_models.AttachmentCategory:
+    enum:
+    - Quotation
+    - Proposal
+    - Estimation
+    - Plan
+    - Support
+    - Other
+    type: string
+    x-enum-varnames:
+    - AttachmentCategoryQuotation
+    - AttachmentCategoryProposal
+    - AttachmentCategoryEstimation
+    - AttachmentCategoryPlan
+    - AttachmentCategorySupport
+    - AttachmentCategoryOther
+  github_com_igeargeek_sales-system-api_internal_models.AttachmentRelatedType:
+    enum:
+    - lead
+    - deal
+    - company
+    - project
+    - quote
+    - prospect
+    type: string
+    x-enum-varnames:
+    - AttachmentRelatedLead
+    - AttachmentRelatedDeal
+    - AttachmentRelatedCompany
+    - AttachmentRelatedProject
+    - AttachmentRelatedQuote
+    - AttachmentRelatedProspect
   github_com_igeargeek_sales-system-api_internal_models.BillingCycle:
     enum:
     - monthly
@@ -479,14 +542,9 @@ definitions:
         type: string
       company_id:
         description: |-
-          CompanyID replaces the free-text CompanyName this Lead used to carry
-          (dropped 2026-08-24) — a real FK to Company, same as Deal/Contact,
-          instead of a bare string. Nullable: unlike Deal/Contact, a Lead can
-          still exist with no company picked yet (matching CompanyName's old
-          optional-ness — Create/Update never required it either). Existing
-          rows were backfilled from their old CompanyName text (exact
-          case-insensitive match against Companies, or a newly created Company
-          when no match existed) — see database.backfillLeadCompanyIDs.
+          CompanyID is a real FK to Company, as on Deal/Contact, but nullable:
+          a Lead can exist before a company is picked. See
+          database.backfillLeadCompanyIDs for rows migrated from free text.
         type: integer
       converted_deal_id:
         description: |-
@@ -1497,24 +1555,7 @@ definitions:
       contact_id:
         type: integer
       deal:
-        properties:
-          assigned_to:
-            type: integer
-          business_unit:
-            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.BusinessUnit'
-          business_unit_item:
-            type: string
-          channel:
-            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource'
-          expected_close_date:
-            type: string
-          stage:
-            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage'
-          title:
-            type: string
-          value:
-            type: number
-        type: object
+        $ref: '#/definitions/internal_handlers.dealFields'
     type: object
   internal_handlers.customerProductForm:
     properties:
@@ -1595,6 +1636,29 @@ definitions:
       status:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.CustomerProductStatus'
     type: object
+  internal_handlers.dealFields:
+    properties:
+      assigned_to:
+        type: integer
+      business_unit:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.BusinessUnit'
+      business_unit_item:
+        type: string
+      channel:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource'
+      expected_close_date:
+        type: string
+      lost_reason:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason'
+        description: LostReason is required once stage or status is Lost.
+      stage:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage'
+      title:
+        type: string
+      value:
+        type: number
+    type: object
   internal_handlers.dealForm:
     properties:
       assigned_to:
@@ -1614,7 +1678,9 @@ definitions:
       forecast_category:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ForecastCategory'
       lost_reason:
-        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason'
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason'
+        description: LostReason is required once stage or status is Lost.
       probability:
         type: integer
       stage:
@@ -2014,6 +2080,7 @@ definitions:
       scope_of_work:
         type: string
       vat_enabled:
+        description: nil = true, like Quote Create
         type: boolean
       wht_enabled:
         type: boolean
@@ -3329,6 +3396,96 @@ paths:
       summary: Update app settings
       tags:
       - admin/settings
+  /attachments:
+    get:
+      description: 'Returns one record''s attachments. related_type and related_id
+        are both required, and the caller must be able to read that record (deal/quote/prospect:
+        Admin/Sales Rep/Sales Manager/Marketing; lead/company/project: any authenticated
+        role). Optional category filter.'
+      parameters:
+      - description: lead, deal, company, project, quote, or prospect
+        in: query
+        name: related_type
+        required: true
+        type: string
+      - description: Related record ID
+        in: query
+        name: related_id
+        required: true
+        type: integer
+      - description: Filter by category
+        in: query
+        name: category
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated attachment list (data, page, per_page, total)
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Caller's role cannot read this record type
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Related record not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: related_type/related_id missing or invalid
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List attachments for a record
+      tags:
+      - attachments
+    post:
+      consumes:
+      - application/json
+      - multipart/form-data
+      description: 'Two shapes: multipart `file` upload (related_type, related_id,
+        category form fields), or a JSON body with `external_url` (http:// or https://
+        only) for a linked doc. Exactly one is accepted. The related record must exist
+        and the caller must be allowed to edit it (a Sales Rep/Marketing user only
+        on deals, quotes, leads, and prospects assigned to them or unassigned).'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Attachment'
+        "400":
+          description: Invalid body, or unsupported file type
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not authorized to attach to this record
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Related record not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Missing fields, unknown related_type, or external_url not http(s)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create an attachment (Admin/Sales Rep/Sales Manager/Marketing)
+      tags:
+      - attachments
   /audit-log:
     get:
       description: 'Append-only audit log, read-only (NFR-007) — no write handlers
@@ -3362,11 +3519,13 @@ paths:
         in: query
         name: entity_id
         type: string
-      - description: ISO date lower bound (YYYY-MM-DD), filters on created_at
+      - description: ISO date lower bound (YYYY-MM-DD, from server-local midnight),
+          filters on created_at
         in: query
         name: date_from
         type: string
-      - description: ISO date upper bound (YYYY-MM-DD), filters on created_at
+      - description: ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local
+          day), filters on created_at
         in: query
         name: date_to
         type: string
@@ -3387,6 +3546,11 @@ paths:
       responses:
         "200":
           description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Malformed date_from/date_to, or date_to before date_from
           schema:
             additionalProperties: true
             type: object
@@ -4345,11 +4509,13 @@ paths:
       description: Aggregate sales metrics (pipeline value, win rate, trends, breakdowns,
         upsell opportunities). api-system-spec.md §9.
       parameters:
-      - description: ISO date lower bound (YYYY-MM-DD), mutually exclusive with period
+      - description: ISO date lower bound (YYYY-MM-DD, from server-local midnight),
+          mutually exclusive with period
         in: query
         name: date_from
         type: string
-      - description: ISO date upper bound (YYYY-MM-DD)
+      - description: ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local
+          day)
         in: query
         name: date_to
         type: string
@@ -4389,8 +4555,8 @@ paths:
           schema:
             additionalProperties: true
             type: object
-        "400":
-          description: Invalid date_from/date_to
+        "422":
+          description: Malformed date_from/date_to, or date_to before date_from
           schema:
             additionalProperties: true
             type: object
@@ -4960,10 +5126,12 @@ paths:
     put:
       consumes:
       - application/json
-      description: Full update of a Deal — same validation as Create. Writes a stage_changed
-        audit log entry when the submitted stage differs from the deal's current one.
-        Only the assigned Sales Rep (or Admin/Sales Manager) may update; a Sales Rep
-        cannot reassign to another rep. api-system-spec.md §7.1.
+      description: Full update of a Deal — same validation as Create. An omitted stage/status
+        keeps the stored value; moving from a Won/Lost stage to an open one sets status
+        open. Writes a stage_changed audit log entry when the submitted stage differs
+        from the deal's current one. Only the assigned Sales Rep (or Admin/Sales Manager)
+        may update; a Sales Rep cannot reassign to another rep. api-system-spec.md
+        §7.1.
       parameters:
       - description: Deal ID
         in: path
@@ -5076,11 +5244,12 @@ paths:
       consumes:
       - application/json
       description: Dedicated endpoint for the Kanban drag-and-drop quick-move. Sets
-        status to won/lost alongside stage (and re-derives probability) in the same
-        transaction; writes a stage_changed audit log entry per §8.5's explicit minimum
-        scope. Moving into a stage resolved as Won is blocked (422-style validation
-        error) if AppSettings.RequireSignedContractBeforeWon is enabled and the deal
-        has no Contract with status Signed. Only the assigned Sales Rep (or Admin/Sales
+        status to won/lost alongside stage — or open (clearing lost_reason) on a move
+        into any other stage — and re-derives probability in the same transaction;
+        writes a stage_changed audit log entry per §8.5's explicit minimum scope.
+        Moving into a stage resolved as Won is blocked (422-style validation error)
+        if AppSettings.RequireSignedContractBeforeWon is enabled and the deal has
+        no Contract with status Signed. Only the assigned Sales Rep (or Admin/Sales
         Manager) may move it.
       parameters:
       - description: Deal ID
@@ -5348,6 +5517,11 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "422":
+          description: status is not New/Contacted/Qualified/Disqualified
+          schema:
+            additionalProperties: true
+            type: object
       security:
       - BearerAuth: []
       summary: Create a lead (Sales pipeline roles)
@@ -5413,7 +5587,8 @@ paths:
       description: Admin/Sales Rep/Sales Manager, and only if the caller owns the
         lead or has manager-level write access. Reassigning to another rep is likewise
         restricted. Omitting classification leaves an existing manual "sql" override
-        in place rather than letting it be auto-recomputed away.
+        in place rather than letting it be auto-recomputed away; omitting status keeps
+        the stored one.
       parameters:
       - description: Lead ID
         in: path
@@ -5448,6 +5623,11 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "422":
+          description: status is not New/Contacted/Qualified/Disqualified
+          schema:
+            additionalProperties: true
+            type: object
       security:
       - BearerAuth: []
       summary: Update a lead (Sales pipeline roles)
@@ -5457,10 +5637,15 @@ paths:
     post:
       consumes:
       - application/json
-      description: Admin/Sales Rep/Sales Manager, and only if the caller owns the
+      description: 'Admin/Sales Rep/Sales Manager, and only if the caller owns the
         lead or has manager-level write access. Converts a Lead into a Deal, reusing
         or creating the linked Company/Contact as needed — FR-CRM-004, api-system-spec.md
-        §3. Fails if the lead was already converted.
+        §3. The new deal gets Deal Create''s validation: value >= 0, a valid expected_close_date,
+        an active stage/channel, a valid business_unit, lost_reason on a Lost stage,
+        the signed-contract gate on a Won stage, and status following the stage''s
+        Won/Lost flags. A Sales Rep cannot assign the deal to another rep. An explicit
+        company_id/contact_id must exist, and the contact must belong to that company.
+        Fails if the lead was already converted, including by a concurrent request.'
       parameters:
       - description: Lead ID
         in: path
@@ -5482,22 +5667,29 @@ paths:
             additionalProperties: true
             type: object
         "400":
-          description: Invalid body, or stage/channel not a valid active value
+          description: Invalid body
           schema:
             additionalProperties: true
             type: object
         "403":
-          description: Not authorized to convert this lead
+          description: Not authorized to convert this lead, or cannot assign a deal
+            to another sales rep
           schema:
             additionalProperties: true
             type: object
         "404":
-          description: Lead not found
+          description: Lead, company or contact not found
           schema:
             additionalProperties: true
             type: object
         "409":
           description: Lead has already been converted
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Validation error (value, expected_close_date, stage/channel/business_unit,
+            lost_reason, signed contract required, contact not in company)
           schema:
             additionalProperties: true
             type: object
@@ -5611,7 +5803,8 @@ paths:
             additionalProperties: true
             type: object
         "422":
-          description: position out of range (±1e9)
+          description: status is not New/Contacted/Qualified/Disqualified, or position
+            out of range (±1e9)
           schema:
             additionalProperties: true
             type: object
@@ -6431,8 +6624,8 @@ paths:
       description: Updates a Prospect, including status transitions. status "Converted"
         cannot be set directly (only via POST /prospects/:id/convert), except re-submitting
         an already-Converted record's unchanged status. source must be an active Prospect
-        source and status an active Prospect stage. A Sales Rep may only act on/assign
-        to their own prospects.
+        source and status an active Prospect stage; omitting status keeps the stored
+        one. A Sales Rep may only act on/assign to their own prospects.
       parameters:
       - description: Prospect ID
         in: path
@@ -6480,8 +6673,10 @@ paths:
         supplied or not already linked) in one transaction: resolve-or-create Company,
         resolve-or-create Contact, create the Lead with a back-reference to the source
         Prospect, carry over Attachments, then mark the Prospect "Converted" and stamp
-        its converted_lead_id. Fails with 409 if already converted. Source/tags are
-        carried over as-is even if they aren''t among the Lead''s own configured options.'
+        its converted_lead_id. Fails with 409 if already converted, including by a
+        concurrent request. An explicit company_id/contact_id must exist (404), and
+        the contact must belong to that company (422). Source/tags are carried over
+        as-is even if they aren''t among the Lead''s own configured options.'
       parameters:
       - description: Prospect ID
         in: path
@@ -6513,12 +6708,17 @@ paths:
             additionalProperties: true
             type: object
         "404":
-          description: Prospect not found
+          description: Prospect, company or contact not found
           schema:
             additionalProperties: true
             type: object
         "409":
           description: Prospect has already been converted
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: contact_id does not belong to the company
           schema:
             additionalProperties: true
             type: object
@@ -7077,11 +7277,13 @@ paths:
         in: query
         name: assigned_to
         type: string
-      - description: ISO date lower bound (YYYY-MM-DD), filters on created_at
+      - description: ISO date lower bound (YYYY-MM-DD, from server-local midnight),
+          filters on created_at
         in: query
         name: date_from
         type: string
-      - description: ISO date upper bound (YYYY-MM-DD), filters on created_at
+      - description: ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local
+          day), filters on created_at
         in: query
         name: date_to
         type: string
@@ -7090,6 +7292,11 @@ paths:
       responses:
         "200":
           description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Malformed date_from/date_to, or date_to before date_from
           schema:
             additionalProperties: true
             type: object
@@ -7112,11 +7319,13 @@ paths:
         in: query
         name: assigned_to
         type: string
-      - description: ISO date lower bound (YYYY-MM-DD), filters on created_at
+      - description: ISO date lower bound (YYYY-MM-DD, from server-local midnight),
+          filters on created_at
         in: query
         name: date_from
         type: string
-      - description: ISO date upper bound (YYYY-MM-DD), filters on created_at
+      - description: ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local
+          day), filters on created_at
         in: query
         name: date_to
         type: string
@@ -7127,6 +7336,11 @@ paths:
           description: CSV export
           schema:
             type: file
+        "422":
+          description: Malformed date_from/date_to, or date_to before date_from
+          schema:
+            additionalProperties: true
+            type: object
         "500":
           description: Failed to export lead source conversion
           schema:
@@ -7270,11 +7484,13 @@ paths:
         in: query
         name: assigned_to
         type: string
-      - description: ISO date lower bound (YYYY-MM-DD), filters on created_at
+      - description: ISO date lower bound (YYYY-MM-DD, from server-local midnight),
+          filters on created_at
         in: query
         name: date_from
         type: string
-      - description: ISO date upper bound (YYYY-MM-DD), filters on created_at
+      - description: ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local
+          day), filters on created_at
         in: query
         name: date_to
         type: string
@@ -7283,6 +7499,11 @@ paths:
       responses:
         "200":
           description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Malformed date_from/date_to, or date_to before date_from
           schema:
             additionalProperties: true
             type: object
@@ -7307,11 +7528,13 @@ paths:
         in: query
         name: assigned_to
         type: string
-      - description: ISO date lower bound (YYYY-MM-DD), filters on created_at
+      - description: ISO date lower bound (YYYY-MM-DD, from server-local midnight),
+          filters on created_at
         in: query
         name: date_from
         type: string
-      - description: ISO date upper bound (YYYY-MM-DD), filters on created_at
+      - description: ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local
+          day), filters on created_at
         in: query
         name: date_to
         type: string
@@ -7322,6 +7545,11 @@ paths:
           description: CSV export
           schema:
             type: file
+        "422":
+          description: Malformed date_from/date_to, or date_to before date_from
+          schema:
+            additionalProperties: true
+            type: object
         "500":
           description: Failed to export prospect source conversion
           schema:
@@ -7413,11 +7641,13 @@ paths:
         in: query
         name: assigned_to
         type: string
-      - description: ISO date lower bound (YYYY-MM-DD), filters on deals.created_at
+      - description: ISO date lower bound (YYYY-MM-DD, from server-local midnight),
+          filters on deals.created_at
         in: query
         name: date_from
         type: string
-      - description: ISO date upper bound (YYYY-MM-DD), filters on deals.created_at
+      - description: ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local
+          day), filters on deals.created_at
         in: query
         name: date_to
         type: string
@@ -7426,6 +7656,11 @@ paths:
       responses:
         "200":
           description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Malformed date_from/date_to, or date_to before date_from
           schema:
             additionalProperties: true
             type: object
@@ -7606,11 +7841,13 @@ paths:
         in: query
         name: assigned_to
         type: string
-      - description: ISO date lower bound (YYYY-MM-DD), filters on the Lead's created_at
+      - description: ISO date lower bound (YYYY-MM-DD, from server-local midnight),
+          filters on the Lead's created_at
         in: query
         name: date_from
         type: string
-      - description: ISO date upper bound (YYYY-MM-DD), filters on the Lead's created_at
+      - description: ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local
+          day), filters on the Lead's created_at
         in: query
         name: date_to
         type: string
@@ -7619,6 +7856,11 @@ paths:
       responses:
         "200":
           description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Malformed date_from/date_to, or date_to before date_from
           schema:
             additionalProperties: true
             type: object
@@ -7641,11 +7883,12 @@ paths:
         in: query
         name: assigned_to
         type: string
-      - description: ISO date lower bound (YYYY-MM-DD)
+      - description: ISO date lower bound (YYYY-MM-DD, from server-local midnight)
         in: query
         name: date_from
         type: string
-      - description: ISO date upper bound (YYYY-MM-DD)
+      - description: ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local
+          day)
         in: query
         name: date_to
         type: string
@@ -7656,6 +7899,11 @@ paths:
           description: CSV export
           schema:
             type: file
+        "422":
+          description: Malformed date_from/date_to, or date_to before date_from
+          schema:
+            additionalProperties: true
+            type: object
         "500":
           description: Failed to export top referrers
           schema:
@@ -7675,11 +7923,13 @@ paths:
         in: query
         name: assigned_to
         type: string
-      - description: ISO date lower bound (YYYY-MM-DD), filters on deals.created_at
+      - description: ISO date lower bound (YYYY-MM-DD, from server-local midnight),
+          filters on deals.created_at
         in: query
         name: date_from
         type: string
-      - description: ISO date upper bound (YYYY-MM-DD), filters on deals.created_at
+      - description: ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local
+          day), filters on deals.created_at
         in: query
         name: date_to
         type: string
@@ -7692,6 +7942,11 @@ paths:
       responses:
         "200":
           description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Malformed date_from/date_to, or date_to before date_from
           schema:
             additionalProperties: true
             type: object
@@ -7714,11 +7969,13 @@ paths:
         in: query
         name: assigned_to
         type: string
-      - description: ISO date lower bound (YYYY-MM-DD), filters on deals.created_at
+      - description: ISO date lower bound (YYYY-MM-DD, from server-local midnight),
+          filters on deals.created_at
         in: query
         name: date_from
         type: string
-      - description: ISO date upper bound (YYYY-MM-DD), filters on deals.created_at
+      - description: ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local
+          day), filters on deals.created_at
         in: query
         name: date_to
         type: string
@@ -7733,6 +7990,11 @@ paths:
           description: CSV export
           schema:
             type: file
+        "422":
+          description: Malformed date_from/date_to, or date_to before date_from
+          schema:
+            additionalProperties: true
+            type: object
         "500":
           description: Failed to export win/loss reasons
           schema:
@@ -7945,7 +8207,13 @@ paths:
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.User'
         "400":
-          description: Invalid body or missing required fields
+          description: Invalid body
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Missing first_name/email, email not on the company domain or
+            already in use, or role not one of Admin/Sales Rep/Sales Manager/Production/Marketing
           schema:
             additionalProperties: true
             type: object
@@ -8006,9 +8274,11 @@ paths:
     put:
       consumes:
       - application/json
-      description: Admin only. Full update; email must be on the allowed company domain.
-        Password is only changed if provided (forces must_change_password true). The
-        response never includes password_hash (excluded via json:"-").
+      description: Admin only. Full update; email must be on the allowed company domain
+        and role one of the known roles. Password is only changed if provided (forces
+        must_change_password true). Changing role, resetting the password, or deactivating
+        signs the user out of every existing session (their tokens stop working immediately).
+        The response never includes password_hash (excluded via json:"-").
       parameters:
       - description: User ID
         in: path
@@ -8029,12 +8299,18 @@ paths:
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.User'
         "400":
-          description: Invalid body or missing required fields
+          description: Invalid body
           schema:
             additionalProperties: true
             type: object
         "404":
           description: User not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Missing email, email not on the company domain, or role not
+            one of Admin/Sales Rep/Sales Manager/Production/Marketing
           schema:
             additionalProperties: true
             type: object
@@ -8104,7 +8380,8 @@ paths:
       - application/json
       description: Sets is_active false for every listed user in one transaction (same
         effect as Delete's is_active flip, without the soft-delete), writing a bulk_deactivated
-        audit entry per row.
+        audit entry per row. Revokes every deactivated user's existing sessions, so
+        re-activating them later does not revive old tokens.
       parameters:
       - description: User IDs
         in: body

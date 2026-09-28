@@ -25,15 +25,16 @@ import (
 // @Security BearerAuth
 // @Produce text/csv
 // @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
-// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on created_at"
-// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on created_at"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on created_at"
 // @Success 200 {file} file "CSV export"
+// @Failure 422 {object} map[string]interface{} "Malformed date_from/date_to, or date_to before date_from"
 // @Failure 500 {object} map[string]interface{} "Failed to export lead source conversion"
 // @Router /reports/lead-source-conversion/export [get]
 func (h *ReportHandler) LeadSourceConversionExport(c *fiber.Ctx) error {
 	rows, err := h.fetchLeadSourceConversion(c)
 	if err != nil {
-		return utils.Internal(c, "Failed to export lead source conversion")
+		return reportError(c, err, "Failed to export lead source conversion")
 	}
 	header := []string{"Source", "Total Leads", "Qualified", "Conversion Rate (%)"}
 	return streamCSV(c, "lead-source-conversion.csv", header, func(w *csv.Writer) error {
@@ -56,15 +57,16 @@ func (h *ReportHandler) LeadSourceConversionExport(c *fiber.Ctx) error {
 // @Security BearerAuth
 // @Produce text/csv
 // @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
-// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on created_at"
-// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on created_at"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on created_at"
 // @Success 200 {file} file "CSV export"
+// @Failure 422 {object} map[string]interface{} "Malformed date_from/date_to, or date_to before date_from"
 // @Failure 500 {object} map[string]interface{} "Failed to export prospect source conversion"
 // @Router /reports/prospect-source-conversion/export [get]
 func (h *ReportHandler) ProspectSourceConversionExport(c *fiber.Ctx) error {
 	rows, err := h.fetchProspectSourceConversion(c)
 	if err != nil {
-		return utils.Internal(c, "Failed to export prospect source conversion")
+		return reportError(c, err, "Failed to export prospect source conversion")
 	}
 	header := []string{"Source", "Total Prospects", "Converted", "Conversion Rate (%)"}
 	return streamCSV(c, "prospect-source-conversion.csv", header, func(w *csv.Writer) error {
@@ -117,16 +119,17 @@ func (h *ReportHandler) CustomersByProductStatusExport(c *fiber.Ctx) error {
 // @Security BearerAuth
 // @Produce text/csv
 // @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
-// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on deals.created_at"
-// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on deals.created_at"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on deals.created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on deals.created_at"
 // @Param company_tag query string false "Filter by Company tag"
 // @Success 200 {file} file "CSV export"
+// @Failure 422 {object} map[string]interface{} "Malformed date_from/date_to, or date_to before date_from"
 // @Failure 500 {object} map[string]interface{} "Failed to export win/loss reasons"
 // @Router /reports/win-loss-reasons/export [get]
 func (h *ReportHandler) WinLossReasonsExport(c *fiber.Ctx) error {
 	rows, err := h.fetchWinLossReasons(c)
 	if err != nil {
-		return utils.Internal(c, "Failed to export win/loss reasons")
+		return reportError(c, err, "Failed to export win/loss reasons")
 	}
 	header := []string{"Reason", "Count", "Value"}
 	return streamCSV(c, "win-loss-reasons.csv", header, func(w *csv.Writer) error {
@@ -219,15 +222,16 @@ func (h *ReportHandler) OutstandingBalanceExport(c *fiber.Ctx) error {
 // @Security BearerAuth
 // @Produce text/csv
 // @Param assigned_to query string false "Filter by the referred Lead's assigned Sales Rep user ID"
-// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD)"
-// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD)"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD, from server-local midnight)"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day)"
 // @Success 200 {file} file "CSV export"
+// @Failure 422 {object} map[string]interface{} "Malformed date_from/date_to, or date_to before date_from"
 // @Failure 500 {object} map[string]interface{} "Failed to export top referrers"
 // @Router /reports/top-referrers/export [get]
 func (h *ReportHandler) TopReferrersExport(c *fiber.Ctx) error {
 	rows, err := h.fetchTopReferrers(c)
 	if err != nil {
-		return utils.Internal(c, "Failed to export top referrers")
+		return reportError(c, err, "Failed to export top referrers")
 	}
 	header := []string{"Referrer", "Type", "Leads Referred", "Deals Created", "Deals Won", "Won Revenue"}
 	return streamCSV(c, "top-referrers.csv", header, func(w *csv.Writer) error {
