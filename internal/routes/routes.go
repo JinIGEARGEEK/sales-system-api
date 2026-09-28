@@ -277,14 +277,11 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	openLeads.Get("/:id", leadH.Get)
 	openLeads.Put("/:id", leadH.Update)
 
-	// Sales-pipeline roles — the Lead/Deal gate: Admin, Sales Rep, Sales
-	// Manager and Marketing. **2026-09-23**: Marketing joined this set (full
-	// Sales Rep parity on Leads/Deals, alongside the Overview Pipeline page —
-	// feature-spec.md FR-CRM-123), reversing spec §1.7's earlier "Marketing
-	// has no access to Leads/Deals" rule. Production stays out, which is what
-	// this gate still blocks. Declared here, ahead of `authed`, so the Open
-	// API's Deal route below shares it with the staff /deals group.
-	salesPipelineRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager, models.RoleMarketing)
+	// Sales-pipeline roles — the Lead/Deal gate: every role but Production
+	// (Marketing has Sales Rep parity here, feature-spec.md FR-CRM-123).
+	// Declared ahead of `authed` so the Open API's Deal route below shares
+	// it with the staff /deals group.
+	salesPipelineRoles := middleware.RequireRoles(models.SalesPipelineRoles...)
 
 	// Deal payment schedules — read-only, the one Deal sub-resource exposed
 	// here, so an integration can follow a Project's deal_id to its planned
@@ -352,7 +349,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// of the Lead hand-off the same way they work Leads/Deals); Marketing
 	// owns it day-to-day. Bulk/trash/restore stay on the existing
 	// Admin/Sales-Manager-only bulkRoles, same as Leads.
-	prospectRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleMarketing, models.RoleSalesManager, models.RoleSalesRep)
+	prospectRoles := middleware.RequireRoles(models.SalesPipelineRoles...)
 	prospects := authed.Group("/prospects", prospectRoles)
 	prospects.Get("/", prospectH.List)
 	prospects.Post("/", prospectH.Create)

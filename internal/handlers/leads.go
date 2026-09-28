@@ -144,14 +144,11 @@ func validateLeadCompanyID(c *fiber.Ctx, db *gorm.DB, companyID *uint) error {
 	return nil
 }
 
-// validateLeadStatus rejects a status outside the fixed models.LeadStatus
-// set. Previously any string was stored as-is — one past the column's 16
-// chars was a 500, anything shorter a Lead in a lane that doesn't exist.
-// Empty is allowed through; each caller decides what it means (Create:
-// New, Update: keep, UpdateStatus: required).
+// validateLeadStatus writes a 422 and returns utils.ErrHandled for a status
+// outside models.ValidLeadStatuses. Empty is allowed through; each caller
+// decides what it means (Create: New, Update: keep, UpdateStatus: required).
 func validateLeadStatus(c *fiber.Ctx, status models.LeadStatus) error {
-	switch status {
-	case "", models.LeadStatusNew, models.LeadStatusContacted, models.LeadStatusQualified, models.LeadStatusDisqualified:
+	if status == "" || models.IsValidLeadStatus(status) {
 		return nil
 	}
 	_ = utils.ValidationError(c, "status must be New, Contacted, Qualified or Disqualified", map[string][]string{"status": {"invalid"}})

@@ -58,11 +58,7 @@ func (h *UserHandler) List(c *fiber.Ctx) error {
 
 // validateCompanyEmail returns utils.ErrHandled (see its doc) after writing a
 // 422 ValidationError if email isn't a valid address on
-// utils.AllowedEmailDomain, nil otherwise. Previously returned
-// ValidationError's own result directly, which is nil even on the invalid
-// path (the JSON write itself succeeds) — that silently defeated both call
-// sites' `if err != nil { return err }` guard below, letting any email
-// through regardless of domain.
+// utils.AllowedEmailDomain, nil otherwise.
 func validateCompanyEmail(c *fiber.Ctx, email string) error {
 	if utils.IsValidCompanyEmail(email) {
 		return nil
@@ -72,21 +68,11 @@ func validateCompanyEmail(c *fiber.Ctx, email string) error {
 	return utils.ErrHandled
 }
 
-// validUserRoles is every role models defines — the same set RequireRoles
-// gates are written against. Anything else (including empty) would store an
-// account no route group recognises.
-var validUserRoles = map[models.Role]bool{
-	models.RoleAdmin:        true,
-	models.RoleSalesRep:     true,
-	models.RoleSalesManager: true,
-	models.RoleProduction:   true,
-	models.RoleMarketing:    true,
-}
-
 // validateUserRole mirrors validateCompanyEmail: utils.ErrHandled after
-// writing a 422 if role isn't one of validUserRoles, nil otherwise.
+// writing a 422 if role isn't a models.ValidRoles one (anything else would
+// store an account no route group recognises), nil otherwise.
 func validateUserRole(c *fiber.Ctx, role models.Role) error {
-	if validUserRoles[role] {
+	if models.IsValidRole(role) {
 		return nil
 	}
 	msg := "role must be one of Admin, Sales Rep, Sales Manager, Production, Marketing"

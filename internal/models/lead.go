@@ -1,6 +1,7 @@
 package models
 
 import (
+	"slices"
 	"time"
 
 	"github.com/lib/pq"
@@ -14,6 +15,15 @@ const (
 	LeadStatusQualified    LeadStatus = "Qualified"
 	LeadStatusDisqualified LeadStatus = "Disqualified"
 )
+
+// ValidLeadStatuses is every LeadStatus, in lane order.
+var ValidLeadStatuses = []LeadStatus{
+	LeadStatusNew, LeadStatusContacted, LeadStatusQualified, LeadStatusDisqualified,
+}
+
+func IsValidLeadStatus(s LeadStatus) bool {
+	return slices.Contains(ValidLeadStatuses, s)
+}
 
 // LeadSource is shared by Lead.source and Deal.channel (api-system-spec.md §3/§7.1).
 type LeadSource string
