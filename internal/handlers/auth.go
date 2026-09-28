@@ -7,6 +7,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/middleware"
@@ -73,20 +74,27 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 	})
 }
 
-// Logout — POST /auth/logout. Bumps the caller's token_version so the token
-// just used (and any other still-valid token issued to this user) fails
-// RequireAuth's check from now on — the closest a stateless JWT gets to a
-// real server-side revocation without a full token blocklist. The frontend
-// also clears localStorage regardless per §1.2; this covers the case where a
-// still-live token leaked or is reused after "logout" (shared machine, a
-// captured token, an Admin needing an account's sessions killed — see Update).
+// bumpTokenVersion revokes every token already issued to user (see
+// models.User.TokenVersion) with one atomic increment, reading the new
+// version back into user.TokenVersion. tx is the write that made those
+// tokens stale; callers InvalidateAuthCache once it commits.
+func bumpTokenVersion(tx *gorm.DB, user *models.User) error {
+	return tx.Model(user).Where("id = ?", user.ID).
+		Clauses(clause.Returning{Columns: []clause.Column{{Name: "token_version"}}}).
+		UpdateColumn("token_version", gorm.Expr("token_version + 1")).Error
+}
+
+// Logout — POST /auth/logout. Bumps the caller's token_version so every
+// still-valid token issued to them (a leaked one, another device) fails
+// RequireAuth from now on — revocation without a token blocklist. The
+// frontend also clears its stored token per §1.2.
 func (h *AuthHandler) Logout(c *fiber.Ctx) error {
-	userID := middleware.CurrentUserID(c)
-	if err := h.DB.Model(&models.User{}).Where("id = ?", userID).
-		UpdateColumn("token_version", gorm.Expr("token_version + 1")).Error; err != nil {
+	var user models.User
+	user.ID = middleware.CurrentUserID(c)
+	if err := bumpTokenVersion(h.DB, &user); err != nil {
 		return utils.Internal(c, "Failed to log out")
 	}
-	middleware.InvalidateAuthCache(userID)
+	middleware.InvalidateAuthCache(user.ID)
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
@@ -98,8 +106,6 @@ func (h *AuthHandler) Me(c *fiber.Ctx) error {
 	}
 	return utils.OK(c, user)
 }
-
-const minPasswordLength = 8
 
 type changePasswordRequest struct {
 	CurrentPassword string `json:"current_password"`
@@ -130,8 +136,8 @@ func (h *AuthHandler) ChangePassword(c *fiber.Ctx) error {
 			"confirm_password": {"must match new_password"},
 		})
 	}
-	if len(req.NewPassword) < minPasswordLength {
-		msg := fmt.Sprintf("new_password must be at least %d characters", minPasswordLength)
+	if len(req.NewPassword) < utils.MinPasswordLength {
+		msg := fmt.Sprintf("new_password must be at least %d characters", utils.MinPasswordLength)
 		return utils.ValidationError(c, msg, map[string][]string{"new_password": {msg}})
 	}
 
@@ -161,10 +167,7 @@ func (h *AuthHandler) ChangePassword(c *fiber.Ctx) error {
 		if err := tx.Save(&user).Error; err != nil {
 			return err
 		}
-		if err := tx.Model(&user).UpdateColumn("token_version", gorm.Expr("token_version + 1")).Error; err != nil {
-			return err
-		}
-		return tx.Model(&models.User{}).Where("id = ?", user.ID).Pluck("token_version", &user.TokenVersion).Error
+		return bumpTokenVersion(tx, &user)
 	}); err != nil {
 		return utils.Internal(c, "Failed to update password")
 	}
