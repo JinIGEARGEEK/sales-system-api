@@ -44,7 +44,7 @@ cp .env.example .env      # adjust DB_* / JWT_SECRET as needed
 go run ./cmd/api
 ```
 
-On first run, if the `users` table is empty, the server seeds an Admin account and logs its generated email/password to stdout — use that to log in and start creating data.
+On first run, if the `users` table is empty, the server seeds an Admin account and logs its email and generated password to stdout (or uses `ADMIN_INITIAL_PASSWORD`, see below) — use that to log in and start creating data.
 
 Migrations run automatically on boot via `database.AutoMigrate` — no separate migration step needed for local dev.
 
@@ -122,8 +122,8 @@ The repo builds via the included `Dockerfile` and `railway.toml` (health check a
 3. **Set environment variables** on the service (Railway dashboard → Variables): `JWT_SECRET` (required — a real secret, not the default), `JWT_EXPIRY_HOURS`, `APP_ENV=production`. Leave `PORT` unset — Railway injects it and `config.Load()` already reads it.
 4. **File uploads**: Quote PDFs, signed Contracts, and Attachments go through the `utils.Storage` interface (`internal/utils/storage.go`), selected via `STORAGE_BACKEND` (see the env var table above). Defaults to `local` — writes to `./uploads`, served back at `/uploads/<key>` (auth-required — any authenticated role). Local disk does **not** persist across redeploys or scale across replicas on Railway's ephemeral filesystem, so before handling real production traffic:
    - Set `STORAGE_BACKEND=s3` plus the `S3_*` vars once a bucket/credentials exist (AWS S3, Cloudflare R2, Backblaze B2, or any S3-compatible provider — see [`biz_spec/s3-migration-plan.md`](biz_spec/s3-migration-plan.md) for the provider tradeoffs and open decisions, since provisioning the bucket itself is outside this repo), or
-   - Add a [Railway Volume](https://docs.railway.app/reference/volumes) mounted at `/app/uploads` as a stopgap (fine for a single instance only — still doesn't scale past one replica).
-5. **First deploy**: the app auto-runs `AutoMigrate` and seeds an initial Admin account on boot if `users` is empty — check the deploy logs for the generated email/password.
+   - Add a [Railway Volume](https://docs.railway.app/reference/volumes) mounted at `/app/uploads` as a stopgap (fine for a single instance only — still doesn't scale past one replica). The image runs as the non-root `app` user and Railway mounts volumes root-owned, so confirm an upload works after attaching it (Railway's `RAILWAY_RUN_UID=0` variable is the documented workaround).
+5. **First deploy**: the app auto-runs `AutoMigrate` and seeds an initial Admin account on boot if `users` is empty. Set `ADMIN_INITIAL_PASSWORD` first so the password never reaches the logs; otherwise check the deploy logs for the one-time notice with the generated email/password. Also set `TRUSTED_PROXIES` if the logs show `clientip: ignoring X-Forwarded-For from untrusted peer` (otherwise every caller shares one login rate-limit bucket).
 6. **Frontend**: the `sales-system` Nuxt app builds to a static SPA (`ssr: false`) — Railway can serve it too (small Dockerfile + static file server, or Nixpacks auto-detection), but S3+CloudFront/Vercel/Netlify are typically simpler/cheaper for a pure static build. Whichever host you pick, set its `API_URL` build-time env var to this service's Railway-issued domain (or custom domain once attached).
 
 ## Notes for contributors
