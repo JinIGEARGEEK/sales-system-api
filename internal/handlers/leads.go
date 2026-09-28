@@ -155,6 +155,20 @@ func validateLeadCompanyID(c *fiber.Ctx, db *gorm.DB, companyID *uint) error {
 	return nil
 }
 
+// validateLeadStatus rejects a status outside the fixed models.LeadStatus
+// set. Previously any string was stored as-is — one past the column's 16
+// chars was a 500, anything shorter a Lead in a lane that doesn't exist.
+// Empty is allowed through; each caller decides what it means (Create:
+// New, Update: keep, UpdateStatus: required).
+func validateLeadStatus(c *fiber.Ctx, status models.LeadStatus) error {
+	switch status {
+	case "", models.LeadStatusNew, models.LeadStatusContacted, models.LeadStatusQualified, models.LeadStatusDisqualified:
+		return nil
+	}
+	_ = utils.ValidationError(c, "status must be New, Contacted, Qualified or Disqualified", map[string][]string{"status": {"invalid"}})
+	return utils.ErrHandled
+}
+
 // Create godoc
 // @Summary Create a lead (Sales pipeline roles)
 // @Description Admin/Sales Rep/Sales Manager only. A Sales Rep cannot assign the new lead to another rep. If assigned_to is omitted, the lead is auto-assigned round-robin among active Sales Reps by current open-record load.
@@ -166,6 +180,7 @@ func validateLeadCompanyID(c *fiber.Ctx, db *gorm.DB, companyID *uint) error {
 // @Success 201 {object} models.Lead
 // @Failure 400 {object} map[string]interface{} "Invalid body"
 // @Failure 403 {object} map[string]interface{} "Cannot assign a lead to another sales rep"
+// @Failure 422 {object} map[string]interface{} "status is not New/Contacted/Qualified/Disqualified"
 // @Router /leads [post]
 func (h *LeadHandler) Create(c *fiber.Ctx) error {
 	var form leadForm
@@ -180,6 +195,9 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 	}
 	if !utils.IsActiveLeadSource(h.DB, string(form.Source)) {
 		return utils.ValidationError(c, "source is not a valid active lead source", map[string][]string{"source": {"invalid"}})
+	}
+	if err := validateLeadStatus(c, form.Status); err != nil {
+		return nil
 	}
 	if err := validateExternalEmail(c, form.Email); err != nil {
 		return nil
@@ -431,7 +449,7 @@ func (h *LeadHandler) ScoreBreakdown(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Update a lead (Sales pipeline roles)
-// @Description Admin/Sales Rep/Sales Manager, and only if the caller owns the lead or has manager-level write access. Reassigning to another rep is likewise restricted. Omitting classification leaves an existing manual "sql" override in place rather than letting it be auto-recomputed away.
+// @Description Admin/Sales Rep/Sales Manager, and only if the caller owns the lead or has manager-level write access. Reassigning to another rep is likewise restricted. Omitting classification leaves an existing manual "sql" override in place rather than letting it be auto-recomputed away; omitting status keeps the stored one.
 // @Tags leads
 // @Security BearerAuth
 // @Accept json
@@ -442,6 +460,7 @@ func (h *LeadHandler) ScoreBreakdown(c *fiber.Ctx) error {
 // @Failure 400 {object} map[string]interface{} "Invalid body"
 // @Failure 403 {object} map[string]interface{} "Not authorized to update this lead"
 // @Failure 404 {object} map[string]interface{} "Lead not found"
+// @Failure 422 {object} map[string]interface{} "status is not New/Contacted/Qualified/Disqualified"
 // @Router /leads/{id} [put]
 func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	var lead models.Lead
@@ -462,6 +481,9 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	if !utils.IsActiveLeadSource(h.DB, string(form.Source)) {
 		return utils.ValidationError(c, "source is not a valid active lead source", map[string][]string{"source": {"invalid"}})
 	}
+	if err := validateLeadStatus(c, form.Status); err != nil {
+		return nil
+	}
 	if err := validateExternalEmail(c, form.Email); err != nil {
 		return nil
 	}
@@ -481,6 +503,9 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	// resubmits the Lead's full state every time.
 	oldStatus := lead.Status
 	oldCompanyID := lead.CompanyID
+	if form.Status == "" {
+		form.Status = lead.Status // omitted keeps the stored status, not ""
+	}
 
 	lead.Name, lead.CompanyID, lead.Email, lead.Phone = form.Name, form.CompanyID, form.Email, form.Phone
 	lead.Source, lead.Status, lead.Notes, lead.AssignedTo = form.Source, form.Status, form.Notes, form.AssignedTo
@@ -544,7 +569,7 @@ type leadStatusForm struct {
 // @Failure 400 {object} map[string]interface{} "status is required"
 // @Failure 403 {object} map[string]interface{} "Not authorized to update this lead"
 // @Failure 404 {object} map[string]interface{} "Lead not found"
-// @Failure 422 {object} map[string]interface{} "position out of range (±1e9)"
+// @Failure 422 {object} map[string]interface{} "status is not New/Contacted/Qualified/Disqualified, or position out of range (±1e9)"
 // @Router /leads/{id}/status [patch]
 func (h *LeadHandler) UpdateStatus(c *fiber.Ctx) error {
 	var lead models.Lead
@@ -561,6 +586,9 @@ func (h *LeadHandler) UpdateStatus(c *fiber.Ctx) error {
 	}
 	if form.Status == "" {
 		return utils.ValidationError(c, "status is required", map[string][]string{"status": {"required"}})
+	}
+	if err := validateLeadStatus(c, form.Status); err != nil {
+		return nil
 	}
 	if err := validateCardPosition(c, form.Position); err != nil {
 		return nil
@@ -707,12 +735,15 @@ type convertRequest struct {
 		Channel           models.LeadSource    `json:"channel"`
 		BusinessUnit      *models.BusinessUnit `json:"business_unit"`
 		BusinessUnitItem  *string              `json:"business_unit_item"`
+		// LostReason is required only when stage resolves to a Lost stage,
+		// same as Deal Create.
+		LostReason *models.LostReason `json:"lost_reason"`
 	} `json:"deal"`
 }
 
 // Convert godoc
 // @Summary Convert a lead to a deal (Sales pipeline roles)
-// @Description Admin/Sales Rep/Sales Manager, and only if the caller owns the lead or has manager-level write access. Converts a Lead into a Deal, reusing or creating the linked Company/Contact as needed — FR-CRM-004, api-system-spec.md §3. Fails if the lead was already converted.
+// @Description Admin/Sales Rep/Sales Manager, and only if the caller owns the lead or has manager-level write access. Converts a Lead into a Deal, reusing or creating the linked Company/Contact as needed — FR-CRM-004, api-system-spec.md §3. The new deal gets Deal Create's validation: value >= 0, a valid expected_close_date, an active stage/channel, a valid business_unit, lost_reason on a Lost stage, the signed-contract gate on a Won stage, and status following the stage's Won/Lost flags. A Sales Rep cannot assign the deal to another rep. An explicit company_id/contact_id must exist, and the contact must belong to that company. Fails if the lead was already converted, including by a concurrent request.
 // @Tags leads
 // @Security BearerAuth
 // @Accept json
@@ -720,10 +751,11 @@ type convertRequest struct {
 // @Param id path int true "Lead ID"
 // @Param body body convertRequest true "Optional company_id/contact_id overrides and the new deal's fields"
 // @Success 200 {object} map[string]interface{} "deal, company, and contact objects"
-// @Failure 400 {object} map[string]interface{} "Invalid body, or stage/channel not a valid active value"
-// @Failure 403 {object} map[string]interface{} "Not authorized to convert this lead"
-// @Failure 404 {object} map[string]interface{} "Lead not found"
+// @Failure 400 {object} map[string]interface{} "Invalid body"
+// @Failure 403 {object} map[string]interface{} "Not authorized to convert this lead, or cannot assign a deal to another sales rep"
+// @Failure 404 {object} map[string]interface{} "Lead, company or contact not found"
 // @Failure 409 {object} map[string]interface{} "Lead has already been converted"
+// @Failure 422 {object} map[string]interface{} "Validation error (value, expected_close_date, stage/channel/business_unit, lost_reason, signed contract required, contact not in company)"
 // @Router /leads/{id}/convert [post]
 func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 	var lead models.Lead
@@ -733,6 +765,8 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 	if !CanWrite(c, lead.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to convert this lead")
 	}
+	// Fast path only — the authoritative check is the locked re-read inside
+	// the transaction below.
 	if lead.ConvertedDealID != nil {
 		return utils.Conflict(c, "Lead has already been converted")
 	}
@@ -741,11 +775,44 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
-	if !utils.IsActivePipelineStage(h.DB, string(req.Deal.Stage)) {
-		return utils.ValidationError(c, "stage is not a valid active pipeline stage", map[string][]string{"stage": {"invalid"}})
+	if req.Deal.Stage == "" {
+		// "Qualified" by default; the first open stage if an Admin has
+		// renamed or retired it. Resolved before validation so the Won/Lost
+		// gates below see the stage the deal will actually get.
+		req.Deal.Stage = models.DealStageQualified
+		if !utils.IsActivePipelineStage(h.DB, string(req.Deal.Stage)) {
+			req.Deal.Stage = utils.DefaultPipelineStage(h.DB)
+		}
 	}
-	if !utils.IsActiveLeadSource(h.DB, string(req.Deal.Channel)) {
-		return utils.ValidationError(c, "channel is not a valid active lead source", map[string][]string{"channel": {"invalid"}})
+
+	// The same checks Deal Create runs, on the same dealForm shape, so a
+	// converted deal can't skip any of them (it used to: status hard-coded
+	// open on a Won stage, no signed-contract gate, no lost_reason, no
+	// assignee check).
+	dealH := &DealHandler{DB: h.DB}
+	form := dealForm{
+		Title: req.Deal.Title, Value: req.Deal.Value, Stage: req.Deal.Stage,
+		ExpectedCloseDate: req.Deal.ExpectedCloseDate, AssignedTo: req.Deal.AssignedTo,
+		Channel: req.Deal.Channel, BusinessUnit: req.Deal.BusinessUnit,
+		BusinessUnitItem: req.Deal.BusinessUnitItem, LostReason: req.Deal.LostReason,
+	}
+	if !CanWrite(c, form.AssignedTo) {
+		return utils.Forbidden(c, "Cannot assign a deal to another sales rep")
+	}
+	if err := validateDealValueAndDate(c, form); err != nil {
+		return nil
+	}
+	if err := validateProbabilityAndLostReason(c, h.DB, form); err != nil {
+		return nil
+	}
+	if isWinningForm(h.DB, form) {
+		// dealID 0, as in Deal Create — the deal doesn't exist yet.
+		if err := validateContractSignedBeforeWon(c, h.DB, 0); err != nil {
+			return nil
+		}
+	}
+	if err := dealH.validateStageAndChannel(c, form); err != nil {
+		return nil
 	}
 
 	var company models.Company
@@ -753,6 +820,16 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 	var deal models.Deal
 
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		// Locked re-read + re-check: two concurrent Converts both passed the
+		// pre-check above; the second waits here and then sees the first's
+		// ConvertedDealID instead of creating a second Deal.
+		if err := lockForConvert(tx, &lead, lead.ID); err != nil {
+			return err
+		}
+		if lead.ConvertedDealID != nil {
+			return errAlreadyConverted
+		}
+
 		// resolveOrCreateCompany's explicitID (req.CompanyID) always wins,
 		// even if it differs from whatever Company the Lead itself was
 		// already linked to; its fallbackID (lead.CompanyID) is the normal
@@ -771,22 +848,18 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 
 		deal = models.Deal{
 			CompanyID: company.ID, ContactID: contact.ID,
-			Title: req.Deal.Title, Value: req.Deal.Value, Stage: req.Deal.Stage,
-			Status: models.DealStatusOpen, ExpectedCloseDate: req.Deal.ExpectedCloseDate,
-			AssignedTo: req.Deal.AssignedTo, Channel: req.Deal.Channel,
-			BusinessUnit: req.Deal.BusinessUnit, BusinessUnitItem: req.Deal.BusinessUnitItem,
+			Title: form.Title, Value: form.Value, Stage: form.Stage,
+			Status: models.DealStatusOpen, ExpectedCloseDate: form.ExpectedCloseDate,
+			AssignedTo: form.AssignedTo, Channel: form.Channel,
+			BusinessUnit: form.BusinessUnit, BusinessUnitItem: form.BusinessUnitItem,
 			LeadID: &lead.ID,
 		}
 		if deal.Title == "" {
 			deal.Title = lead.Name
 		}
-		if deal.Stage == "" {
-			// "Qualified" by default; the first open stage if an Admin has
-			// renamed or retired it.
-			deal.Stage = models.DealStageQualified
-			if !utils.IsActivePipelineStage(tx, string(deal.Stage)) {
-				deal.Stage = utils.DefaultPipelineStage(tx)
-			}
+		dealH.syncStatusWithStageFlags(&deal)
+		if deal.Status == models.DealStatusLost {
+			deal.LostReason = form.LostReason
 		}
 		// Same defaults as Deal Create: the stage's configured probability
 		// (so a renamed stage keeps its number) and its forecast category.
@@ -820,6 +893,9 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 		return utils.LogCompanyActivity(tx, company.ID, "Lead converted to Deal", middleware.CurrentUserID(c))
 	})
 	if err != nil {
+		if writeConvertTxError(c, err, "Lead has already been converted") {
+			return nil
+		}
 		return utils.Internal(c, "Failed to convert lead")
 	}
 
