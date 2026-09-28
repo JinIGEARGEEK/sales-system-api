@@ -31,7 +31,7 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/handlers"
 	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
-	"github.com/igeargeek/sales-system-api/internal/routes"
+	"github.com/igeargeek/sales-system-api/internal/server"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
@@ -344,21 +344,36 @@ func TruncateAll(db *gorm.DB) error {
 // side by side.
 const testDBLockKey = 725310
 
-// App returns a fresh Fiber app wired via routes.Setup against the shared
-// test DB connection, with all tables truncated first so each test starts
-// from a clean slate. Safe to call once per test (or subtest) from any
-// package — acquireDBLock below serializes concurrent callers across
+// App returns a fresh Fiber app built by server.New — the same constructor
+// cmd/api/main.go uses, so tests see production's error handler, panic
+// recovery, body limit and middleware (minus the access log) — against the
+// shared test DB connection, with all tables truncated first so each test
+// starts from a clean slate. Safe to call once per test (or subtest) from
+// any package — acquireDBLock below serializes concurrent callers across
 // processes, not just within one.
 func App(t *testing.T) (*fiber.App, *gorm.DB) {
+	t.Helper()
+	return AppWithConfig(t, nil)
+}
+
+// AppWithConfig is App with a per-test tweak to (a copy of) the test
+// config — e.g. TrustedProxies for the login rate-limit tests. modify may
+// be nil.
+func AppWithConfig(t *testing.T, modify func(*config.Config)) (*fiber.App, *gorm.DB) {
 	t.Helper()
 	once.Do(setup)
 	acquireDBLock(t)
 	require.NoError(t, TruncateAll(testDB), "truncate tables before test")
 
-	app := fiber.New()
+	cfg := testCfg
+	if modify != nil {
+		copied := *testCfg
+		modify(&copied)
+		cfg = &copied
+	}
 	// MemoryStorage — no real disk or bucket needed for the suite to pass;
 	// see utils.Storage's doc.
-	routes.Setup(app, testDB, testCfg, utils.NewMemoryStorage())
+	app := server.New(cfg, testDB, utils.NewMemoryStorage(), server.WithoutAccessLog())
 	return app, testDB
 }
 

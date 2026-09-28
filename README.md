@@ -67,6 +67,9 @@ See [`.env.example`](.env.example). Notable ones:
 | `STORAGE_BACKEND` | `local` (default) or `s3` — where Quote/Contract/Attachment uploads are stored. See [`biz_spec/s3-migration-plan.md`](biz_spec/s3-migration-plan.md). |
 | `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | Required when `STORAGE_BACKEND=s3` — the app fails fast at boot if any is missing rather than erroring on the first upload. |
 | `S3_ENDPOINT`, `S3_FORCE_PATH_STYLE` | Optional — set for an S3-compatible provider other than AWS (Cloudflare R2, Backblaze B2, MinIO); leave both unset/`false` for real AWS S3. |
+| `TRUSTED_PROXIES` | Comma-separated IPs/CIDRs of the reverse proxies in front of the app, whose `X-Forwarded-For` the login rate limiter believes (read right to left, skipping trusted hops — `internal/clientip`). Unset: on Railway (detected via its `RAILWAY_ENVIRONMENT*` vars) it defaults to the private ranges `10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,fc00::/7`; anywhere else nothing is trusted and callers are keyed by socket address. `none` trusts nothing explicitly. If the server logs `ignoring X-Forwarded-For from untrusted peer <ip>`, your proxy isn't covered — add that address, or every caller shares one login bucket. |
+| `ADMIN_INITIAL_PASSWORD` | Optional (min 8 chars) — the password for the Admin seeded on first boot (empty `users` table), never printed. Unset: a random one is generated and logged in development, or printed once to stderr as a framed one-time notice elsewhere. Either way it must be changed at first login. |
+| `DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`, `DB_CONN_MAX_LIFETIME`, `DB_CONN_MAX_IDLE_TIME` | Postgres connection-pool limits per instance (defaults `25`, `10`, `30m`, `5m`; durations in Go syntax). Keep replicas × `DB_MAX_OPEN_CONNS` under the server's `max_connections`. |
 
 ### Task due-date reminders
 
