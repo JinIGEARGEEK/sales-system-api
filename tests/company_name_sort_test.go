@@ -34,32 +34,16 @@ func TestCompanyNameSort_WithFilters(t *testing.T) {
 		dealIDs = append(dealIDs, deal.ID)
 	}
 
-	listIDs := func(path string) []uint {
-		t.Helper()
-		var out struct {
-			Data []struct {
-				ID uint `json:"id"`
-			} `json:"data"`
-		}
-		resp := doJSON(t, app, testutil.AuthRequest(t, http.MethodGet, path, nil, admin.ID, admin.Role), &out)
-		require.Equal(t, http.StatusOK, resp.StatusCode, path)
-		ids := make([]uint, len(out.Data))
-		for i, r := range out.Data {
-			ids[i] = r.ID
-		}
-		return ids
-	}
-
 	for _, sort := range []string{"company_name", "-company_name"} {
-		got := listIDs("/api/v1/deals?sort=" + sort + "&status=open&stage=Lead&company_id=" + itoa(company.ID) +
-			"&assigned_to=unassigned&business_unit=Product&channel=" + string(models.LeadSourceWebsite) + "&search=deal")
+		got := listIDs(t, app, "/api/v1/deals?sort="+sort+"&status=open&stage=Lead&company_id="+itoa(company.ID)+
+			"&assigned_to=unassigned&business_unit=Product&channel="+string(models.LeadSourceWebsite)+"&search=deal", admin.ID, admin.Role)
 		want := append([]uint(nil), dealIDs...)
 		if sort[0] == '-' {
 			want = []uint{want[2], want[1], want[0]}
 		}
 		assert.Equal(t, want, got, "deals "+sort)
 
-		got = listIDs("/api/v1/contacts?sort=" + sort + "&status=active&tag=vip&search=jane&company_id=" + itoa(company.ID))
+		got = listIDs(t, app, "/api/v1/contacts?sort="+sort+"&status=active&tag=vip&search=jane&company_id="+itoa(company.ID), admin.ID, admin.Role)
 		want = append([]uint(nil), contactIDs...)
 		if sort[0] == '-' {
 			want = []uint{want[2], want[1], want[0]}
@@ -77,9 +61,8 @@ func TestCompanyNameSort_WithFilters(t *testing.T) {
 }
 
 // A searched Lead/Prospect list joins companies for the Company-name match,
-// and that path used to apply no ORDER BY at all unless sort=company_name,
-// so pages came back in no stable order. It now honours sort (default
-// newest first) qualified with the list's own table.
+// and must still honour sort (default newest first), qualified with the
+// list's own table, so pages come back in a stable order.
 func TestLeadProspectSearch_KeepsSortOrder(t *testing.T) {
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
@@ -95,29 +78,13 @@ func TestLeadProspectSearch_KeepsSortOrder(t *testing.T) {
 		prospectIDs = append(prospectIDs, prospect.ID)
 	}
 
-	listIDs := func(path string) []uint {
-		t.Helper()
-		var out struct {
-			Data []struct {
-				ID uint `json:"id"`
-			} `json:"data"`
-		}
-		resp := doJSON(t, app, testutil.AuthRequest(t, http.MethodGet, path, nil, admin.ID, admin.Role), &out)
-		require.Equal(t, http.StatusOK, resp.StatusCode, path)
-		ids := make([]uint, len(out.Data))
-		for i, r := range out.Data {
-			ids[i] = r.ID
-		}
-		return ids
-	}
-
 	for _, tc := range []struct {
 		base string
 		ids  []uint
 	}{{"/api/v1/leads", leadIDs}, {"/api/v1/prospects", prospectIDs}} {
 		// Same created_at to the second is likely here, so the id
 		// tie-breaker decides — newest (highest id) first by default.
-		assert.Equal(t, []uint{tc.ids[2], tc.ids[1], tc.ids[0]}, listIDs(tc.base+"?search=jordan"), tc.base+" default")
-		assert.Equal(t, tc.ids, listIDs(tc.base+"?search=jordan&sort=created_at"), tc.base+" created_at")
+		assert.Equal(t, []uint{tc.ids[2], tc.ids[1], tc.ids[0]}, listIDs(t, app, tc.base+"?search=jordan", admin.ID, admin.Role), tc.base+" default")
+		assert.Equal(t, tc.ids, listIDs(t, app, tc.base+"?search=jordan&sort=created_at", admin.ID, admin.Role), tc.base+" created_at")
 	}
 }

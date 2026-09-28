@@ -28,14 +28,10 @@ func failedLogin(t *testing.T, app *fiber.App, xff string) int {
 	if xff != "" {
 		req.Header.Set("X-Forwarded-For", xff)
 	}
-	resp, err := app.Test(req, -1)
-	require.NoError(t, err)
-	resp.Body.Close()
-	return resp.StatusCode
+	return doJSON(t, app, req, nil).StatusCode
 }
 
-// TestLogin_RateLimited guards the new IP-based rate limit on POST
-// /auth/login — previously unlimited, making it brute-forceable indefinitely.
+// TestLogin_RateLimited guards the IP-based rate limit on POST /auth/login.
 func TestLogin_RateLimited(t *testing.T) {
 	app, db := testutil.App(t)
 	testutil.CreateUser(t, db, models.RoleAdmin) // just needs the table non-empty; login attempts below all fail on purpose

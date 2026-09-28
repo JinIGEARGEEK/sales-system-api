@@ -40,10 +40,7 @@ func userUpdateBody(u *models.User, overrides map[string]string) map[string]stri
 // token still honored" probe.
 func meStatus(t *testing.T, app *fiber.App, token string) int {
 	t.Helper()
-	resp, err := app.Test(testutil.NewRequest(t, http.MethodGet, "/api/v1/auth/me", nil, token), -1)
-	require.NoError(t, err)
-	resp.Body.Close()
-	return resp.StatusCode
+	return doJSON(t, app, testutil.NewRequest(t, http.MethodGet, "/api/v1/auth/me", nil, token), nil).StatusCode
 }
 
 // TestUserUpdate_RoleChangeRevokesSessions guards the demotion case: an
