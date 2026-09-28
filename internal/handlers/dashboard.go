@@ -3,6 +3,7 @@ package handlers
 import (
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -114,36 +115,69 @@ type annualGoalTrendPoint struct {
 // point's Actual also doubles as annual_revenue_actual in Summary's response
 // — one grouped query instead of a duplicate SUM.
 func (h *DashboardHandler) annualRevenueTrend(annualGoal int64) []annualGoalTrendPoint {
-	now := time.Now()
-	yearStart := time.Date(now.Year(), 1, 1, 0, 0, 0, 0, now.Location())
-
-	var rows []struct {
-		MonthKey string
-		Value    float64
-	}
-	h.DB.Model(&models.Deal{}).
-		Where("status = ? AND created_at >= ?", models.DealStatusWon, yearStart).
-		Select("to_char(created_at, 'YYYY-MM') as month_key, COALESCE(SUM(value), 0) as value").
-		Group("month_key").Scan(&rows)
-
-	byMonth := make(map[string]float64, len(rows))
-	for _, r := range rows {
-		byMonth[r.MonthKey] = r.Value
-	}
+	now := time.Now().In(time.Local)
+	yearStart := time.Date(now.Year(), 1, 1, 0, 0, 0, 0, time.Local)
 
 	monthsElapsed := int(now.Month())
+	bounds := monthBounds(yearStart, monthsElapsed)
+	byMonth := sumByLocalMonth(h.DB.Model(&models.Deal{}).Where("status = ?", models.DealStatusWon),
+		"created_at", "value", bounds)
+
 	points := make([]annualGoalTrendPoint, 0, monthsElapsed)
 	cumulative := 0.0
 	for i := 0; i < monthsElapsed; i++ {
-		month := yearStart.AddDate(0, i, 0)
-		cumulative += byMonth[month.Format("2006-01")]
+		cumulative += byMonth[i]
 		points = append(points, annualGoalTrendPoint{
-			Label:    month.Format("Jan"),
+			Label:    bounds[i].Format("Jan"),
 			Actual:   cumulative,
 			GoalPace: float64(annualGoal) * float64(i+1) / 12,
 		})
 	}
 	return points
+}
+
+// monthBounds returns the server-local month starts of n consecutive months
+// from first (itself a month start), plus the start of the month after:
+// n+1 bounds, month i being [bounds[i], bounds[i+1]). Stepping from the 1st
+// is what keeps AddDate from rolling over — now.AddDate(0, -1, 0) on 31
+// March normalizes 31 February to 3 March, repeating March and skipping
+// February in a trend.
+func monthBounds(first time.Time, n int) []time.Time {
+	bounds := make([]time.Time, n+1)
+	for i := range bounds {
+		bounds[i] = first.AddDate(0, i, 0)
+	}
+	return bounds
+}
+
+// sumByLocalMonth sums valueExpr over query's rows into len(bounds)-1
+// monthly buckets by the timestamp column, in one grouped query. The month
+// edges are monthBounds' server-local midnights (TZ, Asia/Bangkok), matched
+// with width_bucket, rather than to_char(column, 'YYYY-MM'), which splits
+// months at the DB session's midnight (UTC) — putting a Deal won before
+// 07:00 Bangkok on the 1st in the previous month. column must be qualified
+// if query joins another table.
+func sumByLocalMonth(query *gorm.DB, column, valueExpr string, bounds []time.Time) []float64 {
+	sums := make([]float64, len(bounds)-1)
+	placeholders := make([]string, len(bounds))
+	args := make([]interface{}, len(bounds))
+	for i, b := range bounds {
+		placeholders[i], args[i] = "?", b
+	}
+	var rows []struct {
+		Bucket int
+		Value  float64
+	}
+	query.Where(column+" >= ? AND "+column+" < ?", bounds[0], bounds[len(bounds)-1]).
+		Select("width_bucket("+column+", ARRAY["+strings.Join(placeholders, ", ")+"]::timestamptz[]) as bucket, "+
+			"COALESCE(SUM("+valueExpr+"), 0) as value", args...).
+		Group("bucket").Scan(&rows)
+	for _, r := range rows {
+		if r.Bucket >= 1 && r.Bucket <= len(sums) {
+			sums[r.Bucket-1] = r.Value
+		}
+	}
+	return sums
 }
 
 // winRate is the won/(won+lost) formula shared by Summary, industryBreakdown,
@@ -491,31 +525,21 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 // assigned_to/company_tag/date range) — it's a fixed trailing-6-month view
 // independent of those, same as forecastTrend below.
 func (h *DashboardHandler) revenueTrend() []revenueTrendPoint {
-	now := time.Now()
-	thisMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-	rangeStart := thisMonthStart.AddDate(0, -5, 0)
-	rangeEnd := thisMonthStart.AddDate(0, 1, 0)
-
-	var rows []struct {
-		MonthKey string
-		Value    float64
-	}
-	h.DB.Model(&models.Deal{}).
-		Where("status = ? AND created_at >= ? AND created_at < ?", models.DealStatusWon, rangeStart, rangeEnd).
-		Select("to_char(created_at, 'YYYY-MM') as month_key, COALESCE(SUM(value), 0) as value").
-		Group("month_key").Scan(&rows)
-
-	byMonth := make(map[string]float64, len(rows))
-	for _, r := range rows {
-		byMonth[r.MonthKey] = r.Value
-	}
+	bounds := monthBounds(thisMonthStart(time.Now()).AddDate(0, -5, 0), 6)
+	byMonth := sumByLocalMonth(h.DB.Model(&models.Deal{}).Where("status = ?", models.DealStatusWon),
+		"created_at", "value", bounds)
 
 	points := make([]revenueTrendPoint, 0, 6)
-	for i := 5; i >= 0; i-- {
-		month := now.AddDate(0, -i, 0)
-		points = append(points, revenueTrendPoint{Label: month.Format("Jan"), Value: byMonth[month.Format("2006-01")]})
+	for i, v := range byMonth {
+		points = append(points, revenueTrendPoint{Label: bounds[i].Format("Jan"), Value: v})
 	}
 	return points
+}
+
+// thisMonthStart is server-local midnight on the 1st of now's month.
+func thisMonthStart(now time.Time) time.Time {
+	now = now.In(time.Local)
+	return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
 }
 
 // forecastTrend is the forward-looking counterpart to revenueTrend: instead of
@@ -531,45 +555,43 @@ func (h *DashboardHandler) revenueTrend() []revenueTrendPoint {
 // trend's points may sum to less than that headline total. The frontend must
 // not present this breakdown as the complete forecast.
 //
-// Groups by the date string's first 7 characters ("YYYY-MM") rather than
-// casting expected_close_date to a real date type — it's stored as free-form
-// text (see the type note below) and a LEFT()-based string group-by tolerates
-// both the plain "2006-01-02" and full ISO-datetime forms without risking a
-// cast failure aborting the whole query over one malformed row.
+// expected_close_date is free-form text (no explicit gorm type on the
+// nullable *string field), holding either a plain "2006-01-02" date or a
+// full ISO datetime (the frontend submits Date objects, which
+// JSON-serialize to e.g. "2026-08-31T17:00:00.000Z" — 1 September in
+// Bangkok). Taking its first 7 characters put that in August, so each
+// Deal's month is read in Go instead (utils.ParseLocalCalendarDay: a bare
+// date as written, a timestamp by its server-local date). SQL only
+// narrows by a string range padded a day each side (a timestamp's UTC date
+// can be a day before its local one); a malformed row is skipped rather
+// than aborting a cast.
 func (h *DashboardHandler) forecastTrend() []revenueTrendPoint {
-	now := time.Now()
-	thisMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-	rangeStart := thisMonthStart
-	rangeEnd := thisMonthStart.AddDate(0, 6, 0)
+	start := thisMonthStart(time.Now())
+	bounds := monthBounds(start, 6)
 
-	// expected_close_date is stored as text (no explicit gorm type on the
-	// nullable *string field), holding either a plain "2006-01-02" date or a
-	// full ISO datetime (the frontend submits Date objects, which
-	// JSON-serialize to e.g. "2026-08-17T00:00:00.000Z"). Comparing against
-	// plain YYYY-MM-DD bounds still buckets correctly either way: it's a
-	// lexicographic string comparison, and since both forms share the same
-	// zero-padded date prefix, "<bound>" sorts before any same-day timestamp
-	// string and after the prior day's, so month windows land on the right
-	// boundary regardless of which format is stored.
 	var rows []struct {
-		MonthKey string
-		Value    float64
+		ExpectedCloseDate string
+		Value             float64
 	}
 	h.DB.Model(&models.Deal{}).
 		Where("status = ? AND expected_close_date >= ? AND expected_close_date < ?",
-			models.DealStatusOpen, rangeStart.Format("2006-01-02"), rangeEnd.Format("2006-01-02")).
-		Select("LEFT(expected_close_date, 7) as month_key, COALESCE(SUM(value * COALESCE(probability, 0) / 100.0), 0) as value").
-		Group("month_key").Scan(&rows)
+			models.DealStatusOpen, start.AddDate(0, 0, -1).Format("2006-01-02"), bounds[6].AddDate(0, 0, 1).Format("2006-01-02")).
+		Select("expected_close_date, value * COALESCE(probability, 0) / 100.0 as value").
+		Scan(&rows)
 
-	byMonth := make(map[string]float64, len(rows))
-	for _, r := range rows {
-		byMonth[r.MonthKey] = r.Value
+	points := make([]revenueTrendPoint, 6)
+	for i := range points {
+		points[i].Label = bounds[i].Format("Jan")
 	}
-
-	points := make([]revenueTrendPoint, 0, 6)
-	for i := 0; i <= 5; i++ {
-		month := now.AddDate(0, i, 0)
-		points = append(points, revenueTrendPoint{Label: month.Format("Jan"), Value: byMonth[month.Format("2006-01")]})
+	for _, r := range rows {
+		day, ok := utils.ParseLocalCalendarDay(r.ExpectedCloseDate)
+		if !ok {
+			continue
+		}
+		i := (day.Year()-start.Year())*12 + int(day.Month()) - int(start.Month())
+		if i >= 0 && i < len(points) {
+			points[i].Value += r.Value
+		}
 	}
 	return points
 }
