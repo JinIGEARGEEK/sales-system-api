@@ -26,29 +26,24 @@ func NewDashboardHandler(db *gorm.DB) *DashboardHandler {
 // omitted) against the given column. Shared by baseFilter (deals.created_at)
 // and teamPerformance's activity-count query (activities.created_at) so the
 // two aggregates always agree on what date window "this dashboard view"
-// means, rather than each re-deriving it.
-func applyDateWindow(query *gorm.DB, column, dateFrom, dateTo, period string) *gorm.DB {
-	if dateFrom == "" && dateTo == "" {
+// means, rather than each re-deriving it. window is the already-parsed
+// date_from/date_to (dateRangeQuery: inclusive server-local days).
+func applyDateWindow(query *gorm.DB, column string, window utils.DateRange, period string) *gorm.DB {
+	if window.IsZero() {
 		if from, ok := periodStart(period); ok {
 			query = query.Where(column+" >= ?", from)
 		}
-	} else {
-		if dateFrom != "" {
-			query = query.Where(column+" >= ?", dateFrom)
-		}
-		if dateTo != "" {
-			query = query.Where(column+" <= ?", dateTo)
-		}
+		return query
 	}
-	return query
+	return window.Apply(query, column)
 }
 
 // baseFilter applies the shared date_from/date_to (or period), business_unit,
 // business_unit_item, channel, assigned_to (Sales Rep), and company_tag query
 // params — api-system-spec.md §9, FR-CRM-055.
-func (h *DashboardHandler) baseFilter(c *fiber.Ctx) *gorm.DB {
+func (h *DashboardHandler) baseFilter(c *fiber.Ctx, window utils.DateRange) *gorm.DB {
 	query := h.DB.Model(&models.Deal{})
-	query = applyDateWindow(query, "deals.created_at", c.Query("date_from"), c.Query("date_to"), c.Query("period"))
+	query = applyDateWindow(query, "deals.created_at", window, c.Query("period"))
 
 	if v := c.Query("business_unit"); v != "" {
 		query = query.Where("deals.business_unit = ?", v)
@@ -67,26 +62,6 @@ func (h *DashboardHandler) baseFilter(c *fiber.Ctx) *gorm.DB {
 			Where("companies.tags && ARRAY[?]::text[]", v)
 	}
 	return query
-}
-
-// validateDateRangeParams rejects a malformed date_from/date_to before
-// baseFilter ever passes it to Postgres as a query bound. Without this, an
-// invalid string (e.g. "not-a-date") reaches the DB as a comparison operand,
-// fails the query at the driver level, and — since baseFilter's callers
-// (Summary's ~12 concurrent aggregate queries) discard Scan's error return —
-// silently degrades the whole dashboard to zeroed-out figures instead of
-// telling the caller their filter was wrong.
-func validateDateRangeParams(c *fiber.Ctx) (map[string][]string, string) {
-	for _, param := range []string{"date_from", "date_to"} {
-		v := c.Query(param)
-		if v == "" {
-			continue
-		}
-		if _, err := time.Parse("2006-01-02", v); err != nil {
-			return map[string][]string{param: {"must be a valid YYYY-MM-DD date"}}, param + " is invalid"
-		}
-	}
-	return nil, ""
 }
 
 func periodStart(period string) (time.Time, bool) {
@@ -269,8 +244,8 @@ func ResetDashboardCacheForTests() {
 // @Tags dashboard
 // @Security BearerAuth
 // @Produce json
-// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), mutually exclusive with period"
-// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD)"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD, from server-local midnight), mutually exclusive with period"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day)"
 // @Param period query string false "One of: month, quarter, last6, year/last12"
 // @Param business_unit query string false "Filter by business unit"
 // @Param business_unit_item query string false "Filter by business unit item"
@@ -279,11 +254,16 @@ func ResetDashboardCacheForTests() {
 // @Param company_tag query string false "Filter by Company tag"
 // @Param upsell_min_stale_days query int false "Upsell Opportunities staleness threshold in days (default 60)"
 // @Success 200 {object} map[string]interface{}
-// @Failure 400 {object} map[string]interface{} "Invalid date_from/date_to"
+// @Failure 422 {object} map[string]interface{} "Malformed date_from/date_to, or date_to before date_from"
 // @Router /dashboard/summary [get]
 func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
-	if fields, msg := validateDateRangeParams(c); fields != nil {
-		return utils.ValidationError(c, msg, fields)
+	// Parsed (and a malformed/reversed range 422'd) before anything reaches
+	// Postgres: an invalid bound would otherwise fail each aggregate at the
+	// driver level, and Summary's helpers discard Scan's error, silently
+	// zeroing the whole dashboard instead of telling the caller.
+	window, err := dateRangeQuery(c)
+	if err != nil {
+		return reportError(c, err, "")
 	}
 
 	cacheKey := string(c.Request().URI().QueryString())
@@ -294,7 +274,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	}
 	summaryCacheMu.Unlock()
 
-	base := h.baseFilter(c)
+	base := h.baseFilter(c, window)
 	// Read every query param the concurrent goroutines below need up front,
 	// on this goroutine, before any of them start. c.Query(...) reads/lazily
 	// parses fasthttp's shared, unsynchronized query-args cache on first
@@ -307,7 +287,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	// Same up-front-synchronous-read rule as companyTagSet above — fetchSalesCycle
 	// (called from a goroutine below) only takes plain strings, not `c`, for
 	// exactly this reason.
-	assignedTo, dateFrom, dateTo, period := c.Query("assigned_to"), c.Query("date_from"), c.Query("date_to"), c.Query("period")
+	assignedTo, period := c.Query("assigned_to"), c.Query("period")
 	// upsell_min_stale_days — the Upsell Opportunities widget's own staleness
 	// filter (FR-CRM-108/109), read up front for the same data-race reason as
 	// companyTagSet/assignedTo above. Defaults to 60 (the old fixed tier1
@@ -409,7 +389,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	run("stage_breakdown", func() { stageBreakdown = h.stageBreakdown(base) })
 	run("forecast_by_category", func() { forecastByCategory = h.forecastByCategory(base) })
 	run("industry_breakdown", func() { industryBreakdown = h.industryBreakdown(base, companyTagSet) })
-	run("team_performance", func() { teamPerformance = h.teamPerformance(base, dateFrom, dateTo, period) })
+	run("team_performance", func() { teamPerformance = h.teamPerformance(base, window, period) })
 	run("annual_revenue_trend", func() { annualRevenueTrend = h.annualRevenueTrend(settings.AnnualRevenueGoal) })
 	// upsellOpportunities is Company-centric (not Deal-scoped), so it's
 	// deliberately independent of `base`/baseFilter's Deal-side query params —
@@ -424,7 +404,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	// leaves this at 0 rather than failing the whole dashboard summary.
 	var avgSalesCycleDaysRaw float64
 	run("avg_sales_cycle_days", func() {
-		if result, err := (&ReportHandler{DB: h.DB}).fetchSalesCycle(assignedTo, dateFrom, dateTo); err == nil {
+		if result, err := (&ReportHandler{DB: h.DB}).fetchSalesCycle(assignedTo, window); err == nil {
 			if v, ok := result["avg_sales_cycle_days"].(float64); ok {
 				avgSalesCycleDaysRaw = v
 			}
@@ -662,7 +642,7 @@ func (h *DashboardHandler) industryBreakdown(base *gorm.DB, companyTagSet bool) 
 	return result
 }
 
-func (h *DashboardHandler) teamPerformance(base *gorm.DB, dateFrom, dateTo, period string) []teamPerformanceItem {
+func (h *DashboardHandler) teamPerformance(base *gorm.DB, window utils.DateRange, period string) []teamPerformanceItem {
 	var rows []struct {
 		UserID    uint
 		WonCount  int64
@@ -695,7 +675,7 @@ func (h *DashboardHandler) teamPerformance(base *gorm.DB, dateFrom, dateTo, peri
 	activityCounts := make(map[uint]int64, len(userIDs))
 	if len(userIDs) > 0 {
 		activityQuery := applyDateWindow(h.DB.Model(&models.Activity{}).Where("created_by_id IN ?", userIDs),
-			"activities.created_at", dateFrom, dateTo, period)
+			"activities.created_at", window, period)
 		var activityRows []struct {
 			CreatedByID uint
 			Count       int64

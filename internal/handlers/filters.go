@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -213,14 +214,45 @@ func relatedRecordNameArgs(like string) []interface{} {
 // parseTimeBound accepts either a full RFC 3339 timestamp (what the Tasks
 // page sends: the viewer's local midnight, with offset, so "today" means the
 // viewer's today rather than the server's) or a bare YYYY-MM-DD date, read
-// as server-local midnight (TZ, Asia/Bangkok) — the same reading as the
-// reports' date_from/date_to (sourcePerformanceWindow). UTC midnight would
-// be 07:00 Bangkok, silently skipping the first seven hours of the day.
+// as server-local midnight (utils.ParseLocalDate) — the same reading as the
+// reports' date_from/date_to (utils.ParseDateRange).
 func parseTimeBound(v string) (time.Time, error) {
 	if t, err := time.Parse(time.RFC3339, v); err == nil {
 		return t, nil
 	}
-	return time.ParseInLocation("2006-01-02", v, time.Local)
+	return utils.ParseLocalDate(v)
+}
+
+// dateRangeError is a malformed or reversed ?date_from=/?date_to=, returned
+// by dateRangeQuery so a report's fetch function (shared by its JSON and CSV
+// handlers) can hand it back like any other error; reportError turns it
+// into the 422.
+type dateRangeError struct {
+	msg    string
+	fields map[string][]string
+}
+
+func (e *dateRangeError) Error() string { return e.msg }
+
+// dateRangeQuery reads ?date_from=&date_to= (YYYY-MM-DD, both inclusive
+// server-local days) — the one parser every report, dashboard and the audit
+// log filter created_at through, via DateRange.Apply.
+func dateRangeQuery(c *fiber.Ctx) (utils.DateRange, error) {
+	r, msg, fields := utils.ParseDateRange("date_from", c.Query("date_from"), "date_to", c.Query("date_to"))
+	if fields != nil {
+		return r, &dateRangeError{msg: msg, fields: fields}
+	}
+	return r, nil
+}
+
+// reportError writes err as a 422 when it's a dateRangeError, otherwise the
+// 500 with internalMsg.
+func reportError(c *fiber.Ctx, err error, internalMsg string) error {
+	var dre *dateRangeError
+	if errors.As(err, &dre) {
+		return utils.ValidationError(c, dre.msg, dre.fields)
+	}
+	return utils.Internal(c, internalMsg)
 }
 
 // applyTaskFilters applies the GET /tasks filter block:
