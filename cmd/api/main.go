@@ -135,11 +135,11 @@ func main() {
 	// notification log, forecast snapshots) runs either way, and email is
 	// skipped silently — LogMailStatus says so once here instead.
 	utils.LogMailStatus(cfg)
-	notifier.StartTaskDueReminders(db, cfg)
-	notifier.StartWorkflowRuleReminders(db, cfg)
+	notifier.StartTaskDueReminders(context.Background(), db, cfg)
+	notifier.StartWorkflowRuleReminders(context.Background(), db, cfg)
 	// Daily forecast-accuracy snapshot — see internal/notifier/forecast_snapshots.go.
-	notifier.StartForecastSnapshots(db, cfg)
-	notifier.StartWeeklyDigest(db, cfg)
+	notifier.StartForecastSnapshots(context.Background(), db, cfg)
+	notifier.StartWeeklyDigest(context.Background(), db, cfg)
 
 	log.Fatal(app.Listen(":" + cfg.Port))
 }

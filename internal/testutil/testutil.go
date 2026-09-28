@@ -104,6 +104,9 @@ var tables = []string{
 	"prospects",
 	"users",
 	"data_migrations",
+	// uniqueIndex'd on snapshot_date — one test's snapshot for today would
+	// otherwise make every later test's pass skip the day.
+	"forecast_snapshots",
 }
 
 var (
