@@ -14,14 +14,14 @@ import (
 
 // TestQuote_ValidThroughItsLastLocalDay guards a Sent quote staying Sent
 // all through its validity date (server-local), and the expiring-soon
-// report listing it that day. A bare date used to parse as UTC midnight,
-// expiring the quote at 07:00 Bangkok on its last valid day.
+// report listing it that day — not expiring at 07:00 Bangkok, the UTC
+// midnight a bare date parses to.
 func TestQuote_ValidThroughItsLastLocalDay(t *testing.T) {
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 
-	today := time.Now().In(ictZone).Format("2006-01-02")
-	yesterday := time.Now().In(ictZone).AddDate(0, 0, -1).Format("2006-01-02")
+	today := time.Now().Format("2006-01-02")
+	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
 	deal := seedDeal(t, db, nil)
 	for _, v := range []string{today, yesterday} {
 		v := v

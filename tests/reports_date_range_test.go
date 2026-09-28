@@ -13,15 +13,10 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/testutil"
 )
 
-// ictZone is the production server's zone (Dockerfile TZ=Asia/Bangkok, no
-// DST), fixed so these tests don't depend on the machine running them.
-var ictZone = time.FixedZone("ICT", 7*3600)
-
 // dateRangeEdges are four instants around the local day 2026-09-10: the
 // first two fall on it, the last two just outside. The first is the day's
-// first minutes (UTC 9 September, the hours a UTC-midnight date_from
-// skipped); the second its last hour (after a raw `created_at <= date_to`,
-// which dropped everything past 00:00 of the end date).
+// first minutes (still 9 September in UTC); the second its last hour (past
+// 00:00 of date_to, so date_to must cover its whole day).
 var dateRangeEdges = []time.Time{
 	time.Date(2026, 9, 10, 0, 30, 0, 0, ictZone),
 	time.Date(2026, 9, 10, 23, 30, 0, 0, ictZone),

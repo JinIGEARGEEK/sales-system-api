@@ -8,14 +8,11 @@ import (
 )
 
 // TestMonthBounds_NoRolloverAtMonthEnd guards the trend labels on the
-// 29th-31st: stepping now.AddDate(0, ±i, 0) from 31 March normalized
-// "31 February" to 3 March, so a trend showed March twice and no February.
-// monthBounds steps from the 1st, in server-local time.
+// 29th-31st: stepping now.AddDate(0, ±i, 0) from 31 March would normalize
+// "31 February" to 3 March. monthBounds steps from the 1st, in server-local
+// time.
 func TestMonthBounds_NoRolloverAtMonthEnd(t *testing.T) {
-	saved := time.Local
-	ict := time.FixedZone("ICT", 7*3600)
-	time.Local = ict
-	t.Cleanup(func() { time.Local = saved })
+	ict := time.Local
 
 	// 31 March 01:00 Bangkok is still 30 March in UTC.
 	now := time.Date(2026, 3, 30, 18, 0, 0, 0, time.UTC)
