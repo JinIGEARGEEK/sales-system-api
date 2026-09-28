@@ -37,24 +37,13 @@ func (h *ProspectHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := h.DB.Model(&models.Prospect{})
 
-	// The filter shape here is identical to LeadHandler.List's — see
-	// applyLeadLikeFilters's own doc for why it's shared (including the
-	// Company-name join/sort reasoning previously duplicated in both).
 	query, needsCompanyJoin, sortField := applyLeadLikeFilters(query, c, "prospects", "converted_lead_id")
 
 	var total int64
 	query.Count(&total)
 
 	var prospects []models.Prospect
-	if needsCompanyJoin {
-		query = utils.ApplyNullableCompanySort(query, "prospects", c.Query("sort"), sortField)
-	}
-	// Table-qualified: with the companies join (search, not just a
-	// company_name sort) bare created_at/name would be ambiguous, and
-	// without any ORDER BY a searched list paged in no stable order.
-	if sortField != "company_name" {
-		query = utils.ApplyTableSort(query, "prospects", c.Query("sort"), map[string]bool{"created_at": true, "name": true, "position": true}, "-created_at")
-	}
+	query = applyLeadLikeSort(query, c, "prospects", needsCompanyJoin, sortField)
 	if err := query.Limit(perPage).Offset(offset).Find(&prospects).Error; err != nil {
 		return utils.Internal(c, "Failed to list prospects")
 	}

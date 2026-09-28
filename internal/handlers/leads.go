@@ -65,28 +65,13 @@ func (h *LeadHandler) List(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
 	query := h.DB.Model(&models.Lead{})
 
-	// The filter shape here is identical to ProspectHandler.List's — see
-	// applyLeadLikeFilters's own doc for why it's shared (including the
-	// Company-name join/sort reasoning previously duplicated in both).
 	query, needsCompanyJoin, sortField := applyLeadLikeFilters(query, c, "leads", "converted_deal_id")
 
 	var total int64
-	// Count() before the Select below — a plain COUNT(*) works fine against
-	// the join as-is; it's only Find() that needs the column list narrowed
-	// (see ApplyNullableCompanySort), and applying that narrowing here too
-	// would break Count() against Postgres ("column leads.* does not exist").
 	query.Count(&total)
 
 	var leads []models.Lead
-	if needsCompanyJoin {
-		query = utils.ApplyNullableCompanySort(query, "leads", c.Query("sort"), sortField)
-	}
-	// Table-qualified: with the companies join (search, not just a
-	// company_name sort) bare created_at/name would be ambiguous, and
-	// without any ORDER BY a searched list paged in no stable order.
-	if sortField != "company_name" {
-		query = utils.ApplyTableSort(query, "leads", c.Query("sort"), map[string]bool{"created_at": true, "name": true, "position": true}, "-created_at")
-	}
+	query = applyLeadLikeSort(query, c, "leads", needsCompanyJoin, sortField)
 	if err := query.Limit(perPage).Offset(offset).Find(&leads).Error; err != nil {
 		return utils.Internal(c, "Failed to list leads")
 	}
