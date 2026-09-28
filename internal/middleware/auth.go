@@ -23,7 +23,9 @@ const (
 // Beyond the signature/expiry check, it also rejects a structurally-valid
 // token whose holder has since been deactivated or logged out: it compares
 // the token's embedded TokenVersion against the DB's current value (bumped by
-// Logout/deactivation — see models.User.TokenVersion) and checks IsActive.
+// Logout, deactivation, role change and password change/reset — see
+// models.User.TokenVersion) and checks IsActive. The caller's role is also
+// read from the DB rather than trusted from the token's claim.
 // Without this, a JWT stays fully valid for its whole lifetime (default 30
 // days, JWT_EXPIRY_HOURS) no matter what happens to the account afterward.
 func RequireAuth(cfg *config.Config, db *gorm.DB) fiber.Handler {
@@ -44,22 +46,27 @@ func RequireAuth(cfg *config.Config, db *gorm.DB) fiber.Handler {
 			var row struct {
 				IsActive     bool
 				TokenVersion int
+				Role         models.Role
 			}
 			if err := db.Model(&models.User{}).
-				Select("is_active, token_version").
+				Select("is_active, token_version, role").
 				Where("id = ?", claims.UserID).
 				Take(&row).Error; err != nil {
 				return utils.Unauthorized(c, "Invalid or expired token")
 			}
-			state = authState{isActive: row.IsActive, tokenVersion: row.TokenVersion}
-			authCacheSet(claims.UserID, state.isActive, state.tokenVersion)
+			state = authState{isActive: row.IsActive, tokenVersion: row.TokenVersion, role: row.Role}
+			authCacheSet(claims.UserID, state)
 		}
 		if !state.isActive || state.tokenVersion != claims.TokenVersion {
 			return utils.Unauthorized(c, "Invalid or expired token")
 		}
 
 		c.Locals(LocalUserID, claims.UserID)
-		c.Locals(LocalRole, claims.Role)
+		// The DB's role, not claims.Role: the claim is only a snapshot from
+		// login time. Role changes also bump token_version (UserHandler.Update),
+		// so this is belt-and-braces — it keeps RequireRoles correct even if
+		// some future write path changes role without bumping the version.
+		c.Locals(LocalRole, state.role)
 		return c.Next()
 	}
 }

@@ -143,11 +143,12 @@ func TestAuthCache_SetGetAndInvalidate(t *testing.T) {
 	_, ok := authCacheGet(uid)
 	require.False(t, ok, "miss before anything is cached")
 
-	authCacheSet(uid, true, 3)
+	authCacheSet(uid, authState{isActive: true, tokenVersion: 3, role: models.RoleSalesRep})
 	state, ok := authCacheGet(uid)
 	require.True(t, ok)
 	require.True(t, state.isActive)
 	require.Equal(t, 3, state.tokenVersion)
+	require.Equal(t, models.RoleSalesRep, state.role)
 
 	InvalidateAuthCache(uid)
 	_, ok = authCacheGet(uid)
@@ -200,7 +201,7 @@ func TestMustChangeCache_ExpiresAfterTTL(t *testing.T) {
 }
 
 func TestResetForTests_ClearsBothCaches(t *testing.T) {
-	authCacheSet(3001, true, 0)
+	authCacheSet(3001, authState{isActive: true})
 	mustChangeCacheSet(3002, true)
 
 	ResetForTests()
