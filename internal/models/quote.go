@@ -176,8 +176,9 @@ func ParseFlexDate(value *string) (t time.Time, ok bool) {
 }
 
 // ParseValidityDate is ParseFlexDate specialized to ValidityDate — kept as a
-// named wrapper since EffectiveStatus/ReportHandler.QuotesExpiringSoon
-// already call it by this name; new callers needing the same leniency for a
+// named wrapper since the quote-expiring notifier rule already calls it by
+// this name (EffectiveStatus and the expiring-soon report compare calendar
+// days via ValidityDay instead); new callers needing the same leniency for a
 // different field (e.g. IssueDate) should call ParseFlexDate directly.
 func ParseValidityDate(validityDate *string) (t time.Time, ok bool) {
 	return ParseFlexDate(validityDate)
@@ -191,15 +192,48 @@ func ParseValidityDate(validityDate *string) (t time.Time, ok bool) {
 // expire), and Accepted/Rejected are terminal states that Expired shouldn't
 // override.
 func (q *Quote) EffectiveStatus() QuoteStatus {
+	return q.EffectiveStatusAt(time.Now())
+}
+
+// EffectiveStatusAt is EffectiveStatus as of now. The validity date is the
+// quote's last valid day, so it expires once the server-local calendar day
+// (TZ, Asia/Bangkok) is past it — not at the instant the date parses to,
+// which for a bare date is UTC midnight: 07:00 Bangkok on the last day.
+func (q *Quote) EffectiveStatusAt(now time.Time) QuoteStatus {
 	if q.Status != QuoteStatusSent {
 		return q.Status
 	}
-	validUntil, ok := ParseValidityDate(q.ValidityDate)
+	validUntil, ok := q.ValidityDay()
 	if !ok {
 		return q.Status
 	}
-	if time.Now().After(validUntil) {
+	if localDay(now).After(validUntil) {
 		return QuoteStatusExpired
 	}
 	return q.Status
+}
+
+// ValidityDay is ValidityDate as a calendar day at UTC midnight (the shape
+// of utils.CalendarDay, for comparing with utils.Today): a bare date as
+// written, an RFC 3339 timestamp by its server-local date, since the
+// frontend stores a picked day as a JS Date ("2026-08-31T17:00:00.000Z" is
+// 1 September in Bangkok). Same reading as utils.ParseLocalCalendarDay,
+// which this package can't import (utils imports models).
+func (q *Quote) ValidityDay() (time.Time, bool) {
+	if q.ValidityDate == nil {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse("2006-01-02", *q.ValidityDate); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse(time.RFC3339, *q.ValidityDate); err == nil {
+		return localDay(t), true
+	}
+	return time.Time{}, false
+}
+
+// localDay is t's server-local Y-M-D at UTC midnight (utils.Today's shape).
+func localDay(t time.Time) time.Time {
+	t = t.In(time.Local)
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 }

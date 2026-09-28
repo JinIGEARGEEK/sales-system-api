@@ -672,6 +672,12 @@ type quoteExpiringSoonRow struct {
 // quote resolves to, since there's no single SQL query joining all three
 // tables here. Sorted by validity_date ascending so the soonest-to-expire
 // quote (the most urgent one) leads.
+//
+// Validity is a calendar day (models.Quote.ValidityDay): a quote is listed
+// from today through today+within_days, its last valid day included, the
+// same day EffectiveStatus stops calling it Sent. total_value is the
+// quote's grand total (utils.ComputeQuoteTotals: line discounts, quote
+// discount, VAT, WHT), the figure its PDF prints.
 func (h *ReportHandler) fetchQuotesExpiringSoon(c *fiber.Ctx) ([]quoteExpiringSoonRow, error) {
 	withinDays := 7
 	if v := c.Query("within_days"); v != "" {
@@ -687,19 +693,19 @@ func (h *ReportHandler) fetchQuotesExpiringSoon(c *fiber.Ctx) ([]quoteExpiringSo
 		return nil, err
 	}
 
-	now := time.Now()
-	deadline := now.AddDate(0, 0, withinDays)
+	today := utils.Today(time.Now())
+	deadline := today.AddDate(0, 0, withinDays)
 	type quoteWithDeadline struct {
 		quote      models.Quote
 		validUntil time.Time
 	}
 	byDeal := map[uint][]quoteWithDeadline{}
 	for _, q := range quotes {
-		validUntil, ok := models.ParseValidityDate(q.ValidityDate)
+		validUntil, ok := q.ValidityDay()
 		if !ok {
 			continue
 		}
-		if validUntil.Before(now) || validUntil.After(deadline) {
+		if validUntil.Before(today) || validUntil.After(deadline) {
 			continue
 		}
 		byDeal[q.DealID] = append(byDeal[q.DealID], quoteWithDeadline{quote: q, validUntil: validUntil})
@@ -741,10 +747,8 @@ func (h *ReportHandler) fetchQuotesExpiringSoon(c *fiber.Ctx) ([]quoteExpiringSo
 			continue
 		}
 		for _, qwd := range dealQuotes {
-			total := 0.0
-			for _, item := range qwd.quote.Items {
-				total += item.Qty * item.Price
-			}
+			q := qwd.quote
+			total := utils.ComputeQuoteTotals(q.Items, q.DiscountTotal, q.VatEnabled, q.WhtEnabled, q.WhtRate).GrandTotal
 			result = append(result, quoteExpiringSoonRow{
 				QuoteID: qwd.quote.ID, DealID: dealID, DealTitle: deal.Title,
 				CompanyName: companyNameByID[deal.CompanyID], ValidityDate: *qwd.quote.ValidityDate, TotalValue: total,
