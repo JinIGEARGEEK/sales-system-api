@@ -50,23 +50,16 @@ import (
 func main() {
 	cfg := config.Load()
 
-	// APP_ENV itself defaults to "development" when unset (config.Load) —
-	// harmless for local/test runs (.env always sets it there), but it means
-	// an operator who simply forgets to configure APP_ENV on a real
-	// deployment silently gets the permissive dev path below rather than the
-	// deny-by-default checks that path is meant to skip only intentionally.
-	// Not a hard failure (unlike the checks below) since this repo can't
-	// confirm every deployment's env already sets this — a loud warning
-	// instead of refusing to start avoids turning an unconfirmed assumption
-	// into an outage.
+	// An unset APP_ENV defaults to "development" (config.Load), which skips
+	// the production checks below — warn rather than fail, so a deployment
+	// that never set it isn't turned into an outage.
 	if _, appEnvSet := os.LookupEnv("APP_ENV"); !appEnvSet {
 		log.Println("WARNING: APP_ENV is not set — defaulting to \"development\", which skips the JWT_SECRET/CORS_ORIGINS production checks below. Set APP_ENV explicitly if this is a real deployment.")
 	}
 
 	// Deny-by-default: only the explicit "development" env may run with the
-	// placeholder secret/wildcard CORS. A misspelled or unset APP_ENV (e.g.
-	// "prod" instead of "production") now fails closed instead of silently
-	// booting a production-looking deployment with a guessable JWT secret.
+	// placeholder secret/wildcard CORS, so a misspelled APP_ENV (e.g. "prod")
+	// fails closed rather than booting with a guessable JWT secret.
 	if cfg.AppEnv != "development" {
 		if cfg.JWTSecret == "change-me-in-production" {
 			log.Fatal("refusing to start outside development with the default JWT_SECRET — set a real secret")
@@ -81,9 +74,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Fail at boot on a malformed TRUSTED_PROXIES rather than at the first
-	// login request (routes.go builds the same resolver).
-	if _, err := clientip.New(cfg.TrustedProxies); err != nil {
+	// Parsed before anything else touches the database, so a malformed
+	// TRUSTED_PROXIES fails the boot rather than the first login.
+	proxies, err := clientip.New(cfg.TrustedProxies)
+	if err != nil {
 		log.Fatalf("TRUSTED_PROXIES: %v", err)
 	}
 	if len(cfg.TrustedProxies) > 0 {
@@ -121,7 +115,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	app := server.New(cfg, db, storageBackend)
+	app := server.New(cfg, db, storageBackend, proxies, true)
 
 	// Background jobs. All safe to run without SMTP configured (see
 	// internal/utils/mailer.go): their in-app work (rule-created Tasks,
@@ -212,20 +206,11 @@ func newStorageBackend(cfg *config.Config) (utils.Storage, error) {
 // password the Admin could set for themselves.
 const minAdminPasswordLength = 8
 
-// seedAdmin creates an initial Admin user if the users table is empty so
-// there's a way to log in on first run. The password is, in order:
-//   - ADMIN_INITIAL_PASSWORD, if set — never printed, just a log line
-//     saying where it came from. The way to bootstrap a real deployment.
-//   - otherwise generated, and printed: into the normal log in development
-//     (as it always was), and anywhere else once, to stderr, as a framed
-//     one-time notice. Not printing it at all would leave a fresh production
-//     deploy with no way to log in (there's no CLI/reset path), and refusing
-//     to boot would turn a forgotten optional var into an outage; the
-//     printed password is only as exposed as the env var would be (anyone
-//     who can read the service's logs can read its Variables too), it's
-//     only ever printed on the one boot that creates the user (WithBootLock
-//     makes that a single replica), and MustChangePassword kills it at the
-//     first login.
+// seedAdmin creates the first Admin when the users table is empty. The
+// password is ADMIN_INITIAL_PASSWORD if set (never logged); otherwise it's
+// generated and printed once — to the log in development, else to stderr —
+// since there's no other way in on a fresh deploy. MustChangePassword
+// retires it at first login, and WithBootLock keeps it to one replica.
 func seedAdmin(db *gorm.DB, cfg *config.Config) {
 	var count int64
 	db.Model(&models.User{}).Count(&count)
@@ -278,11 +263,9 @@ func seedAdmin(db *gorm.DB, cfg *config.Config) {
 	}
 }
 
-// seedPipelineConfig inserts the default PipelineStage/LeadSourceOption rows
-// (the values that used to be hardcoded Go enums) if their tables are empty,
-// same first-run-only idiom as seedAdmin above. Existing Deals/Leads keep
-// validating fine post-migration because these are the exact strings already
-// stored on those rows.
+// seedPipelineConfig inserts the default PipelineStage/LeadSourceOption/...
+// option rows if their tables are empty, same first-run-only idiom as
+// seedAdmin above.
 func seedPipelineConfig(db *gorm.DB) {
 	var stageCount int64
 	db.Model(&models.PipelineStage{}).Count(&stageCount)

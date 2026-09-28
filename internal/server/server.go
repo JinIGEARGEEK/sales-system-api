@@ -18,6 +18,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/clientip"
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/handlers"
 	"github.com/igeargeek/sales-system-api/internal/routes"
@@ -54,28 +55,11 @@ const (
 // health check that never answers.
 const healthDBTimeout = 2 * time.Second
 
-// Option tweaks New for a non-production caller.
-type Option func(*options)
-
-type options struct {
-	accessLog bool
-}
-
-// WithoutAccessLog drops the per-request access-log middleware — for the
-// test suite, whose thousands of requests would otherwise bury real
-// failures in log noise. Error logging (apiErrorHandler) stays on.
-func WithoutAccessLog() Option {
-	return func(o *options) { o.accessLog = false }
-}
-
 // New builds the app for cfg/db/storage with every route registered.
-// Listening (and shutting down) is left to the caller.
-func New(cfg *config.Config, db *gorm.DB, storage utils.Storage, opts ...Option) *fiber.App {
-	o := options{accessLog: true}
-	for _, opt := range opts {
-		opt(&o)
-	}
-
+// proxies is cfg.TrustedProxies parsed by clientip.New, which keys the login
+// limiter. accessLog false drops the per-request access log (the test suite
+// sets it; error logging stays on). Listening and shutdown are the caller's.
+func New(cfg *config.Config, db *gorm.DB, storage utils.Storage, proxies *clientip.Resolver, accessLog bool) *fiber.App {
 	app := fiber.New(fiber.Config{
 		ErrorHandler: apiErrorHandler,
 		BodyLimit:    BodyLimit,
@@ -102,7 +86,7 @@ func New(cfg *config.Config, db *gorm.DB, storage utils.Storage, opts ...Option)
 	// Echoes/generates X-Request-ID; the response header lets a client (or
 	// this API's own frontend) report it back for support purposes too.
 	app.Use(requestid.New())
-	if o.accessLog {
+	if accessLog {
 		app.Use(logger.New(logger.Config{
 			Format: "${time} ${status} - ${latency} ${method} ${path} reqid=${locals:requestid}\n",
 		}))
@@ -132,7 +116,7 @@ func New(cfg *config.Config, db *gorm.DB, storage utils.Storage, opts ...Option)
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	routes.Setup(app, db, cfg, storage)
+	routes.Setup(app, db, cfg, storage, proxies)
 	return app
 }
 

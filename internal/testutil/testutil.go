@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/clientip"
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/database"
 	"github.com/igeargeek/sales-system-api/internal/handlers"
@@ -139,10 +140,10 @@ func buildConfig() *config.Config {
 		JWTExpiryHr: 720,
 		// database.Connect applies these as-is, and a zero MaxIdleConns
 		// would keep no idle connections at all (a fresh dial per query).
-		DBMaxOpenConns:    25,
-		DBMaxIdleConns:    10,
-		DBConnMaxLifetime: 30 * time.Minute,
-		DBConnMaxIdleTime: 5 * time.Minute,
+		DBMaxOpenConns:    config.DefaultDBMaxOpenConns,
+		DBMaxIdleConns:    config.DefaultDBMaxIdleConns,
+		DBConnMaxLifetime: config.DefaultDBConnMaxLifetime,
+		DBConnMaxIdleTime: config.DefaultDBConnMaxIdleTime,
 	}
 }
 
@@ -179,25 +180,6 @@ func ensureDatabase(cfg *config.Config) error {
 	return nil
 }
 
-// advisoryLock takes the cross-process testDBLockKey advisory lock on a
-// dedicated connection from sqlDB and returns the function that releases it.
-// Postgres scopes advisory locks to the current database, so the lock only
-// excludes holders connected to the same database as sqlDB.
-func advisoryLock(ctx context.Context, sqlDB *sql.DB) (func(), error) {
-	conn, err := sqlDB.Conn(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("reserve a dedicated connection for the advisory lock: %w", err)
-	}
-	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", testDBLockKey); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("acquire advisory lock: %w", err)
-	}
-	return func() {
-		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", testDBLockKey)
-		_ = conn.Close()
-	}, nil
-}
-
 // setup runs once per test binary (per sync.Once), but `go test ./...` runs
 // each package's test binary as its own OS process against the same shared
 // database — so multiple packages' setup() calls can run concurrently with
@@ -222,7 +204,7 @@ func setup() {
 		panic(fmt.Sprintf("testutil: open admin conn: %v", err))
 	}
 	defer adminDB.Close()
-	unlockAdmin, err := advisoryLock(ctx, adminDB)
+	unlockAdmin, err := database.AdvisoryLock(ctx, adminDB, testDBLockKey)
 	if err != nil {
 		panic(fmt.Sprintf("testutil: setup lock on admin database: %v", err))
 	}
@@ -240,7 +222,7 @@ func setup() {
 	if err != nil {
 		panic(fmt.Sprintf("testutil: get underlying *sql.DB: %v", err))
 	}
-	unlock, err := advisoryLock(ctx, sqlDB)
+	unlock, err := database.AdvisoryLock(ctx, sqlDB, testDBLockKey)
 	if err != nil {
 		panic(fmt.Sprintf("testutil: setup lock on test database: %v", err))
 	}
@@ -330,21 +312,12 @@ func TruncateAll(db *gorm.DB) error {
 	return nil
 }
 
-// testDBLockKey is an arbitrary constant used with Postgres's session-level
-// advisory lock (pg_advisory_lock/pg_advisory_unlock) to serialize every
-// caller of App across the whole test run — not just within one package.
-// Originally only the `tests` package touched this shared DB, so `go test`'s
-// default per-package parallelism (each package is its own OS process) never
-// raced. Once internal/middleware and internal/notifier grew their own tests
-// against the same DB, running plain `go test ./...` (as CI's `go test ./...
-// -v -race` does) could run those packages' test binaries concurrently,
-// racing TruncateAll's RESTART IDENTITY against another package's in-flight
-// inserts — surfaced as a sporadic "duplicate key value violates unique
-// constraint" on a table's serial primary key. The advisory lock is
-// acquired on a single dedicated connection held for the whole test (via
-// t.Cleanup) so a second process's App() call blocks until the first one's
-// test fully finishes, regardless of how many test binaries `go test` runs
-// side by side.
+// testDBLockKey is the advisory-lock key that serializes every App caller
+// across the whole test run, not just within one package: `go test ./...`
+// runs each package's test binary as its own process against this shared
+// DB, so without it one package's TruncateAll (RESTART IDENTITY) races
+// another's in-flight inserts. Held on a dedicated connection for the whole
+// test (t.Cleanup), so a second process's App() blocks until it finishes.
 const testDBLockKey = 725310
 
 // App returns a fresh Fiber app built by server.New — the same constructor
@@ -376,7 +349,10 @@ func AppWithConfig(t *testing.T, modify func(*config.Config)) (*fiber.App, *gorm
 	}
 	// MemoryStorage — no real disk or bucket needed for the suite to pass;
 	// see utils.Storage's doc.
-	app := server.New(cfg, testDB, utils.NewMemoryStorage(), server.WithoutAccessLog())
+	proxies, err := clientip.New(cfg.TrustedProxies)
+	require.NoError(t, err, "parse TrustedProxies")
+	// accessLog off: the suite's thousands of requests would bury failures.
+	app := server.New(cfg, testDB, utils.NewMemoryStorage(), proxies, false)
 	return app, testDB
 }
 
@@ -386,7 +362,7 @@ func acquireDBLock(t *testing.T) {
 	t.Helper()
 	sqlDB, err := testDB.DB()
 	require.NoError(t, err, "get underlying *sql.DB")
-	unlock, err := advisoryLock(context.Background(), sqlDB)
+	unlock, err := database.AdvisoryLock(context.Background(), sqlDB, testDBLockKey)
 	require.NoError(t, err, "acquire cross-process test DB lock")
 	t.Cleanup(unlock)
 }

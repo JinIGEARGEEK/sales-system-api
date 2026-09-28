@@ -79,13 +79,16 @@ type Config struct {
 	AdminInitialPassword string
 }
 
+// Connection-pool defaults, used when the DB_* pool vars are unset.
+const (
+	DefaultDBMaxOpenConns    = 25
+	DefaultDBMaxIdleConns    = 10
+	DefaultDBConnMaxLifetime = 30 * time.Minute
+	DefaultDBConnMaxIdleTime = 5 * time.Minute
+)
+
 func Load() *Config {
 	_ = godotenv.Load()
-
-	expiryHr, err := strconv.Atoi(getEnv("JWT_EXPIRY_HOURS", "720"))
-	if err != nil {
-		expiryHr = 720
-	}
 
 	return &Config{
 		AppEnv:      getEnv("APP_ENV", "development"),
@@ -98,7 +101,7 @@ func Load() *Config {
 		DBName:      getEnv("DB_NAME", "sales_system"),
 		DBSSLMode:   getEnv("DB_SSLMODE", "disable"),
 		JWTSecret:   getEnv("JWT_SECRET", "change-me-in-production"),
-		JWTExpiryHr: expiryHr,
+		JWTExpiryHr: getEnvInt("JWT_EXPIRY_HOURS", 720),
 		CORSOrigins: getEnv("CORS_ORIGINS", "*"),
 
 		SMTPHost:     getEnv("SMTP_HOST", ""),
@@ -116,10 +119,10 @@ func Load() *Config {
 		S3SecretAccessKey: getEnv("S3_SECRET_ACCESS_KEY", ""),
 		S3ForcePathStyle:  getEnv("S3_FORCE_PATH_STYLE", "false") == "true",
 
-		DBMaxOpenConns:    getEnvInt("DB_MAX_OPEN_CONNS", 25),
-		DBMaxIdleConns:    getEnvInt("DB_MAX_IDLE_CONNS", 10),
-		DBConnMaxLifetime: getEnvDuration("DB_CONN_MAX_LIFETIME", 30*time.Minute),
-		DBConnMaxIdleTime: getEnvDuration("DB_CONN_MAX_IDLE_TIME", 5*time.Minute),
+		DBMaxOpenConns:    getEnvInt("DB_MAX_OPEN_CONNS", DefaultDBMaxOpenConns),
+		DBMaxIdleConns:    getEnvInt("DB_MAX_IDLE_CONNS", DefaultDBMaxIdleConns),
+		DBConnMaxLifetime: getEnvDuration("DB_CONN_MAX_LIFETIME", DefaultDBConnMaxLifetime),
+		DBConnMaxIdleTime: getEnvDuration("DB_CONN_MAX_IDLE_TIME", DefaultDBConnMaxIdleTime),
 
 		TrustedProxies: loadTrustedProxies(),
 
@@ -128,16 +131,10 @@ func Load() *Config {
 }
 
 // railwayPrivateRanges is the TRUSTED_PROXIES default on Railway: the
-// RFC 1918, RFC 6598 (CGNAT) and IPv6 ULA ranges. Traffic only reaches the
-// container through Railway's edge proxy (or from a service on the
-// project's own private network), so a private-range peer is Railway's
-// infrastructure, not an arbitrary internet client — and clientip reads
-// X-Forwarded-For right to left, so even a trusted peer can't make a
-// client-supplied (leftmost) entry the key. Which exact range the edge
-// connects from isn't documented, hence the whole private space; if it's
-// none of these, the limiter falls back to keying on the proxy's address
-// (one shared bucket) and clientip logs a warning naming the untrusted
-// peer, so the operator can set TRUSTED_PROXIES to it.
+// RFC 1918, CGNAT and IPv6 ULA ranges. Only Railway's edge proxy (or the
+// project's own private network) can reach the container from these, and
+// Railway doesn't document which range the edge uses, hence all of them.
+// If it's none, clientip logs the untrusted peer to put in TRUSTED_PROXIES.
 var railwayPrivateRanges = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7"}
 
 // loadTrustedProxies parses TRUSTED_PROXIES (comma-separated IPs/CIDRs, or

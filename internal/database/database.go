@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -61,47 +62,51 @@ func Connect(cfg *config.Config) (*gorm.DB, error) {
 	return db, nil
 }
 
-// bootLockKey is the Postgres advisory-lock key WithBootLock holds. Any
-// constant works as long as nothing else in this database uses it
-// (testutil's testDBLockKey is a different value, and only ever taken
-// against the test database).
+// bootLockKey is the advisory-lock key WithBootLock holds — any constant
+// nothing else in this database uses (testutil's testDBLockKey differs).
 const bootLockKey = 4217350
 
-// WithBootLock runs fn while holding a session-level Postgres advisory
-// lock, so when several replicas boot at once (a scaled-out service, or a
-// rolling deploy overlapping the old instance's restart) only one at a time
-// runs AutoMigrate, the backfills and the seeds. Without it two replicas
-// race each other's ALTER TABLEs and count-then-insert seeds (both see an
-// empty users table and both create an Admin). The later replicas block
-// until the first finishes, then find everything already done — every
-// migration step and seed is idempotent, so running them again is a no-op.
-//
-// The lock is taken on one dedicated *sql.Conn (a session-level advisory
-// lock belongs to the connection that took it, so taking and releasing it
-// through the pool could land on two different connections), same as
-// testutil's advisoryLock. fn itself runs on the normal pool.
+// WithBootLock runs fn while holding the bootLockKey advisory lock, so when
+// several replicas boot at once only one at a time runs AutoMigrate, the
+// backfills and the seeds (otherwise they race each other's ALTER TABLEs and
+// count-then-insert seeds, e.g. both creating an Admin). Later replicas
+// block until the first finishes, then find every idempotent step already
+// done. ctx only bounds waiting for the lock; fn runs on the normal pool.
 func WithBootLock(ctx context.Context, db *gorm.DB, fn func() error) error {
 	sqlDB, err := db.DB()
 	if err != nil {
 		return fmt.Errorf("get underlying *sql.DB: %w", err)
 	}
+	release, err := AdvisoryLock(ctx, sqlDB, bootLockKey)
+	if err != nil {
+		return fmt.Errorf("boot lock: %w", err)
+	}
+	defer release()
+	return fn()
+}
+
+// AdvisoryLock blocks until it holds the session-level Postgres advisory
+// lock key, and returns the function that releases it. The lock lives on
+// one dedicated connection: a session lock belongs to the connection that
+// took it, so locking and unlocking through the pool could hit two
+// different ones, and conn.Close alone would return the still-locked
+// session to the pool. Postgres scopes the lock to sqlDB's database.
+func AdvisoryLock(ctx context.Context, sqlDB *sql.DB, key int64) (release func(), err error) {
 	conn, err := sqlDB.Conn(ctx)
 	if err != nil {
-		return fmt.Errorf("reserve a connection for the boot lock: %w", err)
+		return nil, fmt.Errorf("reserve a connection for advisory lock %d: %w", key, err)
 	}
-	defer func() { _ = conn.Close() }()
-	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", bootLockKey); err != nil {
-		return fmt.Errorf("acquire boot lock: %w", err)
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", key); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("acquire advisory lock %d: %w", key, err)
 	}
-	// Unlock explicitly rather than relying on conn.Close: Close only
-	// returns the connection to the pool, where the session (and its lock)
-	// would live on. Background ctx so a cancelled boot still releases it.
-	defer func() {
-		if _, err := conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", bootLockKey); err != nil {
-			log.Printf("database: failed to release boot lock: %v", err)
+	return func() {
+		// Background, so a cancelled ctx can't skip the unlock.
+		if _, err := conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key); err != nil {
+			log.Printf("database: failed to release advisory lock %d: %v", key, err)
 		}
-	}()
-	return fn()
+		_ = conn.Close()
+	}, nil
 }
 
 // AutoMigrate creates/updates every table this API owns. Kept as a single explicit
@@ -215,8 +220,8 @@ func AutoMigrate(db *gorm.DB) error {
 // data_migrations row.
 const installmentAlertContextsBackfill = "installment_alert_contexts_backfill"
 
-// BackfillInstallmentAlertContexts (called from AutoMigrate; exported for
-// its test) re-keys payment_installment NotificationLog rows written before
+// BackfillInstallmentAlertContexts (called from AutoMigrate)
+// re-keys payment_installment NotificationLog rows written before
 // the rule's context became the alert state ("due_soon"/"overdue"). Those
 // rows have context "", so without this every installment already alerted
 // would alert again under its new key. Each row gets the state it fired in:
@@ -254,8 +259,8 @@ var companySizeLegacyNames = map[string]string{
 // presence also marks this migration as done (see below).
 const companySizeCatchAll = "> 100 คน"
 
-// MigrateCompanySizeDefaults (called from AutoMigrate; exported for its
-// test) brings a database seeded before 2026-09-22 up to the current
+// MigrateCompanySizeDefaults (called from AutoMigrate)
+// brings a database seeded before 2026-09-22 up to the current
 // Company Size defaults. The defaults are only inserted into an
 // empty table (cmd/api/main.go), so existing databases kept the old
 // unit-less names and never got the "> 100 คน" bucket.
@@ -316,7 +321,7 @@ func MigrateCompanySizeDefaults(db *gorm.DB) error {
 	})
 }
 
-// BackfillStageEnteredAt (exported for its test) populates the new Deal/Lead/Prospect
+// BackfillStageEnteredAt populates the new Deal/Lead/Prospect
 // stage_entered_at column (see models/stage_entered.go) for rows created
 // before it existed. Only touches rows still NULL, so it's safe to re-run on
 // every boot. Best available evidence per table:
@@ -405,7 +410,7 @@ func runOnce(db *gorm.DB, name string, fn func(tx *gorm.DB) error) error {
 // cardPositionsBackfill names BackfillCardPositions' data_migrations row.
 const cardPositionsBackfill = "card_positions_backfill"
 
-// BackfillCardPositions (called from AutoMigrate; exported for its test)
+// BackfillCardPositions (called from AutoMigrate)
 // gives every Deal/Lead/Prospect still at position 0 a real Kanban position
 // (see Deal.Position's doc comment), appended after the lane's highest
 // non-zero position in created_at order. Partitioned per lane (Stage for
@@ -467,7 +472,7 @@ func backfillCompanyDomains(db *gorm.DB) error {
 	return nil
 }
 
-// NormalizeCompanyTaxIDs (called from AutoMigrate; exported for its test)
+// NormalizeCompanyTaxIDs (called from AutoMigrate)
 // rewrites every stored tax_id into utils.NormalizeTaxID's form, the form
 // Create/Update now save and ?tax_id= matches, so a row saved earlier as
 // "0-1055-55555-55-5" is still found by its 13 digits. A value that
@@ -520,21 +525,13 @@ func ensureCompanyDomainUniqueIndex(db *gorm.DB) error {
 	return nil
 }
 
-// backfillLowercaseTags normalizes every pre-existing Company/Contact Tags
-// array to lowercase/trimmed/deduplicated — the same normalization
-// normalizeTags (handlers/companies.go) now applies on every Create/Update —
-// so the case-insensitive `?tag=` filter (handlers/filters.go's tagFilter)
-// can stay a plain `= ANY(tags)` lookup the GIN tags index can serve,
-// instead of an unnest+LOWER() scan needed to also cover not-yet-normalized
-// legacy rows.
-//
-// Only rewrites rows that actually need it (tagsNeedNormalizing) — it used
-// to rewrite every tagged Company/Contact on every boot, a full-table write
-// (new row versions, index churn, WAL) that changed nothing once the data
-// was clean. Kept re-runnable rather than runOnce so it still heals a row
-// some non-normalizing writer (an old instance mid rolling deploy, a
-// future import path) leaves behind; on clean data it writes nothing.
-// Exported for its test.
+// BackfillLowercaseTags normalizes every Company/Contact Tags array to
+// lowercase/trimmed/deduplicated — what normalizeTags (handlers/companies.go)
+// applies on every write — so the case-insensitive `?tag=` filter can stay a
+// plain `= ANY(tags)` the GIN index serves. Only rewrites rows that need it
+// (tagsNeedNormalizing), so on clean data it writes nothing; kept
+// re-runnable rather than runOnce to heal rows a non-normalizing writer
+// (e.g. an old instance mid rolling deploy) leaves behind.
 func BackfillLowercaseTags(db *gorm.DB) error {
 	for _, table := range []string{"companies", "contacts"} {
 		if err := db.Exec(fmt.Sprintf(`

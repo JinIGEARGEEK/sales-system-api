@@ -1,7 +1,6 @@
 package routes
 
 import (
-	"fmt"
 	"strconv"
 	"time"
 
@@ -17,24 +16,6 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
-
-// clientIP builds the login limiter's key function. This app's only
-// deployment target is Railway (railway.toml/Dockerfile), whose edge proxy
-// sits in front of every request — the socket address alone would put every
-// user into the proxy's one shared rate-limit bucket (see loginLimiter
-// below). But X-Forwarded-For is client-writable, and trusting its leftmost
-// entry from anyone (as this used to) let a brute-forcer mint a fresh
-// bucket per attempt. internal/clientip only reads the header from
-// cfg.TrustedProxies peers (TRUSTED_PROXIES; Railway's private ranges by
-// default there) and right to left — see its package doc. cmd/api/main.go
-// already validated the list at boot, so a parse error here is a bug.
-func clientIP(cfg *config.Config) func(*fiber.Ctx) string {
-	r, err := clientip.New(cfg.TrustedProxies)
-	if err != nil {
-		panic(fmt.Sprintf("routes: %v", err))
-	}
-	return r.ClientIP
-}
 
 // swaggerUIHTML renders swagger-ui-dist (CDN-hosted, not a Go dependency)
 // against the embedded /swagger/doc.json — see docs.JSON's doc for why this
@@ -56,8 +37,9 @@ const swaggerUIHTML = `<!DOCTYPE html>
 
 // Setup registers every route under /api/v1 — api-system-spec.md. storage
 // backs Quote/Contract/Attachment uploads and the /uploads download route —
-// see biz_spec/s3-migration-plan.md and utils.Storage.
-func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storage) {
+// see biz_spec/s3-migration-plan.md and utils.Storage. proxies keys the
+// login rate limiter (see internal/clientip).
+func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storage, proxies *clientip.Resolver) {
 	authH := handlers.NewAuthHandler(db, cfg)
 	userH := handlers.NewUserHandler(db)
 	leadH := handlers.NewLeadHandler(db)
@@ -126,11 +108,13 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// Auth — POST /auth/login is the only unauthenticated route, so it's the
 	// only one a brute-force credential-stuffing attempt could hit without a
 	// token at all. Rate-limit by IP: generous enough for a mistyped password
-	// but not for scripted guessing.
+	// but not for scripted guessing. Behind Railway's edge proxy the socket
+	// peer is the proxy, so the key comes from X-Forwarded-For — read only
+	// from TRUSTED_PROXIES peers, right to left (see internal/clientip).
 	loginLimiter := limiter.New(limiter.Config{
 		Max:          10,
 		Expiration:   1 * time.Minute,
-		KeyGenerator: clientIP(cfg),
+		KeyGenerator: proxies.ClientIP,
 		LimitReached: func(c *fiber.Ctx) error {
 			return utils.ErrorResponse(c, fiber.StatusTooManyRequests, "TOO_MANY_REQUESTS", "Too many login attempts — try again shortly")
 		},

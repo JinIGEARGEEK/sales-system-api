@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/igeargeek/sales-system-api/internal/clientip"
 	"github.com/igeargeek/sales-system-api/internal/database"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/server"
@@ -112,7 +113,7 @@ func TestHealth_503WhenDatabaseUnreachable(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, sqlDB.Close())
 
-	app := server.New(cfg, db, utils.NewMemoryStorage(), server.WithoutAccessLog())
+	app := server.New(cfg, db, utils.NewMemoryStorage(), &clientip.Resolver{}, false)
 	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/health", nil), -1)
 	require.NoError(t, err)
 	defer resp.Body.Close()
