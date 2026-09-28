@@ -6,6 +6,7 @@
 package notifier
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -25,14 +26,9 @@ const workflowRuleInterval = 15 * time.Minute
 // that newly matches, creates an in-app Task for its owner (rule.CreateTask)
 // and emails the resolved recipients. The Task is the alert that always
 // arrives: this company runs without SMTP, where utils.SendMail no-ops.
-func StartWorkflowRuleReminders(db *gorm.DB, cfg *config.Config) {
-	ticker := time.NewTicker(workflowRuleInterval)
-	go func() {
-		checkWorkflowRules(db, cfg)
-		for range ticker.C {
-			checkWorkflowRules(db, cfg)
-		}
-	}()
+// Stops when ctx is cancelled (see runEvery).
+func StartWorkflowRuleReminders(ctx context.Context, db *gorm.DB, cfg *config.Config) {
+	runEvery(ctx, "workflow rules", workflowRuleInterval, func() { checkWorkflowRules(db, cfg) })
 }
 
 func checkWorkflowRules(db *gorm.DB, cfg *config.Config) {
@@ -127,7 +123,7 @@ func recipientEmails(db *gorm.DB, owner *models.User, role models.NotificationRe
 
 func sendRuleNotification(cfg *config.Config, emails []string, subject, body string) {
 	for _, email := range emails {
-		if err := utils.SendMail(cfg, email, subject, body); err != nil {
+		if err := sendMail(cfg, email, subject, body); err != nil {
 			log.Printf("notifier: failed to send workflow rule email to %s: %v", email, err)
 		}
 	}

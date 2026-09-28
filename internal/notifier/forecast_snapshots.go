@@ -5,37 +5,52 @@
 package notifier
 
 import (
+	"context"
 	"log"
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
-const forecastSnapshotInterval = 24 * time.Hour
+// forecastSnapshotInterval is how often the job checks whether today's
+// snapshot exists yet — hourly rather than daily, since the check is one
+// indexed count: a pass that failed (DB blip) is retried within the hour
+// instead of losing the whole day, and the first pass of a new local day
+// happens soon after midnight rather than at whatever time of day the
+// process happened to boot.
+const forecastSnapshotInterval = time.Hour
 
 // StartForecastSnapshots launches a background goroutine that captures one
 // ForecastSnapshot per day for the current (Year, Quarter). Idempotent across
-// restarts — takeForecastSnapshot skips the day if a snapshot already exists
-// for today's date, so a redeploy mid-day never produces a duplicate row.
-func StartForecastSnapshots(db *gorm.DB, cfg *config.Config) {
-	ticker := time.NewTicker(forecastSnapshotInterval)
-	go func() {
-		takeForecastSnapshot(db)
-		for range ticker.C {
-			takeForecastSnapshot(db)
-		}
-	}()
+// restarts and replicas — takeForecastSnapshot skips the day if a snapshot
+// already exists for today's date, and the insert yields to a concurrent
+// one on the snapshot_date unique index. Stops when ctx is cancelled (see
+// runEvery).
+func StartForecastSnapshots(ctx context.Context, db *gorm.DB, cfg *config.Config) {
+	runEvery(ctx, "forecast snapshots", forecastSnapshotInterval, func() { takeForecastSnapshot(db, time.Now()) })
 }
 
-func takeForecastSnapshot(db *gorm.DB) {
-	today := time.Now().Truncate(24 * time.Hour)
+// takeForecastSnapshot writes now's day's snapshot unless one exists. Any
+// query failure skips the day's row entirely (retried next tick): it used
+// to carry on and write zeros, and since snapshot_date is unique that
+// wrong row then blocked the correct one for the rest of the day.
+func takeForecastSnapshot(db *gorm.DB, now time.Time) {
+	// The server-local calendar day (TZ, Asia/Bangkok in the image) — this
+	// used to be time.Now().Truncate(24h), which is midnight UTC: from
+	// 00:00 to 07:00 Bangkok time that was still "yesterday", so the day's
+	// snapshot was taken 7 hours late and stamped with the previous date.
+	today := utils.Today(now)
 
 	var existing int64
-	db.Model(&models.ForecastSnapshot{}).Where("snapshot_date = ?", today).Count(&existing)
+	if err := db.Model(&models.ForecastSnapshot{}).Where("snapshot_date = ?", today).Count(&existing).Error; err != nil {
+		log.Printf("notifier: forecast snapshot: check existing: %v", err)
+		return
+	}
 	if existing > 0 {
 		return
 	}
@@ -53,12 +68,15 @@ func takeForecastSnapshot(db *gorm.DB) {
 		Category string
 		Value    float64
 	}
-	db.Model(&models.Deal{}).
+	if err := db.Model(&models.Deal{}).
 		Where("status = ? AND expected_close_date >= ? AND expected_close_date < ?",
 			models.DealStatusOpen, rangeStart.Format("2006-01-02"), rangeEnd.Format("2006-01-02")).
 		Select("COALESCE(forecast_category, 'Pipeline') as category, " +
 			"COALESCE(SUM(value * COALESCE(probability, 0) / 100.0), 0) as value").
-		Group("category").Scan(&rows)
+		Group("category").Scan(&rows).Error; err != nil {
+		log.Printf("notifier: forecast snapshot: open pipeline: %v", err)
+		return
+	}
 
 	snapshot := models.ForecastSnapshot{SnapshotDate: today, Year: year, Quarter: quarter}
 	for _, r := range rows {
@@ -75,13 +93,19 @@ func takeForecastSnapshot(db *gorm.DB) {
 	snapshot.SalesTarget = quarterlyTarget(db, year, quarter)
 
 	var actualWon float64
-	db.Model(&models.Deal{}).
+	if err := db.Model(&models.Deal{}).
 		Where("status = ? AND expected_close_date >= ? AND expected_close_date < ?",
 			models.DealStatusWon, rangeStart.Format("2006-01-02"), rangeEnd.Format("2006-01-02")).
-		Select("COALESCE(SUM(value), 0)").Scan(&actualWon)
+		Select("COALESCE(SUM(value), 0)").Scan(&actualWon).Error; err != nil {
+		log.Printf("notifier: forecast snapshot: won to date: %v", err)
+		return
+	}
 	snapshot.ActualWonToDate = actualWon
 
-	if err := db.Create(&snapshot).Error; err != nil {
+	// DO NOTHING on the snapshot_date unique index: with several replicas
+	// each one's pass can get past the count above at the same moment, and
+	// the loser's row would be identical anyway.
+	if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&snapshot).Error; err != nil {
 		log.Printf("notifier: failed to create forecast snapshot: %v", err)
 	}
 }
