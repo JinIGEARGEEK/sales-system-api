@@ -28,9 +28,10 @@ import (
 // already lowercases every tag at write time, and database.go's
 // backfillLowercaseTags normalized every pre-existing row the same way.
 // Shared by applyCompanyFilters and applyContactFilters, which both store
-// Tags the same way (pq.StringArray).
-func tagFilter(query *gorm.DB, v string) *gorm.DB {
-	return query.Where("? = ANY(tags)", strings.ToLower(v))
+// Tags the same way (pq.StringArray); table qualifies the column, since a
+// Contact list sorted by company_name joins companies, which has tags too.
+func tagFilter(query *gorm.DB, table, v string) *gorm.DB {
+	return query.Where("? = ANY("+table+".tags)", strings.ToLower(v))
 }
 
 // applyCompanyFilters applies the filters shared by CompanyHandler.List and
@@ -44,7 +45,7 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) (*gorm.DB, error) {
 		// active/archived (now enforced on write, see normalizeCompanyStatus),
 		// but older/imported rows may not be, so match defensively rather
 		// than silently excluding them.
-		query = query.Where("LOWER(status) = LOWER(?)", v)
+		query = query.Where("LOWER(companies.status) = LOWER(?)", v)
 	}
 	if v := c.Query("industry"); v != "" {
 		// Case-insensitive: industry is free text that auto-registers
@@ -52,19 +53,19 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) (*gorm.DB, error) {
 		// "Tech" and "tech" can both exist on stored rows even though
 		// they're meant to be the same industry. Backed by an expression
 		// index (database.go) since this can't use industry's plain index.
-		query = query.Where("LOWER(industry) = LOWER(?)", v)
+		query = query.Where("LOWER(companies.industry) = LOWER(?)", v)
 	}
 	if v := c.Query("tag"); v != "" {
-		query = tagFilter(query, v)
+		query = tagFilter(query, "companies", v)
 	}
 	if v := c.Query("search"); v != "" {
 		like := utils.LikePattern(v)
-		clause, args := "name ILIKE ? ESCAPE '\\' OR website ILIKE ? ESCAPE '\\'", []interface{}{like, like}
+		clause, args := "companies.name ILIKE ? ESCAPE '\\' OR companies.website ILIKE ? ESCAPE '\\'", []interface{}{like, like}
 		// Tax IDs are stored without spaces/dashes, so the term is normalized
 		// the same way before matching that column. Skipped when nothing is
 		// left ("-"), since an empty pattern would match every tax ID.
 		if taxID := utils.NormalizeTaxID(v); taxID != "" {
-			clause += " OR tax_id ILIKE ? ESCAPE '\\'"
+			clause += " OR companies.tax_id ILIKE ? ESCAPE '\\'"
 			args = append(args, utils.LikePattern(taxID))
 		}
 		query = query.Where(clause, args...)
@@ -79,10 +80,10 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) (*gorm.DB, error) {
 	// normalization store blank as NULL). An empty ?tax_id= is still "no
 	// filter", like every other parameter.
 	if raw := c.Query("tax_id"); raw != "" {
-		query = query.Where("tax_id = ?", utils.NormalizeTaxID(raw))
+		query = query.Where("companies.tax_id = ?", utils.NormalizeTaxID(raw))
 	}
 	if v := strings.TrimSpace(c.Query("branch_code")); v != "" {
-		query = query.Where("branch_code = ?", v)
+		query = query.Where("companies.branch_code = ?", v)
 	}
 	// updated_since (inclusive, RFC 3339 or YYYY-MM-DD) — lets a sync pull
 	// only the Companies changed since its last run.
@@ -124,53 +125,58 @@ func applyCompanyFilters(query *gorm.DB, c *fiber.Ctx) (*gorm.DB, error) {
 }
 
 // applyContactFilters applies company_id/status/tag/search filters shared by
-// ContactHandler.List and ExportHandler.Contacts.
+// ContactHandler.List and ExportHandler.Contacts. Every column is qualified
+// with contacts.: sort=company_name joins companies (utils.
+// ApplyCompanyNameSort), which also has status/name/email/tags, and a bare
+// column there is a 500 ("column reference is ambiguous").
 func applyContactFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 	if v := c.Query("company_id"); v != "" {
-		query = query.Where("company_id = ?", v)
+		query = query.Where("contacts.company_id = ?", v)
 	}
 	if v := c.Query("status"); v != "" {
 		// Case-insensitive: Status is meant to be the canonical lowercase
 		// active/archived (now enforced on write, see
 		// normalizeActiveArchivedStatus), but older/imported rows may not
 		// be, so match defensively rather than silently excluding them.
-		query = query.Where("LOWER(status) = LOWER(?)", v)
+		query = query.Where("LOWER(contacts.status) = LOWER(?)", v)
 	}
 	if v := c.Query("tag"); v != "" {
-		query = tagFilter(query, v)
+		query = tagFilter(query, "contacts", v)
 	}
 	if v := c.Query("search"); v != "" {
 		like := utils.LikePattern(v)
-		query = query.Where("name ILIKE ? ESCAPE '\\' OR email ILIKE ? ESCAPE '\\'", like, like)
+		query = query.Where("contacts.name ILIKE ? ESCAPE '\\' OR contacts.email ILIKE ? ESCAPE '\\'", like, like)
 	}
 	return query
 }
 
 // applyDealFilters applies stage/status/company_id/assigned_to/business_unit/
 // channel/search filters shared by DealHandler.List and ExportHandler.Deals.
+// Columns are qualified with deals. for the same reason as
+// applyContactFilters: sort=company_name joins companies (status, ...).
 func applyDealFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 	if v := c.Query("stage"); v != "" {
-		query = query.Where("stage = ?", v)
+		query = query.Where("deals.stage = ?", v)
 	}
 	if v := c.Query("status"); v != "" {
-		query = query.Where("status = ?", v)
+		query = query.Where("deals.status = ?", v)
 	}
 	if v := c.Query("company_id"); v != "" {
-		query = query.Where("company_id = ?", v)
+		query = query.Where("deals.company_id = ?", v)
 	}
 	if v := c.Query("assigned_to"); v == "unassigned" {
-		query = query.Where("assigned_to IS NULL")
+		query = query.Where("deals.assigned_to IS NULL")
 	} else if v != "" {
-		query = query.Where("assigned_to = ?", v)
+		query = query.Where("deals.assigned_to = ?", v)
 	}
 	if v := c.Query("business_unit"); v != "" {
-		query = query.Where("business_unit = ?", v)
+		query = query.Where("deals.business_unit = ?", v)
 	}
 	if v := c.Query("channel"); v != "" {
-		query = query.Where("channel = ?", v)
+		query = query.Where("deals.channel = ?", v)
 	}
 	if v := c.Query("search"); v != "" {
-		query = query.Where("title ILIKE ? ESCAPE '\\'", utils.LikePattern(v))
+		query = query.Where("deals.title ILIKE ? ESCAPE '\\'", utils.LikePattern(v))
 	}
 	return query
 }
