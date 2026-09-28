@@ -3,6 +3,7 @@ package handlers
 import (
 	"errors"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -27,83 +28,69 @@ func NewAttachmentHandler(db *gorm.DB, storage utils.Storage) *AttachmentHandler
 // of models.AttachmentRelated*" result, answered with a 422.
 var errUnknownRelatedType = errors.New("unknown related_type")
 
-// isSalesPipelineRole mirrors routes.go's salesPipelineRoles gate (the
-// /deals group, and prospectRoles, which is the same four roles).
-func isSalesPipelineRole(role models.Role) bool {
-	switch role {
-	case models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager, models.RoleMarketing:
-		return true
-	}
-	return false
+// attachmentParent describes one related_type: whether reading it is
+// limited to models.SalesPipelineRoles, and how to load it. load returns
+// the owner CanWrite checks on a write, or ok=false when the parent has no
+// ownership rule; a missing record is gorm's not-found error.
+type attachmentParent struct {
+	pipelineOnly bool
+	load         func(db *gorm.DB, id uint) (owner *uint, ok bool, err error)
+}
+
+// assignedOwner loads a T row's assigned_to.
+func assignedOwner[T any](db *gorm.DB, id uint) (*uint, bool, error) {
+	var row struct{ AssignedTo *uint }
+	err := db.Model(new(T)).Select("assigned_to").Where("id = ?", id).Take(&row).Error
+	return row.AssignedTo, true, err
+}
+
+// quoteOwner is a Quote's Deal's assigned_to, in one joined query.
+func quoteOwner(db *gorm.DB, id uint) (*uint, bool, error) {
+	var row struct{ AssignedTo *uint }
+	err := db.Model(&models.Quote{}).Select("deals.assigned_to").
+		Joins("JOIN deals ON deals.id = quotes.deal_id AND deals.deleted_at IS NULL").
+		Where("quotes.id = ?", id).Take(&row).Error
+	return row.AssignedTo, true, err
+}
+
+// unowned only checks a T row exists.
+func unowned[T any](db *gorm.DB, id uint) (*uint, bool, error) {
+	return nil, false, db.Select("id").First(new(T), id).Error
+}
+
+// attachmentParents mirrors each parent's own routes: Deals/Quotes/Prospects
+// are readable by SalesPipelineRoles only, Leads/Companies/Projects by any
+// authenticated role; writes add the parent's CanWrite ownership rule where
+// it has one (a Quote's is its Deal's, as in dealForSubResource).
+var attachmentParents = map[models.AttachmentRelatedType]attachmentParent{
+	models.AttachmentRelatedDeal:     {pipelineOnly: true, load: assignedOwner[models.Deal]},
+	models.AttachmentRelatedQuote:    {pipelineOnly: true, load: quoteOwner},
+	models.AttachmentRelatedProspect: {pipelineOnly: true, load: assignedOwner[models.Prospect]},
+	models.AttachmentRelatedLead:     {load: assignedOwner[models.Lead]},
+	models.AttachmentRelatedCompany:  {load: unowned[models.Company]},
+	models.AttachmentRelatedProject:  {load: unowned[models.Project]},
 }
 
 // attachmentParentAccess checks the record an attachment hangs off exists
-// and that the caller may read it (write=false) or attach to it (write=true).
-// Read access mirrors that record's own GET route: Deals/Quotes/Prospects
-// are salesPipelineRoles-only, Leads/Companies/Projects are readable by any
-// authenticated role. Write access adds the parent's CanWrite ownership rule
-// where it has one (Deal, Quote via its Deal, Lead, Prospect) — the same
-// check editing the parent itself would apply, same reasoning as
-// dealForSubResource. Returns errUnknownRelatedType, errForbidden, or the
-// gorm not-found error for respondAttachmentParentErr.
+// and that the caller may read it (write=false) or attach to it (write=true)
+// — see attachmentParents. Returns errUnknownRelatedType, errForbidden, or
+// the gorm not-found error for respondAttachmentParentErr.
 func attachmentParentAccess(c *fiber.Ctx, db *gorm.DB, relatedType models.AttachmentRelatedType, relatedID uint, write bool) error {
-	pipelineOnly := func() error {
-		if !isSalesPipelineRole(middleware.CurrentRole(c)) {
-			return errForbidden
-		}
-		return nil
+	parent, known := attachmentParents[relatedType]
+	if !known {
+		return errUnknownRelatedType
 	}
-	owned := func(assignedTo *uint) error {
-		if write && !CanWrite(c, assignedTo) {
-			return errForbidden
-		}
-		return nil
+	if parent.pipelineOnly && !slices.Contains(models.SalesPipelineRoles, middleware.CurrentRole(c)) {
+		return errForbidden
 	}
-
-	switch relatedType {
-	case models.AttachmentRelatedDeal:
-		if err := pipelineOnly(); err != nil {
-			return err
-		}
-		var deal models.Deal
-		if err := db.Select("id, assigned_to").First(&deal, relatedID).Error; err != nil {
-			return err
-		}
-		return owned(deal.AssignedTo)
-	case models.AttachmentRelatedQuote:
-		if err := pipelineOnly(); err != nil {
-			return err
-		}
-		var quote models.Quote
-		if err := db.Select("id, deal_id").First(&quote, relatedID).Error; err != nil {
-			return err
-		}
-		var deal models.Deal
-		if err := db.Select("id, assigned_to").First(&deal, quote.DealID).Error; err != nil {
-			return err
-		}
-		return owned(deal.AssignedTo)
-	case models.AttachmentRelatedProspect:
-		if err := pipelineOnly(); err != nil {
-			return err
-		}
-		var prospect models.Prospect
-		if err := db.Select("id, assigned_to").First(&prospect, relatedID).Error; err != nil {
-			return err
-		}
-		return owned(prospect.AssignedTo)
-	case models.AttachmentRelatedLead:
-		var lead models.Lead
-		if err := db.Select("id, assigned_to").First(&lead, relatedID).Error; err != nil {
-			return err
-		}
-		return owned(lead.AssignedTo)
-	case models.AttachmentRelatedCompany:
-		return db.Select("id").First(&models.Company{}, relatedID).Error
-	case models.AttachmentRelatedProject:
-		return db.Select("id").First(&models.Project{}, relatedID).Error
+	owner, owned, err := parent.load(db, relatedID)
+	if err != nil {
+		return err
 	}
-	return errUnknownRelatedType
+	if write && owned && !CanWrite(c, owner) {
+		return errForbidden
+	}
+	return nil
 }
 
 // respondAttachmentParentErr maps attachmentParentAccess's error to a
