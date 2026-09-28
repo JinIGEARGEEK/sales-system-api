@@ -13,15 +13,14 @@ import (
 )
 
 // TestDashboardSummary_TrendsBucketByLocalMonth guards the trends splitting
-// months at Bangkok midnight. to_char(created_at, 'YYYY-MM') grouped in the
-// DB session's zone (UTC), so a Deal won in the first seven hours of the 1st
-// landed in the previous month; LEFT(expected_close_date, 7) did the same to
-// a close date stored as a JS Date ("…T17:00:00.000Z" the day before).
+// months at Bangkok midnight, not the DB session's UTC: a Deal won in the
+// first seven hours of the 1st, or a close date stored as a JS Date
+// ("…T17:00:00.000Z" the day before), belongs to the new month.
 func TestDashboardSummary_TrendsBucketByLocalMonth(t *testing.T) {
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 
-	now := time.Now().In(ictZone)
+	now := time.Now()
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, ictZone)
 	nextMonth := monthStart.AddDate(0, 1, 0)
 

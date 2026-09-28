@@ -12,10 +12,10 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/calendar"
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/testutil"
-	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
 // sentMail is one captured sendMail call.
@@ -251,7 +251,7 @@ func failingDealQueries(t *testing.T, db *gorm.DB) *gorm.DB {
 func TestTakeForecastSnapshot_SkipsOnQueryErrorAndUsesLocalDay(t *testing.T) {
 	_, db := testutil.App(t)
 	now := time.Now()
-	today := utils.Today(now)
+	today := calendar.Today(now)
 	closeDate := today.Format("2006-01-02")
 	prob := 50
 	commit := models.ForecastCategoryCommit
@@ -323,15 +323,13 @@ func TestRunEvery_RecoversPanicsAndStopsOnCancel(t *testing.T) {
 }
 
 // A Sent quote is still valid through its whole validity date (local time),
-// so on that last day it's inside the expiring window — the rule used to
-// compare the date's UTC-midnight instant with now, which dropped it from
-// 07:00 Bangkok onward.
+// so on that last day it's inside the expiring window, even after 07:00
+// Bangkok (UTC midnight of a bare date).
 func TestQuoteExpiringRule_LastValidDayStillFires(t *testing.T) {
-	bangkok := time.FixedZone("ICT", 7*3600)
 	_, db := testutil.App(t)
 	owner := testutil.CreateUser(t, db, models.RoleSalesRep)
 	deal := seedDealForNotifier(t, db, &owner.ID)
-	now := time.Date(2026, 9, 28, 10, 0, 0, 0, bangkok)
+	now := time.Date(2026, 9, 28, 10, 0, 0, 0, time.Local)
 	lastDay := "2026-09-28"
 	require.NoError(t, db.Create(&models.Quote{DealID: deal.ID, Status: models.QuoteStatusSent, ValidityDate: &lastDay}).Error)
 	rule := seedRule(t, db, models.NotificationEntityQuote, 7, true)

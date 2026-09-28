@@ -8,9 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/calendar"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/testutil"
-	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
 // testutil.Config() has no SMTP_HOST, so every test here also exercises the
@@ -188,7 +188,7 @@ func TestRenewalWindow(t *testing.T) {
 
 	_, db := testutil.App(t)
 	deal := seedDealForNotifier(t, db, nil)
-	today := utils.Today(time.Now())
+	today := calendar.Today(time.Now())
 	want := map[int]bool{31: false, 30: true, 0: true, -1: true, -30: true, -31: false}
 	ids := map[uint]int{}
 	for offset := range want {

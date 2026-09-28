@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/igeargeek/sales-system-api/internal/calendar"
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
@@ -36,12 +37,11 @@ func StartForecastSnapshots(ctx context.Context, db *gorm.DB, cfg *config.Config
 }
 
 // takeForecastSnapshot writes now's day's snapshot unless one exists. Any
-// query failure skips the row (retried next tick) rather than writing
-// zeros, which the unique snapshot_date would keep for the rest of the day.
+// query failure skips the day's row entirely (retried next tick) rather than
+// writing zeros, which the unique snapshot_date would keep for the day.
 func takeForecastSnapshot(db *gorm.DB, now time.Time) {
-	// The server-local calendar day (TZ, Asia/Bangkok in the image), not
-	// Truncate(24h)'s UTC day.
-	today := utils.Today(now)
+	// The server-local calendar day, not UTC's.
+	today := calendar.Today(now)
 
 	var existing int64
 	if err := db.Model(&models.ForecastSnapshot{}).Where("snapshot_date = ?", today).Count(&existing).Error; err != nil {

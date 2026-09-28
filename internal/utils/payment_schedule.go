@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/igeargeek/sales-system-api/internal/calendar"
 	"github.com/igeargeek/sales-system-api/internal/models"
 )
 
@@ -93,7 +94,7 @@ func allocateInstallments(installments []models.PaymentInstallment, linked map[u
 		// Overdue from the day after the due date, by calendar day — the
 		// same count the report's days_overdue/AgingBucket use, so an installment isn't
 		// "overdue" on its own due date while its aging says current.
-		isOverdue := LocalDaysBetween(inst.DueDate, now) > 0
+		isOverdue := calendar.LocalDaysBetween(inst.DueDate, now) > 0
 		var status string
 		switch {
 		// Within MoneyEpsilon: cash + WHT from a percentage lands a hair

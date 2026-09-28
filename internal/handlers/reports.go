@@ -8,6 +8,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/calendar"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
@@ -63,13 +64,8 @@ type sourceConversionRow struct {
 // fragments (never derived from a request param), so building it into the
 // FILTER clause via string concatenation carries no injection risk.
 // date_from/date_to are inclusive server-local days (dateRangeQuery); a bad
-// one comes back as a dateRangeError, the caller's 422.
-//
-// No company_tag filter on either caller — that only applies to Deal-based
-// reports. Lead gained a real Company FK (CompanyID) 2026-08-24, replacing
-// the old free-text company_name, so a company_tag filter joined through it
-// would now be feasible for that one; just not added since this report's
-// filter set wasn't otherwise in scope for that change.
+// one comes back as a *utils.DateRangeError, the caller's 422. No
+// company_tag filter: that only applies to Deal-based reports.
 func fetchSourceConversion(db *gorm.DB, c *fiber.Ctx, model any, successCondition string) ([]sourceConversionRow, error) {
 	window, err := dateRangeQuery(c)
 	if err != nil {
@@ -605,10 +601,9 @@ func computeOutstandingRow(r *outstandingBalanceRow, acceptedQuote *models.Quote
 	r.ReceivableAmount, r.ReceivableSource = r.DealValue, ReceivableSourceDealValue
 	if acceptedQuote != nil {
 		totals := utils.ComputeQuoteTotals(acceptedQuote.Items, acceptedQuote.DiscountTotal, acceptedQuote.VatEnabled, acceptedQuote.WhtEnabled, acceptedQuote.WhtRate)
-		// Only a quote with priced line items says what the customer owes.
-		// An uploaded PDF whose extraction failed is Accepted with no items,
-		// and reading it as a 0 receivable dropped an unpaid Won Deal from
-		// the report entirely; the Deal value is the better figure then.
+		// Only a quote with priced line items says what the customer owes;
+		// an uploaded PDF whose extraction failed is Accepted with no items,
+		// and the Deal value is the better figure then.
 		if totals.Subtotal > 0 {
 			r.ReceivableAmount, r.ReceivableSource = totals.ReceivableAmount(), ReceivableSourceQuote
 		}
@@ -631,7 +626,7 @@ func computeOutstandingRow(r *outstandingBalanceRow, acceptedQuote *models.Quote
 		r.Aging = OutstandingBalanceAgingOverdue
 		due := oldest.DueDate
 		r.OldestOverdueDueDate = &due
-		if days := utils.LocalDaysBetween(due, now); days > 0 {
+		if days := calendar.LocalDaysBetween(due, now); days > 0 {
 			r.DaysOverdue = days
 		}
 		r.AgingBucket = utils.AgingBucket(r.DaysOverdue)
@@ -678,9 +673,8 @@ type quoteExpiringSoonRow struct {
 // tables here. Sorted by validity_date ascending so the soonest-to-expire
 // quote (the most urgent one) leads.
 //
-// Validity is a calendar day (models.Quote.ValidityDay): a quote is listed
-// from today through today+within_days, its last valid day included, the
-// same day EffectiveStatus stops calling it Sent. total_value is the
+// Validity is a calendar day (models.Quote.ExpiresWithin): a quote is
+// listed from today through today+within_days, its last valid day included. total_value is the
 // quote's grand total (utils.ComputeQuoteTotals: line discounts, quote
 // discount, VAT, WHT), the figure its PDF prints.
 func (h *ReportHandler) fetchQuotesExpiringSoon(c *fiber.Ctx) ([]quoteExpiringSoonRow, error) {
@@ -698,19 +692,15 @@ func (h *ReportHandler) fetchQuotesExpiringSoon(c *fiber.Ctx) ([]quoteExpiringSo
 		return nil, err
 	}
 
-	today := utils.Today(time.Now())
-	deadline := today.AddDate(0, 0, withinDays)
+	now := time.Now()
 	type quoteWithDeadline struct {
 		quote      models.Quote
 		validUntil time.Time
 	}
 	byDeal := map[uint][]quoteWithDeadline{}
 	for _, q := range quotes {
-		validUntil, ok := q.ValidityDay()
+		validUntil, ok := q.ExpiresWithin(now, withinDays)
 		if !ok {
-			continue
-		}
-		if validUntil.Before(today) || validUntil.After(deadline) {
 			continue
 		}
 		byDeal[q.DealID] = append(byDeal[q.DealID], quoteWithDeadline{quote: q, validUntil: validUntil})
@@ -939,13 +929,8 @@ func (h *ReportHandler) ProjectsAtRisk(c *fiber.Ctx) error {
 }
 
 // stageTransition is one "deal" stage_changed audit_log_entries row, scanned
-// directly off the jsonb before/after columns (models.JSONMap unmarshals a
-// jsonb column into map[string]interface{}, so string fields like "stage"/
-// "status" come back as plain Go strings via a .(string) assertion below).
-// The type:jsonb tags are load-bearing: without one, GORM's schema parser
-// gets no data type from JSONMap (its Value() of a nil map is nil) and
-// leaves the field unmapped, so Scan silently left Before/After empty and
-// every by_stage bucket and closed-deal cycle came out empty.
+// off the jsonb before/after columns. The type:jsonb tags are load-bearing:
+// without them GORM leaves JSONMap fields unmapped and Scan leaves them empty.
 type stageTransition struct {
 	DealID    uint
 	Before    models.JSONMap `gorm:"type:jsonb"`
