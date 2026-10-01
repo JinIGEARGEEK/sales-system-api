@@ -226,6 +226,10 @@ func validateNewDealForm(c *fiber.Ctx, db *gorm.DB, form dealForm) (utils.StageF
 		_ = utils.Forbidden(c, "Cannot assign a deal to another sales rep")
 		return to, utils.ErrHandled
 	}
+	if err := validateAssignee(db, form.AssignedTo); err != nil {
+		_ = respondAssigneeErr(c, err)
+		return to, utils.ErrHandled
+	}
 	if err := validateDealValueAndDate(c, form); err != nil {
 		return to, err
 	}
@@ -284,6 +288,7 @@ func resolveDealStatus(from, to utils.StageFlags, stageChanged bool, requested m
 // @Success 201 {object} models.Deal
 // @Failure 400 {object} map[string]interface{} "Invalid request body, or validation error (required fields, value, expected_close_date, probability, lost_reason, stage/channel/business_unit)"
 // @Failure 403 {object} map[string]interface{} "Cannot assign a deal to another sales rep"
+// @Failure 422 {object} map[string]interface{} "assigned_to is not an active sales-role user"
 // @Router /deals [post]
 func (h *DealHandler) Create(c *fiber.Ctx) error {
 	var form dealForm
@@ -349,7 +354,7 @@ func (h *DealHandler) Get(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Update a deal (Admin/Sales Rep/Sales Manager)
-// @Description Full update of a Deal — same validation as Create. An omitted stage/status keeps the stored value; moving from a Won/Lost stage to an open one sets status open. Writes a stage_changed audit log entry when the submitted stage differs from the deal's current one. Only the assigned Sales Rep (or Admin/Sales Manager) may update; a Sales Rep cannot reassign to another rep. api-system-spec.md §7.1.
+// @Description Full update of a Deal — same validation as Create. An omitted stage/status keeps the stored value; moving from a Won/Lost stage to an open one sets status open. Writes a stage_changed audit log entry when the submitted stage differs from the deal's current one. Only the assigned Sales Rep (or Admin/Sales Manager) may update; a Sales Rep may keep or claim the deal but not reassign it to another rep or unassign it (403). A changed assigned_to must be an active sales-role user (422). value/company_id changes write an updated audit entry and an assigned_to change a reassigned one. api-system-spec.md §7.1.
 // @Tags deals
 // @Security BearerAuth
 // @Accept json
@@ -358,7 +363,8 @@ func (h *DealHandler) Get(c *fiber.Ctx) error {
 // @Param body body dealForm true "Deal fields"
 // @Success 200 {object} models.Deal
 // @Failure 400 {object} map[string]interface{} "Invalid request body, or validation error (required fields, value, expected_close_date, probability, lost_reason, stage/channel/business_unit)"
-// @Failure 403 {object} map[string]interface{} "Not authorized to update this deal, or cannot assign a deal to another sales rep"
+// @Failure 403 {object} map[string]interface{} "Not authorized to update this deal, or cannot assign a deal to another sales rep or unassign it"
+// @Failure 422 {object} map[string]interface{} "assigned_to is not an active sales-role user"
 // @Failure 404 {object} map[string]interface{} "Deal not found"
 // @Router /deals/{id} [put]
 func (h *DealHandler) Update(c *fiber.Ctx) error {
@@ -397,8 +403,17 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	if !to.Terminal() {
 		form.Status = status
 	}
-	if !CanWrite(c, form.AssignedTo) {
-		return utils.Forbidden(c, "Cannot assign a deal to another sales rep")
+	// A Sales Rep may keep or claim the deal, not unassign it or hand it on.
+	// An unchanged assignee isn't re-validated, so a deal still owned by a
+	// since-deactivated user stays editable.
+	assigneeChanged := !sameAssignee(deal.AssignedTo, form.AssignedTo)
+	if !CanSetAssignee(c, deal.AssignedTo, form.AssignedTo) {
+		return utils.Forbidden(c, "Cannot assign a deal to another sales rep or unassign it")
+	}
+	if assigneeChanged {
+		if err := validateAssignee(h.DB, form.AssignedTo); err != nil {
+			return respondAssigneeErr(c, err)
+		}
 	}
 	if err := validateDealRequiredFields(c, form); err != nil {
 		return nil
@@ -421,6 +436,16 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	}
 
 	before := models.JSONMap{"stage": deal.Stage, "status": deal.Status}
+	// value/company_id changes get an "updated" row, an owner change a
+	// "reassigned" one (same shape as PATCH /deals/:id/reassign).
+	fieldsBefore, fieldsAfter := models.JSONMap{}, models.JSONMap{}
+	if deal.Value != form.Value {
+		fieldsBefore["value"], fieldsAfter["value"] = deal.Value, form.Value
+	}
+	if deal.CompanyID != form.CompanyID {
+		fieldsBefore["company_id"], fieldsAfter["company_id"] = deal.CompanyID, form.CompanyID
+	}
+	ownerBefore := models.JSONMap{"assigned_to": deal.AssignedTo}
 
 	deal.CompanyID, deal.ContactID, deal.Title, deal.Value = form.CompanyID, form.ContactID, form.Title, form.Value
 	deal.Stage, deal.Status, deal.ExpectedCloseDate = form.Stage, status, form.ExpectedCloseDate
@@ -452,6 +477,18 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error {
 		if err := tx.Save(&deal).Error; err != nil {
 			return err
+		}
+		actorID := middleware.CurrentUserID(c)
+		if len(fieldsBefore) > 0 {
+			if err := utils.WriteAuditLog(tx, "deal", deal.ID, "updated", fieldsBefore, fieldsAfter, actorID); err != nil {
+				return err
+			}
+		}
+		if assigneeChanged {
+			if err := utils.WriteAuditLog(tx, "deal", deal.ID, "reassigned", ownerBefore,
+				models.JSONMap{"assigned_to": deal.AssignedTo}, actorID); err != nil {
+				return err
+			}
 		}
 		if stageChanged {
 			subject := fmt.Sprintf("Deal stage changed: %s → %s", oldStage, deal.Stage)
@@ -738,6 +775,7 @@ type dealReassignForm struct {
 // @Success 200 {object} models.Deal
 // @Failure 400 {object} map[string]interface{} "Invalid request body"
 // @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Failure 422 {object} map[string]interface{} "assigned_to is not an active sales-role user"
 // @Router /deals/{id}/reassign [patch]
 func (h *DealHandler) Reassign(c *fiber.Ctx) error {
 	var deal models.Deal
@@ -748,6 +786,9 @@ func (h *DealHandler) Reassign(c *fiber.Ctx) error {
 	var form dealReassignForm
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
+	}
+	if err := validateAssignee(h.DB, form.AssignedTo); err != nil {
+		return respondAssigneeErr(c, err)
 	}
 
 	before := models.JSONMap{"assigned_to": deal.AssignedTo}

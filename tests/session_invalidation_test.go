@@ -143,9 +143,16 @@ func TestBulkDeactivate_RevokesSessions(t *testing.T) {
 	target := testutil.CreateUser(t, db, models.RoleSalesRep)
 	oldToken := testutil.Token(t, target.ID, target.Role)
 
-	for _, path := range []string{"/api/v1/users/bulk-deactivate", "/api/v1/users/bulk-activate"} {
-		req := testutil.AuthRequest(t, http.MethodPatch, path, map[string]interface{}{"ids": []uint{target.ID}}, admin.ID, admin.Role)
-		require.Equal(t, http.StatusNoContent, doJSON(t, app, req, nil).StatusCode, path)
+	// bulk-deactivate answers 200 with open_records, bulk-activate 204.
+	for _, step := range []struct {
+		path string
+		want int
+	}{
+		{"/api/v1/users/bulk-deactivate", http.StatusOK},
+		{"/api/v1/users/bulk-activate", http.StatusNoContent},
+	} {
+		req := testutil.AuthRequest(t, http.MethodPatch, step.path, map[string]interface{}{"ids": []uint{target.ID}}, admin.ID, admin.Role)
+		require.Equal(t, step.want, doJSON(t, app, req, nil).StatusCode, step.path)
 	}
 
 	assert.Equal(t, http.StatusUnauthorized, meStatus(t, app, oldToken))

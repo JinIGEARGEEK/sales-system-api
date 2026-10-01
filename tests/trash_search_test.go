@@ -77,7 +77,7 @@ func TestTrashSearch_OmittedReturnsEverything(t *testing.T) {
 
 	req := testutil.AuthRequest(t, http.MethodDelete, "/api/v1/users/"+itoa(target.ID), nil, admin.ID, admin.Role)
 	resp := doJSON(t, app, req, nil)
-	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var trash struct {
 		Data []models.User `json:"data"`

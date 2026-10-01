@@ -64,3 +64,21 @@ func respondAssigneeErr(c *fiber.Ctx, err error) error {
 	}
 	return utils.Internal(c, "Failed to validate assignee")
 }
+
+// CanSetAssignee is the PUT-time rule for changing a record's assigned_to:
+// Admin/Sales Manager may set anything; anyone else may leave it unchanged
+// or claim it for themselves, but not hand it to someone else or unassign it.
+func CanSetAssignee(c *fiber.Ctx, current, next *uint) bool {
+	if middleware.IsManager(c) || sameAssignee(current, next) {
+		return true
+	}
+	return next != nil && *next == middleware.CurrentUserID(c)
+}
+
+// sameAssignee reports whether two nullable assigned_to values are equal.
+func sameAssignee(a, b *uint) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
