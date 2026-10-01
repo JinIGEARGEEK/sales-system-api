@@ -128,6 +128,71 @@ func validateQuoteForm(c *fiber.Ctx, form quoteForm) bool {
 	return true
 }
 
+// QuoteLockedFieldCode is the 422 `fields` code Update returns for a priced
+// field changed on an Accepted Quote (see rejectAcceptedQuotePricingEdit).
+const QuoteLockedFieldCode = "accepted_locked"
+
+// rejectAcceptedQuotePricingEdit enforces "an Accepted Quote's pricing is
+// final": once stored as Accepted, its items and every input to
+// ComputeQuoteTotals (price_type, vat_enabled, wht_enabled, wht_rate,
+// discount_total) can't change — the Deal's receivable and revenue are
+// derived from it. Status (e.g. back to Rejected) and the non-money fields
+// stay editable, and resending the stored values unchanged (the frontend
+// always sends the full payload) is fine. To revise, duplicate the quote
+// (POST /quotes/:id/duplicate). Writes the 422 and returns true when it
+// rejected the request.
+func rejectAcceptedQuotePricingEdit(c *fiber.Ctx, stored models.Quote, form quoteForm) bool {
+	if stored.Status != models.QuoteStatusAccepted {
+		return false
+	}
+	changed := []string{}
+	if form.Items != nil && !quoteItemsEqual(stored.Items, form.Items) {
+		changed = append(changed, "items")
+	}
+	if form.PriceType != "" && form.PriceType != stored.PriceType {
+		changed = append(changed, "price_type")
+	}
+	if form.VatEnabled != nil && *form.VatEnabled != stored.VatEnabled {
+		changed = append(changed, "vat_enabled")
+	}
+	if form.WhtEnabled != nil && *form.WhtEnabled != stored.WhtEnabled {
+		changed = append(changed, "wht_enabled")
+	}
+	if form.WhtRate != nil && *form.WhtRate != stored.WhtRate {
+		changed = append(changed, "wht_rate")
+	}
+	if form.DiscountTotal != nil && *form.DiscountTotal != stored.DiscountTotal {
+		changed = append(changed, "discount_total")
+	}
+	if len(changed) == 0 {
+		return false
+	}
+	fields := make(map[string][]string, len(changed))
+	for _, f := range changed {
+		fields[f] = []string{QuoteLockedFieldCode}
+	}
+	_ = utils.ValidationError(c, "an accepted quote's items and prices can't be changed — duplicate it to revise", fields)
+	return true
+}
+
+// quoteItemsEqual compares line items as submitted against the stored ones
+// (before snapshotQuoteItems re-reads Product prices).
+func quoteItemsEqual(a []models.QuoteItem, b []models.QuoteItem) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		x, y := a[i], b[i]
+		if x.Description != y.Description || x.Qty != y.Qty || x.Price != y.Price || x.DiscountPercent != y.DiscountPercent {
+			return false
+		}
+		if (x.ProductID == nil) != (y.ProductID == nil) || (x.ProductID != nil && *x.ProductID != *y.ProductID) {
+			return false
+		}
+	}
+	return true
+}
+
 // snapshotQuoteItems fills Description/Price from the referenced Product for
 // any line item that carries a ProductID — a one-time snapshot taken at
 // save time, not a live reference. Later edits to the Product's price/name
@@ -355,7 +420,7 @@ func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Update a quote
-// @Description Updates status/items and every other Quote field (number excepted — immutable after Create). Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §7.4.
+// @Description Updates status/items and every other Quote field (number excepted — immutable after Create). A Quote stored as Accepted keeps its pricing: changing items, price_type, vat_enabled, wht_enabled, wht_rate or discount_total 422s with fields code "accepted_locked" (resending the stored values is fine; status and the other fields stay editable) — duplicate it to revise. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §7.4.
 // @Tags quotes
 // @Security BearerAuth
 // @Accept json
@@ -363,7 +428,8 @@ func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 // @Param id path int true "Quote ID"
 // @Param body body quoteForm true "Quote fields"
 // @Success 200 {object} models.Quote
-// @Failure 400 {object} map[string]interface{} "Invalid request body, or validation error (status, price_type, credit_days, wht_rate, discount_total)"
+// @Failure 400 {object} map[string]interface{} "Invalid request body"
+// @Failure 422 {object} map[string]interface{} "Validation error (status, price_type, credit_days, wht_rate, discount_total), or a pricing edit on an Accepted quote (accepted_locked)"
 // @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
 // @Failure 404 {object} map[string]interface{} "Quote not found, or deal not found"
 // @Router /quotes/{id} [put]
@@ -383,8 +449,13 @@ func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	if !validateQuoteForm(c, form) {
 		return nil
 	}
+	if rejectAcceptedQuotePricingEdit(c, quote, form) {
+		return nil
+	}
 
-	if form.Items != nil {
+	// An Accepted quote's items passed the check above unchanged — keep them
+	// as stored rather than re-snapshotting Product prices into them.
+	if form.Items != nil && quote.Status != models.QuoteStatusAccepted {
 		quote.Items = models.JSONItems(snapshotQuoteItems(h.DB, form.Items))
 	}
 	// Unconditional, unlike Items/ValidityDate/Status above — a plain string
@@ -609,14 +680,20 @@ func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 	// Discount total / VAT / WHT / grand total — same formula as
 	// utils.ComputeQuoteTotals so this PDF and the edit page's live totals
 	// never disagree.
-	totals := utils.ComputeQuoteTotals(quote.Items, quote.DiscountTotal, quote.VatEnabled, quote.WhtEnabled, quote.WhtRate)
+	totals := utils.QuoteTotalsOf(&quote)
 	pdf.SetFont(utils.PDFFont, "", 10)
 	if quote.DiscountTotal > 0 {
 		pdf.Ln(1)
 		pdf.CellFormat(165, 7, "Discount", "0", 0, "R", false, 0, "")
 		pdf.CellFormat(30, 7, fmt.Sprintf("-%.2f", quote.DiscountTotal), "0", 1, "R", false, 0, "")
 	}
-	if quote.VatEnabled {
+	if quote.VatEnabled && quote.PriceType == models.QuotePriceTypeInclTax {
+		// Prices already include VAT: show it split out of them, not added.
+		pdf.CellFormat(165, 7, "Amount before VAT", "0", 0, "R", false, 0, "")
+		pdf.CellFormat(30, 7, fmt.Sprintf("%.2f", totals.TaxableAmount), "0", 1, "R", false, 0, "")
+		pdf.CellFormat(165, 7, "VAT (7%, included)", "0", 0, "R", false, 0, "")
+		pdf.CellFormat(30, 7, fmt.Sprintf("%.2f", totals.Vat), "0", 1, "R", false, 0, "")
+	} else if quote.VatEnabled {
 		pdf.CellFormat(165, 7, "VAT (7%)", "0", 0, "R", false, 0, "")
 		pdf.CellFormat(30, 7, fmt.Sprintf("%.2f", totals.Vat), "0", 1, "R", false, 0, "")
 	}
