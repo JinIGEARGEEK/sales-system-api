@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -342,12 +343,12 @@ func (h *DealHandler) Create(c *fiber.Ctx) error {
 
 // Get godoc
 // @Summary Get a deal (Admin/Sales Rep/Sales Manager)
-// @Description Returns a single Deal by ID.
+// @Description Returns a single Deal by ID, plus the read-only value_quote_number (number of the Accepted quote its value is synced from — value_quote_id — else null).
 // @Tags deals
 // @Security BearerAuth
 // @Produce json
 // @Param id path int true "Deal ID"
-// @Success 200 {object} models.Deal
+// @Success 200 {object} handlers.dealDetail
 // @Failure 404 {object} map[string]interface{} "Deal not found"
 // @Router /deals/{id} [get]
 func (h *DealHandler) Get(c *fiber.Ctx) error {
@@ -355,12 +356,12 @@ func (h *DealHandler) Get(c *fiber.Ctx) error {
 	if err := utils.FindByID(c, h.DB, &deal, "Deal not found"); err != nil {
 		return nil
 	}
-	return utils.OK(c, deal)
+	return utils.OK(c, withValueQuoteNumber(h.DB, deal))
 }
 
 // Update godoc
 // @Summary Update a deal (Admin/Sales Rep/Sales Manager)
-// @Description Full update of a Deal — same validation as Create. An omitted stage/status keeps the stored value; moving from a Won/Lost stage to an open one sets status open. Moving a Won Deal with money attached (a non-deleted Payment, any installment, or a signed Contract) out of Won is 409 (WON_DEAL_PROTECTED) for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without it), recorded in a won_reversed audit entry. Writes a stage_changed audit log entry when the submitted stage differs from the deal's current one. Only the assigned Sales Rep (or Admin/Sales Manager) may update; a Sales Rep may keep or claim the deal but not reassign it to another rep or unassign it (403). A changed assigned_to must be an active sales-role user (422). value/company_id changes write an updated audit entry and an assigned_to change a reassigned one. api-system-spec.md §7.1.
+// @Description Full update of a Deal — same validation as Create. An omitted stage/status keeps the stored value; moving from a Won/Lost stage to an open one sets status open. Moving a Won Deal with money attached (a non-deleted Payment, any installment, or a signed Contract) out of Won is 409 (WON_DEAL_PROTECTED) for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without it), recorded in a won_reversed audit entry. Writes a stage_changed audit log entry when the submitted stage differs from the deal's current one. Only the assigned Sales Rep (or Admin/Sales Manager) may update; a Sales Rep may keep or claim the deal but not reassign it to another rep or unassign it (403). A changed assigned_to must be an active sales-role user (422). value/company_id changes write an updated audit entry and an assigned_to change a reassigned one. While value_quote_id is set (value synced from an Accepted quote), a value different from the stored one is 422 fields.value ["synced_from_quote"]; resending the same value is fine. The response adds value_quote_number. api-system-spec.md §7.1.
 // @Tags deals
 // @Security BearerAuth
 // @Accept json
@@ -368,10 +369,10 @@ func (h *DealHandler) Get(c *fiber.Ctx) error {
 // @Param id path int true "Deal ID"
 // @Param body body dealForm true "Deal fields"
 // @Param reason query string false "Required from a manager moving a Won Deal with money out of Won (max 500 chars)"
-// @Success 200 {object} models.Deal
+// @Success 200 {object} handlers.dealDetail
 // @Failure 400 {object} map[string]interface{} "Invalid request body, or validation error (required fields, value, expected_close_date, probability, lost_reason, stage/channel/business_unit)"
 // @Failure 403 {object} map[string]interface{} "Not authorized to update this deal, or cannot assign a deal to another sales rep or unassign it"
-// @Failure 422 {object} map[string]interface{} "assigned_to is not an active sales-role user"
+// @Failure 422 {object} map[string]interface{} "assigned_to is not an active sales-role user, or value changed while synced from an Accepted quote (fields.value synced_from_quote)"
 // @Failure 404 {object} map[string]interface{} "Deal not found"
 // @Failure 409 {object} map[string]interface{} "Won Deal with money: WON_DEAL_PROTECTED (not a manager) or REASON_REQUIRED"
 // @Router /deals/{id} [put]
@@ -428,6 +429,16 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	}
 	if err := validateDealValueAndDate(c, form); err != nil {
 		return nil
+	}
+	// A value synced from an Accepted quote can't be edited here; resending
+	// it (to within MoneyEpsilon) is fine and keeps the stored figure.
+	// Re-checked under the Deal row lock below, against a concurrent accept.
+	var syncedErr *dealValueSyncedErr
+	if err := checkSyncedDealValue(h.DB, &deal, form.Value); errors.As(err, &syncedErr) {
+		return respondDealValueSynced(c, syncedErr)
+	}
+	if deal.ValueQuoteID != nil {
+		form.Value = deal.Value
 	}
 	if err := validateProbabilityAndLostReason(c, form, to); err != nil {
 		return nil
@@ -493,6 +504,18 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	// UpdateStage, feeding the audit viewer and Pipeline History.
 	after := models.JSONMap{"stage": deal.Stage, "status": deal.Status}
 	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error {
+		// A quote accepted since the read may have synced value meanwhile.
+		var locked models.Deal
+		if err := lockRow(tx, &locked, deal.ID, "id", "value", "value_quote_id"); err != nil {
+			return err
+		}
+		if err := checkSyncedDealValue(tx, &locked, deal.Value); err != nil {
+			return err
+		}
+		deal.ValueQuoteID = locked.ValueQuoteID
+		if locked.ValueQuoteID != nil {
+			deal.Value = locked.Value
+		}
 		if err := tx.Save(&deal).Error; err != nil {
 			return err
 		}
@@ -519,10 +542,13 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 		}
 		return nil
 	}, stageChanged, "deal", deal.ID, "stage_changed", before, after, middleware.CurrentUserID(c))
+	if errors.As(err, &syncedErr) {
+		return respondDealValueSynced(c, syncedErr)
+	}
 	if err != nil {
 		return utils.Internal(c, "Failed to update deal")
 	}
-	return utils.OK(c, deal)
+	return utils.OK(c, withValueQuoteNumber(h.DB, deal))
 
 }
 
@@ -589,7 +615,7 @@ func (h *DealHandler) Trash(c *fiber.Ctx) error {
 // @Security BearerAuth
 // @Produce json
 // @Param id path int true "Deal ID"
-// @Success 200 {object} models.Deal
+// @Success 200 {object} handlers.dealDetail
 // @Failure 404 {object} map[string]interface{} "Deleted deal not found"
 // @Router /deals/{id}/restore [post]
 func (h *DealHandler) Restore(c *fiber.Ctx) error {
@@ -609,7 +635,7 @@ func (h *DealHandler) Restore(c *fiber.Ctx) error {
 		return utils.Internal(c, "Failed to restore deal")
 	}
 	deal.DeletedAt, deal.DeletedBy = gorm.DeletedAt{}, nil
-	return utils.OK(c, deal)
+	return utils.OK(c, withValueQuoteNumber(h.DB, deal))
 }
 
 type bulkIDsForm struct {
@@ -717,7 +743,7 @@ type dealStageForm struct {
 // @Param id path int true "Deal ID"
 // @Param body body dealStageForm true "New stage"
 // @Param reason query string false "Required from a manager moving a Won Deal with money out of Won (max 500 chars)"
-// @Success 200 {object} models.Deal
+// @Success 200 {object} handlers.dealDetail
 // @Header 200 {string} X-Lane-Rebalanced "\"true\" when the destination lane was renumbered to 1..n — refetch the lane, its other cards' positions changed"
 // @Failure 400 {object} map[string]interface{} "Invalid request body, stage is required, stage is not a valid active pipeline stage, or a signed contract is required before marking this deal Won"
 // @Failure 403 {object} map[string]interface{} "Not authorized to update this deal"
@@ -836,7 +862,7 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	if rebalanced {
 		c.Set(LaneRebalancedHeader, "true")
 	}
-	return utils.OK(c, deal)
+	return utils.OK(c, withValueQuoteNumber(h.DB, deal))
 }
 
 type dealReassignForm struct {
@@ -852,7 +878,7 @@ type dealReassignForm struct {
 // @Produce json
 // @Param id path int true "Deal ID"
 // @Param body body dealReassignForm true "New assignee"
-// @Success 200 {object} models.Deal
+// @Success 200 {object} handlers.dealDetail
 // @Failure 400 {object} map[string]interface{} "Invalid request body"
 // @Failure 404 {object} map[string]interface{} "Deal not found"
 // @Failure 422 {object} map[string]interface{} "assigned_to is not an active sales-role user"
@@ -880,5 +906,5 @@ func (h *DealHandler) Reassign(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.Internal(c, "Failed to reassign deal")
 	}
-	return utils.OK(c, deal)
+	return utils.OK(c, withValueQuoteNumber(h.DB, deal))
 }

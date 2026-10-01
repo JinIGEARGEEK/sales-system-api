@@ -174,6 +174,9 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := ensureQuoteRevisionFK(db); err != nil {
 		return err
 	}
+	if err := ensureDealValueQuoteFK(db); err != nil {
+		return err
+	}
 	if err := backfillCompanyDomains(db); err != nil {
 		return err
 	}
@@ -220,7 +223,63 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := BackfillInstallmentAlertContexts(db); err != nil {
 		return err
 	}
+	if err := BackfillDealValueQuotes(db); err != nil {
+		return err
+	}
 	return nil
+}
+
+// dealValueQuotesBackfill names BackfillDealValueQuotes' data_migrations row.
+const dealValueQuotesBackfill = "deal_value_quotes_backfill"
+
+// BackfillDealValueQuotes (called from AutoMigrate) links existing Deals to
+// the Accepted quote their value already follows. For each non-deleted Deal
+// with no value_quote_id whose latest Accepted quote (created_at, then id)
+// has priced items: when the Deal's value already equals that quote's
+// taxable amount rounded to satang (to within utils.MoneyEpsilon), set
+// value_quote_id to it and value to that exact rounded amount. A Deal whose
+// value differs is left untouched — the boot never rewrites revenue — and
+// only counted in the log: it stays unlinked, so its value stays editable
+// as before, and is linked the next time one of its quotes is accepted. No
+// audit rows: nothing a user did. Runs once (runOnce): afterwards the quote handlers
+// keep the link in step.
+func BackfillDealValueQuotes(db *gorm.DB) error {
+	return runOnce(db, dealValueQuotesBackfill, func(tx *gorm.DB) error {
+		var rows []struct {
+			models.Quote
+			DealValue float64
+		}
+		err := tx.Raw(`
+			SELECT DISTINCT ON (q.deal_id) q.*, d.value AS deal_value
+			FROM quotes q
+			JOIN deals d ON d.id = q.deal_id AND d.deleted_at IS NULL AND d.value_quote_id IS NULL
+			WHERE q.status = ?
+			ORDER BY q.deal_id, q.created_at DESC, q.id DESC`, models.QuoteStatusAccepted).Scan(&rows).Error
+		if err != nil {
+			return fmt.Errorf("load accepted quotes for deal value backfill: %w", err)
+		}
+		linked, mismatched := 0, 0
+		for i := range rows {
+			totals := utils.QuoteTotalsOf(&rows[i].Quote)
+			if totals.Subtotal <= 0 {
+				continue
+			}
+			value := utils.RoundSatang(totals.TaxableAmount)
+			if diff := rows[i].DealValue - value; diff > utils.MoneyEpsilon || diff < -utils.MoneyEpsilon {
+				mismatched++
+				continue
+			}
+			if err := tx.Exec(`UPDATE deals SET value = ?, value_quote_id = ? WHERE id = ?`,
+				value, rows[i].ID, rows[i].DealID).Error; err != nil {
+				return fmt.Errorf("link deal %d to quote %d: %w", rows[i].DealID, rows[i].ID, err)
+			}
+			linked++
+		}
+		if linked > 0 || mismatched > 0 {
+			log.Printf("deal value backfill: linked %d deal(s) to their accepted quote; left %d deal(s) whose value differs from their accepted quote's taxable amount unlinked and unchanged", linked, mismatched)
+		}
+		return nil
+	})
 }
 
 // installmentAlertContextsBackfill names BackfillInstallmentAlertContexts'
@@ -550,6 +609,23 @@ func ensureQuoteRevisionFK(db *gorm.DB) error {
 		END $$`).Error
 	if err != nil {
 		return fmt.Errorf("add quotes revision_of_id foreign key: %w", err)
+	}
+	return nil
+}
+
+// ensureDealValueQuoteFK makes deals.value_quote_id a real foreign key to
+// quotes(id), by hand for the same reason as ensureQuoteRevisionFK. ON
+// DELETE SET NULL: a deleted quote unlinks the Deal, which keeps its value.
+func ensureDealValueQuoteFK(db *gorm.DB) error {
+	err := db.Exec(`
+		DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_deals_value_quote') THEN
+				ALTER TABLE deals ADD CONSTRAINT fk_deals_value_quote
+					FOREIGN KEY (value_quote_id) REFERENCES quotes(id) ON DELETE SET NULL;
+			END IF;
+		END $$`).Error
+	if err != nil {
+		return fmt.Errorf("add deals value_quote_id foreign key: %w", err)
 	}
 	return nil
 }

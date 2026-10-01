@@ -434,9 +434,19 @@ interface Deal {
   // Existing won Deals were backfilled from stage_entered_at. The dashboard and
   // win/loss report count "won this period" by it.
   won_at: string | null
+  // Review follow-ups: the Accepted Quote this Deal's value is synced from
+  // (FK quotes, ON DELETE SET NULL), null when value is the rep's own figure.
+  // Server-managed; see "Deal value follows the Accepted quote" below.
+  value_quote_id: number | null
+  // Read-only, single-Deal responses only (GET/PUT /deals/:id, PATCH
+  // /deals/:id/stage|reassign, POST /deals/:id/restore): that quote's
+  // number. Lists omit it.
+  value_quote_number?: string | null
   created_at: string
 }
 ```
+
+> **Deal value follows the Accepted quote (review follow-ups).** When a Quote with priced items (subtotal > 0) becomes Accepted — created as `accepted`, or moved there by `PUT /quotes/:id` — the Deal's `value` is set, in the same transaction, to that quote's pre-VAT taxable amount rounded to satang (`utils.RoundSatang(totals.taxable_amount)`; revenue is the taxable amount, §7.4 "Quote totals"), and `value_quote_id` to the quote. A `deal` audit row `value_synced` records before `{value, value_quote_id}` / after `{value, value_quote_id, quote_number}`. An Accepted quote with no priced items (an uploaded PDF) changes nothing. When that quote leaves Accepted (→ rejected), `value_quote_id` is cleared, `value` is kept, and `value_unsynced` is audited (before `{value, value_quote_id, quote_number}`, after `{value, value_quote_id: null}`). Only drafts can be deleted, so a synced quote is never deleted through the API; the FK unlinks the Deal if the row is ever removed. While `value_quote_id` is set, `PUT /deals/:id` with a `value` that differs from the stored one by more than 0.005 is `422` `fields.value: ["synced_from_quote"]` (the message names the quote number); resending the stored value is fine. Lead/Prospect convert is unaffected. **Backfill (once, at boot):** each non-deleted Deal whose latest Accepted quote (by `created_at`, then `id`) has priced items is linked only when its `value` already equals that quote's rounded taxable amount (to within 0.005); a Deal whose value differs is left unlinked and unchanged, and only counted in the boot log, so the boot never rewrites revenue.
 
 **Route gate fixed 2026-09-10.** Every route below (including the nested Quote/Payment/Contract sub-resources further down this section) was previously open to any authenticated role — including Marketing/Production, despite §1.7 stating those two roles have "no access to Leads/Deals/any other resource." All are now Admin/Sales Rep/Sales Manager only (`PATCH /deals/:id/reassign`, further down, keeps its own stricter Admin/Sales-Manager-only gate). **Updated 2026-09-23 (FR-CRM-123):** Marketing joined that set (`salesPipelineRoles`), so today it is Admin/Sales Rep/Sales Manager/Marketing, with only Production kept out. The same applies to the Lead routes in §3.
 
@@ -558,7 +568,7 @@ interface Quote {
 }
 ```
 
-> **Lifecycle (review round 2).** Status moves: draft → sent/accepted/rejected, sent → draft/accepted/rejected, accepted → rejected, rejected → none (`409` otherwise). A Sent quote shown as `expired` can't be accepted. An Accepted/Rejected quote is read-only apart from that status move (`409`). At most one Accepted quote per Deal (`409` naming the existing one). Only drafts can be deleted. Invalid items (`qty` ≤ 0, `price` < 0, `discount_percent` outside 0–100), `discount_total` above the subtotal, `wht_rate` outside 0–100 or an unparseable `issue_date`/`validity_date` are `422` with `error.fields`. Status changes are audited (`quote`/`status_changed`).
+> **Lifecycle (review round 2).** Status moves: draft → sent/accepted/rejected, sent → draft/accepted/rejected, accepted → rejected, rejected → none (`409` otherwise). A Sent quote shown as `expired` can't be accepted. An Accepted/Rejected quote is read-only apart from that status move (`409`). At most one Accepted quote per Deal (`409` naming the existing one). Only drafts can be deleted. Invalid items (`qty` ≤ 0, `price` < 0, `discount_percent` outside 0–100), `discount_total` above the subtotal, `wht_rate` outside 0–100 or an unparseable `issue_date`/`validity_date` are `422` with `error.fields`. Status changes are audited (`quote`/`status_changed`). Accepting a priced quote syncs the Deal's `value` to its taxable amount and sets `deals.value_quote_id`; rejecting it clears the link (§7.1, "Deal value follows the Accepted quote").
 
 > **FlowAccount PDF extraction.** `POST /deals/:dealId/quotes/upload` attempts best-effort field extraction from an uploaded FlowAccount quotation PDF, pre-filling `number`/`scope_of_work`/`items`/dates/totals instead of leaving the Quote fully blank. `extraction_status`/`extraction_warnings` are `nil`/empty for every Quote created the normal line-item way (extraction never runs for those) — they're only set on the upload path:
 > - `"ok"` — every field extraction looked for was found and self-consistent.
@@ -597,6 +607,7 @@ interface Payment {
 |---|---|---|---|
 | `GET` | `/deals/:dealId/payments` | 🟢 | List installments for a Deal, plus a computed `total_paid`. Backs the Deal detail page's Payments tab (`stores/payments.ts`'s `forDeal`/`totalForDeal` getters — move that sum server-side once real). |
 | `POST` | `/deals/:dealId/payments` | 🟢 | Create — backs `components/Crm/AddPaymentModal.vue`. **Review round 2:** `422` on a Lost Deal (`fields.deal_id`); `422` when `paid_at` is after today, server-local (`fields.paid_at`); `409` when a non-empty `document_number` is already on another non-deleted Payment (any Deal); `422` `fields.amount: ['exceeds_receivable']` when the Deal's cash + WHT would pass its receivable (latest Accepted Quote's taxable amount + VAT when it has priced items, else the Deal value) by more than 0.005, unless the body has `allow_overpayment: true`. |
+| `GET` | `/payments/export?date_from=&date_to=&deal_id=&company_id=&method=` | 🟢 | **Review follow-ups.** Admin/Sales Manager only (same gate as the other CSV exports; `403` otherwise). CSV (`text/csv`, `Content-Disposition: attachment; filename="payments-YYYYMMDD.csv"`, today server-local; no BOM, like the other exports; formula-injection guarded). Every non-deleted Payment on a non-deleted Deal, oldest `paid_at` first (then `id`). Columns: `Paid At` (YYYY-MM-DD, server-local), `Document Number`, `Deal ID`, `Deal`, `Company`, `Amount` (cash), `WHT Amount`, `Total` (amount + WHT), `Method`, `Installment ID`, `Installment Due Date`, `Note`, `Created By` (first + last name). Filters: `date_from`/`date_to` on `paid_at`, inclusive server-local days (`utils.ParseDateRange`; `422` for a bad or reversed range), `deal_id`, `company_id` (the Deal's Company), `method` (`422` when not a positive integer / not a `PaymentMethod`). |
 | `PUT` | `/payments/:id` | 🟢 | Partial merge. Same `paid_at`, `document_number` (only when changed) and overpayment (only when the payment's cash + WHT goes up) checks as Create. |
 | `DELETE` | `/payments/:id` | 🟢 | Soft delete (`deleted_at`/`deleted_by`, review round 2 — was a hard delete). A deleted Payment drops out of every list, total, report and installment status. |
 

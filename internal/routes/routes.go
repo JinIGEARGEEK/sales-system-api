@@ -459,6 +459,9 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	authed.Delete("/quotes/:id", salesPipelineRoles, quoteH.Delete)
 	authed.Get("/quotes/:id/export-pdf", salesPipelineRoles, quoteH.ExportPDF)
 	authed.Post("/quotes/:id/duplicate", salesPipelineRoles, quoteH.Duplicate)
+	// Payments CSV — Admin/Sales Manager, like the other exports. Before
+	// "/payments/:id".
+	authed.Get("/payments/export", bulkRoles, exportH.Payments)
 	authed.Put("/payments/:id", salesPipelineRoles, paymentH.Update)
 	authed.Delete("/payments/:id", salesPipelineRoles, paymentH.Delete)
 	authed.Put("/payment-installments/:id", salesPipelineRoles, paymentInstallmentH.Update)

@@ -71,8 +71,9 @@ func ensureSoleAcceptedQuote(tx *gorm.DB, dealID, quoteID uint) error {
 // its stored status is still oldStatus (what the lifecycle guard checked),
 // so a concurrent status change can't be overwritten by a stale full-row
 // Save. A status change also locks the Deal row first (always Deal, then
-// quote), enforces one Accepted quote per Deal, and writes a quote
-// status_changed audit entry in the same transaction.
+// quote), enforces one Accepted quote per Deal, syncs or unsyncs the Deal's
+// value (syncDealValueForQuote), and writes a quote status_changed audit
+// entry in the same transaction.
 func (h *QuoteHandler) saveQuote(c *fiber.Ctx, quote *models.Quote, oldStatus models.QuoteStatus) error {
 	statusChanged := quote.Status != oldStatus
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
@@ -99,8 +100,12 @@ func (h *QuoteHandler) saveQuote(c *fiber.Ctx, quote *models.Quote, oldStatus mo
 		if !statusChanged {
 			return nil
 		}
+		actorID := middleware.CurrentUserID(c)
+		if err := syncDealValueForQuote(tx, quote, oldStatus, actorID); err != nil {
+			return err
+		}
 		return utils.WriteAuditLog(tx, "quote", quote.ID, "status_changed",
-			models.JSONMap{"status": oldStatus}, models.JSONMap{"status": quote.Status}, middleware.CurrentUserID(c))
+			models.JSONMap{"status": oldStatus}, models.JSONMap{"status": quote.Status}, actorID)
 	})
 	if err != nil {
 		return respondLifecycleErr(c, err, "Quote not found", "Failed to update quote")
