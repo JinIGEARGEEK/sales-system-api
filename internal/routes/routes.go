@@ -125,9 +125,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// Uploaded files (Quote PDFs, signed Contracts, Attachments) — Storage.Save
 	// returns a root-level "/uploads/<key>" URL (not under /api/v1), so this is
 	// registered on app directly rather than inside the authed group below.
-	// Previously nothing served this path at all — SaveUpload's returned URLs
-	// were dead links regardless of deployment. These are business documents,
-	// so require auth (any authenticated role, matching the export/PDF
+	// These are business documents, so require auth (any authenticated role, matching the export/PDF
 	// endpoints' access level) rather than serving them unauthenticated.
 	//
 	// Streams through storage.Open rather than fiber's Static/os-backed
@@ -286,8 +284,14 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	authed.Get("/auth/me", authH.Me)
 	authed.Post("/auth/change-password", authH.ChangePassword)
 
-	// Users — Admin only, except /team-members.
+	// Role gates. salesPipelineRoles (declared above the Open API group) is
+	// every role but Production. managerRoles (Admin/Sales Manager) guards
+	// bulk actions, Trash/Restore, exports, Company/Contact delete and merge,
+	// Deal reassign, tag writes and the /reports group.
 	adminOnly := middleware.RequireRoles(models.RoleAdmin)
+	managerRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesManager)
+
+	// Users — Admin only, except /team-members.
 	users := authed.Group("/users", adminOnly)
 	users.Get("/", userH.List)
 	users.Post("/", userH.Create)
@@ -301,20 +305,16 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	users.Post("/:id/restore", userH.Restore)
 	authed.Get("/team-members", userH.TeamMembers)
 
-	// Leads
-	bulkRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesManager)
-	// salesPipelineRoles (declared above the Open API group) gates every Lead
-	// route except single-record GET, which stays ungated so Production can
-	// still follow a specific-Lead link. Bulk/trash/restore stay on
-	// bulkRoles (Admin/Sales Manager), the same line Sales Rep sits behind.
+	// Leads — salesPipelineRoles on every route except the single-record
+	// reads, which stay open so Production can follow a link to a Lead.
 	leads := authed.Group("/leads")
 	leads.Get("/", salesPipelineRoles, leadH.List)
 	leads.Post("/", salesPipelineRoles, leadH.Create)
 	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
-	leads.Get("/trash", bulkRoles, leadH.Trash)
-	leads.Patch("/bulk-reassign", bulkRoles, leadH.BulkReassign)
-	leads.Patch("/bulk-tag", bulkRoles, leadH.BulkTag)
-	leads.Patch("/bulk-archive", bulkRoles, leadH.BulkArchive)
+	leads.Get("/trash", managerRoles, leadH.Trash)
+	leads.Patch("/bulk-reassign", managerRoles, leadH.BulkReassign)
+	leads.Patch("/bulk-tag", managerRoles, leadH.BulkTag)
+	leads.Patch("/bulk-archive", managerRoles, leadH.BulkArchive)
 	leads.Get("/:id", leadH.Get)
 	// Same gating as Get above (no extra role restriction beyond `authed`) —
 	// this is read-only detail about a Lead a caller can already view.
@@ -326,22 +326,18 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	leads.Patch("/:id/status", salesPipelineRoles, leadH.UpdateStatus)
 	leads.Delete("/:id", salesPipelineRoles, leadH.Delete)
 	leads.Post("/:id/convert", salesPipelineRoles, leadH.Convert)
-	leads.Post("/:id/restore", bulkRoles, leadH.Restore)
+	leads.Post("/:id/restore", managerRoles, leadH.Restore)
 
-	// Prospects — the pre-Lead marketing funnel entity. Admin/Sales Manager/
-	// Sales Rep get full read+write access (Sales Reps work Prospects ahead
-	// of the Lead hand-off the same way they work Leads/Deals); Marketing
-	// owns it day-to-day. Bulk/trash/restore stay on the existing
-	// Admin/Sales-Manager-only bulkRoles, same as Leads.
-	prospectRoles := middleware.RequireRoles(models.SalesPipelineRoles...)
-	prospects := authed.Group("/prospects", prospectRoles)
+	// Prospects — the pre-Lead marketing funnel, owned day-to-day by
+	// Marketing; every salesPipelineRoles role reads and writes it.
+	prospects := authed.Group("/prospects", salesPipelineRoles)
 	prospects.Get("/", prospectH.List)
 	prospects.Post("/", prospectH.Create)
 	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
-	prospects.Get("/trash", bulkRoles, prospectH.Trash)
-	prospects.Patch("/bulk-reassign", bulkRoles, prospectH.BulkReassign)
-	prospects.Patch("/bulk-tag", bulkRoles, prospectH.BulkTag)
-	prospects.Patch("/bulk-archive", bulkRoles, prospectH.BulkArchive)
+	prospects.Get("/trash", managerRoles, prospectH.Trash)
+	prospects.Patch("/bulk-reassign", managerRoles, prospectH.BulkReassign)
+	prospects.Patch("/bulk-tag", managerRoles, prospectH.BulkTag)
+	prospects.Patch("/bulk-archive", managerRoles, prospectH.BulkArchive)
 	prospects.Get("/:id", prospectH.Get)
 	prospects.Put("/:id", prospectH.Update)
 	// Kanban drag-and-drop's own narrow-PATCH move endpoint (status+position
@@ -350,23 +346,22 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	prospects.Patch("/:id/status", prospectH.UpdateStatus)
 	prospects.Delete("/:id", prospectH.Delete)
 	prospects.Post("/:id/convert", prospectH.Convert)
-	prospects.Post("/:id/restore", bulkRoles, prospectH.Restore)
+	prospects.Post("/:id/restore", managerRoles, prospectH.Restore)
 
 	// Companies — salesPipelineRoles (Production has no access, spec §1.7;
-	// its Projects page reads company_name off GET /projects instead). Delete
-	// is Admin/Sales Manager, like trash/restore/export.
+	// its Projects page reads company_name off GET /projects instead).
 	companies := authed.Group("/companies", salesPipelineRoles)
 	companies.Get("/", companyH.List)
 	companies.Post("/", companyH.Create)
 	companies.Post("/import", importH.ImportCompanies)
 	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
-	companies.Get("/trash", bulkRoles, companyH.Trash)
-	companies.Get("/export", bulkRoles, exportH.Companies)
+	companies.Get("/trash", managerRoles, companyH.Trash)
+	companies.Get("/export", managerRoles, exportH.Companies)
 	companies.Get("/:id", companyH.Get)
 	companies.Put("/:id", companyH.Update)
-	companies.Delete("/:id", bulkRoles, companyH.Delete)
-	companies.Post("/:id/restore", bulkRoles, companyH.Restore)
-	companies.Post("/:id/merge", bulkRoles, companyH.Merge)
+	companies.Delete("/:id", managerRoles, companyH.Delete)
+	companies.Post("/:id/restore", managerRoles, companyH.Restore)
+	companies.Post("/:id/merge", managerRoles, companyH.Merge)
 	companies.Get("/:companyId/products", productH.ListForCompany)
 	companies.Post("/:companyId/products", productH.AddForCompany)
 	companies.Get("/:companyId/projects", projectH.ListForCompany)
@@ -378,35 +373,31 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	contacts.Post("/", contactH.Create)
 	contacts.Post("/import", importH.ImportContacts)
 	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
-	contacts.Get("/trash", bulkRoles, contactH.Trash)
-	contacts.Get("/export", bulkRoles, exportH.Contacts)
+	contacts.Get("/trash", managerRoles, contactH.Trash)
+	contacts.Get("/export", managerRoles, exportH.Contacts)
 	contacts.Get("/:id", contactH.Get)
 	contacts.Put("/:id", contactH.Update)
-	contacts.Delete("/:id", bulkRoles, contactH.Delete)
-	contacts.Post("/:id/restore", bulkRoles, contactH.Restore)
-	contacts.Post("/:id/merge", bulkRoles, contactH.Merge)
+	contacts.Delete("/:id", managerRoles, contactH.Delete)
+	contacts.Post("/:id/restore", managerRoles, contactH.Restore)
+	contacts.Post("/:id/merge", managerRoles, contactH.Merge)
 
-	// Deals — salesPipelineRoles only (Admin/Sales Rep/Sales Manager/Marketing
-	// since 2026-09-23; Production has no access, spec §1.7). Every
-	// route in this group, including the Quote/Payment/Contract sub-resources
-	// nested under a Deal, was previously open to any authenticated role —
-	// same bug class the 2026-09-09 Lead-mutation fix caught, just never
-	// carried over here.
+	// Deals — salesPipelineRoles, including every Quote/Payment/Contract
+	// sub-resource nested under a Deal (Production has no access, spec §1.7).
 	deals := authed.Group("/deals", salesPipelineRoles)
 	deals.Get("/", dealH.List)
 	deals.Post("/", dealH.Create)
 	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
-	deals.Get("/trash", bulkRoles, dealH.Trash)
-	deals.Patch("/bulk-reassign", bulkRoles, dealH.BulkReassign)
-	deals.Patch("/bulk-tag", bulkRoles, dealH.BulkTag)
-	deals.Patch("/bulk-archive", bulkRoles, dealH.BulkArchive)
-	deals.Get("/export", bulkRoles, exportH.Deals)
+	deals.Get("/trash", managerRoles, dealH.Trash)
+	deals.Patch("/bulk-reassign", managerRoles, dealH.BulkReassign)
+	deals.Patch("/bulk-tag", managerRoles, dealH.BulkTag)
+	deals.Patch("/bulk-archive", managerRoles, dealH.BulkArchive)
+	deals.Get("/export", managerRoles, exportH.Deals)
 	deals.Get("/:id", dealH.Get)
 	deals.Put("/:id", dealH.Update)
 	deals.Delete("/:id", dealH.Delete)
 	deals.Patch("/:id/stage", dealH.UpdateStage)
-	deals.Patch("/:id/reassign", middleware.RequireRoles(models.RoleAdmin, models.RoleSalesManager), dealH.Reassign)
-	deals.Post("/:id/restore", bulkRoles, dealH.Restore)
+	deals.Patch("/:id/reassign", managerRoles, dealH.Reassign)
+	deals.Post("/:id/restore", managerRoles, dealH.Restore)
 	deals.Get("/:dealId/quotes", quoteH.List)
 	deals.Post("/:dealId/quotes", quoteH.Create)
 	deals.Post("/:dealId/quotes/upload", quoteH.Upload)
@@ -436,14 +427,14 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 
 	// Tags — shared taxonomy used across Companies/Deals/Contacts; List stays
 	// open to every authenticated role (tag pickers need it), but writes are
-	// Admin/Sales-Manager only (bulkRoles) — a Sales Rep renaming or
+	// Admin/Sales-Manager only (managerRoles) — a Sales Rep renaming or
 	// deactivating a shared tag would silently break filtering/reporting for
 	// everyone else, the same reasoning PipelineStage/LeadSource are gated on.
 	tags := authed.Group("/tags")
 	tags.Get("/", tagH.List)
-	tags.Post("/", bulkRoles, tagH.Create)
-	tags.Put("/:id", bulkRoles, tagH.Update)
-	tags.Delete("/:id", bulkRoles, tagH.Delete)
+	tags.Post("/", managerRoles, tagH.Create)
+	tags.Put("/:id", managerRoles, tagH.Update)
+	tags.Delete("/:id", managerRoles, tagH.Delete)
 
 	// Quote Templates — same salesPipelineRoles access as the deals group
 	// above (self-serve for any Sales role, not an Admin-curated library).
@@ -463,7 +454,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	authed.Post("/quotes/:id/duplicate", salesPipelineRoles, quoteH.Duplicate)
 	// Payments CSV — Admin/Sales Manager, like the other exports. Before
 	// "/payments/:id".
-	authed.Get("/payments/export", bulkRoles, exportH.Payments)
+	authed.Get("/payments/export", managerRoles, exportH.Payments)
 	authed.Put("/payments/:id", salesPipelineRoles, paymentH.Update)
 	authed.Delete("/payments/:id", salesPipelineRoles, paymentH.Delete)
 	authed.Put("/payment-installments/:id", salesPipelineRoles, paymentInstallmentH.Update)
@@ -476,7 +467,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	tasks := authed.Group("/tasks")
 	tasks.Get("/", taskH.List)
 	tasks.Post("/", taskH.Create)
-	// Not bulkRoles-gated like Deals'/Leads' bulk endpoints — ownership is
+	// Not managerRoles-gated like Deals'/Leads' bulk endpoints — ownership is
 	// enforced per row inside the handlers instead (CanWrite), same as
 	// Toggle/Delete below, since a Sales Rep bulk-acting on their own tasks
 	// is the primary use case for a personal task list.
@@ -499,17 +490,12 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	campaigns.Post("/:id/tasks", campaignH.BulkCreateTasks)
 	campaigns.Get("/:id/progress", campaignH.Progress)
 
-	// Products — spec §8.2: "Product Catalog CRUD (Admin only)". List stays
-	// open to every authenticated role, same list-open/write-admin split as
-	// the §8.8 option-list resources below, since Deal/Quote line-item forms
-	// need the catalog regardless of role; Create/Update/Deactivate were
-	// previously open to any authenticated role (including Marketing/
-	// Production) despite the spec explicitly reserving catalog writes for
-	// Admin.
+	// Products — spec §8.2: catalog writes are Admin only. List is open to
+	// every role, since Deal/Quote line-item forms need the catalog.
 	products := authed.Group("/products")
 	products.Get("/", productH.List)
 	products.Post("/", adminOnly, productH.Create)
-	products.Get("/export", bulkRoles, exportH.Products)
+	products.Get("/export", managerRoles, exportH.Products)
 	products.Patch("/:id", adminOnly, productH.Update)
 	products.Patch("/:id/deactivate", adminOnly, productH.Deactivate)
 
@@ -518,11 +504,11 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 
 	// Projects — field-level RBAC enforced inside the handler.
 	authed.Get("/projects", projectH.List)
-	authed.Get("/projects/export", bulkRoles, exportH.Projects)
+	authed.Get("/projects/export", managerRoles, exportH.Projects)
 	authed.Patch("/projects/:id", projectH.Update)
 
 	// Reports — Sales Manager/Admin only.
-	reports := authed.Group("/reports", middleware.RequireRoles(models.RoleAdmin, models.RoleSalesManager))
+	reports := authed.Group("/reports", managerRoles)
 	reports.Get("/lead-source-conversion", reportH.LeadSourceConversion)
 	reports.Get("/lead-source-conversion/export", reportH.LeadSourceConversionExport)
 	reports.Get("/source-performance", reportH.SourcePerformance)
@@ -549,8 +535,8 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// group above (Sales Manager/Admin only): Marketing has no access to any
 	// Deal/Lead-derived report, but does need visibility into its own
 	// Prospect-source conversion, the one funnel it actually owns. Sales Rep
-	// is included here too, matching `prospectRoles` above.
-	prospectReports := authed.Group("/reports", prospectRoles)
+	// is included too: the same salesPipelineRoles as /prospects.
+	prospectReports := authed.Group("/reports", salesPipelineRoles)
 	prospectReports.Get("/prospect-source-conversion", reportH.ProspectSourceConversion)
 	prospectReports.Get("/prospect-source-conversion/export", reportH.ProspectSourceConversionExport)
 
@@ -565,18 +551,11 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// card — FR-CRM-025/M-8).
 	authed.Get("/audit-log", salesPipelineRoles, auditLogH.List)
 
-	// Pipeline stages / lead sources — config writes are Admin-only, replacing
-	// the previously hardcoded DealStage/LeadSource enums as the source of
-	// truth. List is open to every authenticated role instead, same as
-	// /team-members below — every role's own Deal/Lead create/edit forms and
-	// the shared Dashboard/Kanban board need these for their stage/source
-	// dropdowns, not just Admin. **Fixed 2026-09-09**: List was previously
-	// inside the same Admin-only group as the writes, so any non-Admin role
-	// landing on a page that fetches these (the Dashboard chief among them)
-	// got a silent 403 — no visible breakage since every affected dropdown
-	// just quietly rendered with zero/stale options, but it still surfaced as
-	// a stray "not authorized" toast on pages that route failed requests
-	// through a shared error handler (e.g. pages/index.vue's dashboard).
+	// Admin config option lists (pipeline stages, lead/prospect sources,
+	// prospect stages, industries, sizes, job titles, product categories):
+	// writes are Admin only; List is open to every authenticated role, since
+	// every role's create/edit forms, filters and the Dashboard read them
+	// for their dropdowns.
 	authed.Get("/admin/pipeline-stages", pipelineStageH.List)
 	pipelineStages := authed.Group("/admin/pipeline-stages", adminOnly)
 	pipelineStages.Post("/", pipelineStageH.Create)
@@ -589,39 +568,23 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	leadSources.Patch("/:id", leadSourceH.Update)
 	leadSources.Delete("/:id", leadSourceH.Delete)
 
-	// Prospect sources — Marketing's own funnel-source list; writes are
-	// Admin-only, same as every other /admin/* config resource here (Marketing
-	// manages day-to-day Prospect data via /prospects*, not this taxonomy).
-	// List is open to every authenticated role — same 2026-09-09 fix as
-	// pipeline-stages/lead-sources/product-categories above:
-	// pages/crm/prospects/index.vue|[id].vue|create.vue (reachable by
-	// Marketing, Marketing's OWN primary page, not Admin-gated) fetch this for
-	// their source dropdown/filter, so Marketing got a silent 403 loading
-	// its own core page — the worst instance of this bug, since it broke the
-	// one role's primary daily workflow entirely, not just a secondary widget.
+	// Prospect sources — Marketing's funnel-source list (Marketing manages
+	// Prospects via /prospects*, not this taxonomy).
 	authed.Get("/admin/prospect-sources", prospectSourceH.List)
 	prospectSources := authed.Group("/admin/prospect-sources", adminOnly)
 	prospectSources.Post("/", prospectSourceH.Create)
 	prospectSources.Patch("/:id", prospectSourceH.Update)
 	prospectSources.Delete("/:id", prospectSourceH.Delete)
 
-	// Prospect stages — Marketing's own funnel stage list, replacing the
-	// previously hardcoded ProspectStatus working-stage enum ("Converted" is
-	// excluded from this table, see ProspectStage's own doc). Same
-	// list-open/writes-admin-only shape as every other pipeline-config
-	// resource above.
+	// Prospect stages — Marketing's working stages ("Converted" isn't in
+	// this table; see ProspectStage's doc).
 	authed.Get("/admin/prospect-stages", prospectStageH.List)
 	prospectStages := authed.Group("/admin/prospect-stages", adminOnly)
 	prospectStages.Post("/", prospectStageH.Create)
 	prospectStages.Patch("/:id", prospectStageH.Update)
 	prospectStages.Delete("/:id", prospectStageH.Delete)
 
-	// Company industry / size — writes are Admin-only, replacing the
-	// previously frontend-only hardcoded INDUSTRY_OPTIONS list (and Size's
-	// total lack of one). List open to every role, same 2026-09-09 fix:
-	// pages/crm/companies/create.vue|[id].vue|index.vue (not Admin-gated,
-	// reachable by every role with Company access) fetch these for their
-	// industry/size dropdowns.
+	// Company industry / size / revenue size.
 	authed.Get("/admin/industries", industryOptionH.List)
 	industries := authed.Group("/admin/industries", adminOnly)
 	industries.Post("/", industryOptionH.Create)
@@ -640,25 +603,15 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	revenueSizes.Patch("/:id", revenueSizeOptionH.Update)
 	revenueSizes.Delete("/:id", revenueSizeOptionH.Delete)
 
-	// Contact job titles — writes are Admin-only, same treatment as
-	// Industry/Size (previously pure free text with no controlled list at
-	// all). List open to every role, same 2026-09-09 fix:
-	// pages/crm/contacts/create.vue|[id].vue fetch this for their job-title
-	// dropdown.
+	// Contact job titles.
 	authed.Get("/admin/job-titles", jobTitleOptionH.List)
 	jobTitles := authed.Group("/admin/job-titles", adminOnly)
 	jobTitles.Post("/", jobTitleOptionH.Create)
 	jobTitles.Patch("/:id", jobTitleOptionH.Update)
 	jobTitles.Delete("/:id", jobTitleOptionH.Delete)
 
-	// List open to every authenticated role (not just Admin) — same reasoning
-	// and same 2026-09-09 fix as pipeline-stages/lead-sources above:
-	// pages/crm/projects/index.vue's Products tab (reachable by every role,
-	// not Admin-gated) fetches this for its category dropdown, so a
-	// non-Admin role — Production in particular, just landing on this page
-	// via the Dashboard's own "Projects Needing a Status Update" deep link —
-	// got a silent 403 here, which the app's axios interceptor turns into a
-	// hard redirect away from the very page it was trying to reach.
+	// Product categories (the Projects page's Products tab, open to every
+	// role including Production, reads this).
 	authed.Get("/admin/product-categories", productCategoryOptionH.List)
 	productCategories := authed.Group("/admin/product-categories", adminOnly)
 	productCategories.Post("/", productCategoryOptionH.Create)
