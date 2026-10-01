@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -69,8 +70,13 @@ func lockForConvert(tx *gorm.DB, row interface{}, id uint) error {
 //     to has since been soft-deleted, fall back to creating a fresh one
 //     rather than failing the whole conversion over a Company the caller
 //     never chose here in the first place.
-//   - With neither, a brand-new empty Company is created.
-func resolveOrCreateCompany(tx *gorm.DB, explicitID, fallbackID *uint) (models.Company, error) {
+//   - With neither, a new Company is created.
+//
+// A created Company is never nameless: it takes names.explicit (the
+// request's company_name), else the soft-deleted fallback Company's own
+// name, else names.contact (the Lead/Prospect's name). With none of those
+// it's a 422 asking for company_id or company_name.
+func resolveOrCreateCompany(tx *gorm.DB, explicitID, fallbackID *uint, names newCompanyNames) (models.Company, error) {
 	var company models.Company
 	switch {
 	case explicitID != nil:
@@ -80,30 +86,59 @@ func resolveOrCreateCompany(tx *gorm.DB, explicitID, fallbackID *uint) (models.C
 			}
 			return models.Company{}, err
 		}
+		return company, nil
 	case fallbackID != nil:
-		if err := tx.First(&company, *fallbackID).Error; err != nil {
-			if !errors.Is(err, gorm.ErrRecordNotFound) {
-				return models.Company{}, err
-			}
-			company = models.Company{Status: models.StatusActive}
-			if err := tx.Create(&company).Error; err != nil {
-				return models.Company{}, err
-			}
+		err := tx.First(&company, *fallbackID).Error
+		if err == nil {
+			return company, nil
 		}
-	default:
-		company = models.Company{Status: models.StatusActive}
-		if err := tx.Create(&company).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return models.Company{}, err
 		}
+		var gone models.Company
+		if err := tx.Unscoped().Select("name").First(&gone, *fallbackID).Error; err == nil {
+			names.former = gone.Name
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.Company{}, err
+		}
+	}
+
+	name := names.pick()
+	if name == "" {
+		return models.Company{}, &convertInputError{field: "company_id", msg: "company_id or company_name is required to create the company"}
+	}
+	company = models.Company{Name: name, Status: models.StatusActive}
+	if err := tx.Create(&company).Error; err != nil {
+		return models.Company{}, err
 	}
 	return company, nil
 }
 
+// newCompanyNames are the candidate names for a Company Convert has to
+// create, in resolveOrCreateCompany's order of preference.
+type newCompanyNames struct {
+	explicit string // the request's company_name
+	former   string // the source record's soft-deleted Company, if any
+	contact  string // the source Lead/Prospect's own name
+}
+
+func (n newCompanyNames) pick() string {
+	for _, v := range []string{n.explicit, n.former, n.contact} {
+		if v = strings.TrimSpace(v); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // resolveOrCreateContact implements the Contact-resolution half of both
 // LeadHandler.Convert and ProspectHandler.Convert — reuse explicitID
-// (req.ContactID) if given (it must exist and belong to companyID),
-// otherwise create a new Contact under companyID seeded from the source
-// Lead/Prospect's own name/email/phone.
+// (req.ContactID) if given (it must exist and belong to companyID);
+// otherwise reuse a Contact already in companyID with the same email
+// (case-insensitive, the oldest if several), so converting someone the
+// Company already has on file doesn't duplicate them; otherwise create a
+// new Contact under companyID seeded from the source Lead/Prospect's own
+// name/email/phone.
 func resolveOrCreateContact(tx *gorm.DB, explicitID *uint, companyID uint, name, email, phone string) (models.Contact, error) {
 	var contact models.Contact
 	if explicitID != nil {
@@ -117,6 +152,15 @@ func resolveOrCreateContact(tx *gorm.DB, explicitID *uint, companyID uint, name,
 			return models.Contact{}, &convertInputError{field: "contact_id", msg: "contact_id does not belong to the company"}
 		}
 		return contact, nil
+	}
+	if e := utils.NormalizeEmail(email); e != "" {
+		err := tx.Where("company_id = ? AND LOWER(TRIM(email)) = ?", companyID, e).Order("id").First(&contact).Error
+		if err == nil {
+			return contact, nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.Contact{}, err
+		}
 	}
 	contact = models.Contact{
 		CompanyID: companyID, Name: name, Email: email, Phone: phone,

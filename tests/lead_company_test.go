@@ -275,3 +275,76 @@ func TestLeadList_FiltersAndSortsByCompany(t *testing.T) {
 		assert.Equal(t, leadZ.ID, out.Data[0].ID)
 	})
 }
+
+// TestLeadConvert_NamesTheCreatedCompany guards that a Company Convert has
+// to create is never nameless: company_name wins, then the Lead's
+// soft-deleted Company's name, then the Lead's own name.
+func TestLeadConvert_NamesTheCreatedCompany(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+
+	convert := func(lead *models.Lead, body map[string]interface{}) models.Company {
+		t.Helper()
+		body["deal"] = map[string]interface{}{"title": "Deal", "value": 1000, "stage": "Lead"}
+		var out struct {
+			Data struct {
+				Company models.Company `json:"company"`
+			} `json:"data"`
+		}
+		resp := doJSON(t, app, testutil.AuthRequest(t, http.MethodPost, "/api/v1/leads/"+itoa(lead.ID)+"/convert", body, admin.ID, admin.Role), &out)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		return out.Data.Company
+	}
+
+	assert.Equal(t, "Globex", convert(seedLead(t, db, nil), map[string]interface{}{"company_name": "  Globex "}).Name)
+
+	gone := &models.Company{Name: "Former Co", Status: models.StatusActive}
+	require.NoError(t, db.Create(gone).Error)
+	withGone := seedLead(t, db, &gone.ID)
+	require.NoError(t, db.Delete(gone).Error)
+	assert.Equal(t, "Former Co", convert(withGone, map[string]interface{}{}).Name)
+
+	assert.Equal(t, "Jordan Lee", convert(seedLead(t, db, nil), map[string]interface{}{}).Name)
+}
+
+// TestLeadConvert_ReusesContactWithSameEmail guards that converting a Lead
+// whose email (any case) already belongs to a Contact in the target Company
+// links that Contact instead of creating a second one — but only within
+// that Company.
+func TestLeadConvert_ReusesContactWithSameEmail(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	company := seedCompany(t, db)
+	other := seedCompany(t, db)
+	existing := &models.Contact{CompanyID: company.ID, Name: "Jordan L.", Email: "jordan@initech.com", Status: models.StatusActive}
+	require.NoError(t, db.Create(existing).Error)
+	elsewhere := &models.Contact{CompanyID: other.ID, Name: "Jordan", Email: "jordan@initech.com", Status: models.StatusActive}
+	require.NoError(t, db.Create(elsewhere).Error)
+
+	convert := func(companyID uint) models.Contact {
+		t.Helper()
+		lead := &models.Lead{Name: "Jordan Lee", Email: "Jordan@Initech.com", CompanyID: &companyID,
+			Source: models.LeadSourceWebsite, Status: models.LeadStatusQualified}
+		require.NoError(t, db.Create(lead).Error)
+		var out struct {
+			Data struct {
+				Contact models.Contact `json:"contact"`
+			} `json:"data"`
+		}
+		resp := doJSON(t, app, testutil.AuthRequest(t, http.MethodPost, "/api/v1/leads/"+itoa(lead.ID)+"/convert", map[string]interface{}{
+			"deal": map[string]interface{}{"title": "Deal", "value": 1000, "stage": "Lead"},
+		}, admin.ID, admin.Role), &out)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		return out.Data.Contact
+	}
+
+	assert.Equal(t, existing.ID, convert(company.ID).ID, "same email in the target company is reused")
+	var n int64
+	require.NoError(t, db.Model(&models.Contact{}).Where("company_id = ?", company.ID).Count(&n).Error)
+	assert.Equal(t, int64(1), n)
+
+	third := seedCompany(t, db)
+	created := convert(third.ID)
+	assert.NotEqual(t, elsewhere.ID, created.ID, "a contact in another company is never reused")
+	assert.Equal(t, third.ID, created.CompanyID)
+}

@@ -36,6 +36,15 @@ Entries before this file existed are reconstructed from git/PR history — going
 
 Regression-guarded: `tests/quote_lifecycle_test.go`, `tests/contract_lock_test.go`.
 
+**Duplicates, convert and import.**
+- `POST /leads`, `POST /prospects` and `POST /contacts` return `409` when a non-deleted record of the same kind has the same email (case-insensitive) or phone (digits only, `+66` read as a leading `0`; `utils.NormalizePhone`). The body is the usual `CONFLICT` envelope plus `error.fields` (`{"email": ["duplicate"]}` and/or `{"phone": ["duplicate"]}`) and `error.duplicate_of` (matching ids, at most 10). **The frontend should show the match and offer to resend with `?allow_duplicate=true`**, which skips the check. Contacts are checked across all Companies. Updates are not checked.
+- Lead and Prospect Create/Update: `assigned_to` must be an active user in a sales-pipeline role (`422` on `assigned_to`, `validateAssignee`). Update only checks an owner that changed, so resending a since-deactivated owner still saves.
+- Both convert endpoints reuse a Contact already in the target Company with the same email (case-insensitive) instead of always creating one. A Company they create is never nameless: new optional body field `company_name`, else the source record's soft-deleted Company's name, else the Lead/Prospect's name. With none of those it's a `422` asking for `company_id` or `company_name`.
+- `POST /contacts/import` matches on lower(email) **within the row's Company** only, so a Contact is never moved to another Company (a same-email row for another Company creates a new Contact). An empty phone/role_title cell keeps the stored value. A `company_id` that names no Company is a `422` before anything is written.
+- Both imports save each row under a savepoint. A row Postgres rejected used to abort the transaction, so every later row failed and the import was a `500`. Now that row is reported in `errors` and skipped. A row with a NUL byte is skipped while parsing, since it failed the batched lookup query for the whole file.
+
+Regression-guarded: `tests/duplicate_detection_test.go`, new cases in `tests/import_test.go` and `tests/lead_company_test.go`, `internal/utils/contact_match_test.go`.
+
 ## 2026-09-28 — Review pass: sessions, access, deal states, report dates, deploy hardening
 
 Fixes from a full review of auth, handlers, reports and infrastructure.

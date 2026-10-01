@@ -66,3 +66,19 @@ func Internal(c *fiber.Ctx, message string) error {
 func Conflict(c *fiber.Ctx, message string) error {
 	return ErrorResponse(c, fiber.StatusConflict, "CONFLICT", message)
 }
+
+// DuplicateConflict is the 409 for a Create that matches an existing record.
+// On top of Conflict's envelope it carries `fields` (each matching field →
+// ["duplicate"], same shape as a 422's) and `duplicate_of`, the matching
+// records' ids, so the client can link to them or resend with
+// ?allow_duplicate=true.
+func DuplicateConflict(c *fiber.Ctx, message string, fields map[string][]string, duplicateOf []uint) error {
+	return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+		"error": fiber.Map{
+			"code":         "CONFLICT",
+			"message":      message,
+			"fields":       fields,
+			"duplicate_of": duplicateOf,
+		},
+	})
+}

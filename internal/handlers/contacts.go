@@ -117,14 +117,16 @@ func validateContactForm(c *fiber.Ctx, db *gorm.DB, form contactForm, requireCom
 
 // Create godoc
 // @Summary Create a contact
-// @Description Creates a Contact. company_id and name are required; role_title must match an active configured job title (see /admin/job-titles).
+// @Description Creates a Contact. company_id and name are required; role_title must match an active configured job title (see /admin/job-titles). A contact whose email (case-insensitive) or phone (digits only, +66 read as 0) matches an existing contact, in any company, is a 409 unless allow_duplicate=true.
 // @Tags contacts
 // @Security BearerAuth
 // @Accept json
 // @Produce json
 // @Param body body contactForm true "Contact fields"
+// @Param allow_duplicate query bool false "true creates the contact even if another has the same email or phone"
 // @Success 201 {object} models.Contact
 // @Failure 400 {object} map[string]interface{} "Invalid body, missing fields, or invalid role_title"
+// @Failure 409 {object} map[string]interface{} "Another contact has the same email or phone (error.fields, error.duplicate_of)"
 // @Router /contacts [post]
 func (h *ContactHandler) Create(c *fiber.Ctx) error {
 	var form contactForm
@@ -133,6 +135,9 @@ func (h *ContactHandler) Create(c *fiber.Ctx) error {
 	}
 	status, err := validateContactForm(c, h.DB, form, true)
 	if err != nil {
+		return nil
+	}
+	if err := rejectDuplicate(c, h.DB, &models.Contact{}, "contact", form.Email, form.Phone); err != nil {
 		return nil
 	}
 

@@ -28,3 +28,12 @@ func UintPtrString(p *uint) string {
 	}
 	return strconv.FormatUint(uint64(*p), 10)
 }
+
+// UintPtrEqual reports whether two nullable ids hold the same value (both
+// nil counts as equal).
+func UintPtrEqual(a, b *uint) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
