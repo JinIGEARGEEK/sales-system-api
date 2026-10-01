@@ -223,10 +223,63 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := BackfillInstallmentAlertContexts(db); err != nil {
 		return err
 	}
+	// Before BackfillDealValueQuotes: that one links Deals by their Accepted
+	// quote's taxable amount, which this changes for the quotes it converts.
+	if err := KeepLegacyInclTaxQuoteTotals(db); err != nil {
+		return err
+	}
 	if err := BackfillDealValueQuotes(db); err != nil {
 		return err
 	}
 	return nil
+}
+
+// legacyInclTaxQuotesBackfill names KeepLegacyInclTaxQuoteTotals'
+// data_migrations row.
+const legacyInclTaxQuotesBackfill = "legacy_incl_tax_quote_totals"
+
+// inclTaxFixMergedAt is when the tax-inclusive VAT fix (PR #77) merged to
+// main. Every quote created before it was priced by the old rule, which added
+// 7% VAT on top of the item prices whatever price_type said.
+var inclTaxFixMergedAt = time.Date(2026, 10, 1, 4, 43, 48, 0, time.UTC)
+
+// KeepLegacyInclTaxQuoteTotals (called from AutoMigrate) keeps the totals a
+// customer already saw on quotes priced before the tax-inclusive VAT fix.
+// The old rule treated item prices as tax-exclusive and added VAT on top,
+// which is exactly what excl_tax computes now. So each non-draft
+// (sent/accepted/rejected) incl_tax quote with VAT on, created before the
+// fix, is switched to price_type excl_tax: its subtotal, VAT, grand total,
+// PDF and the deal's receivable come out exactly as before. Drafts weren't
+// sent to anyone and keep the corrected tax-inclusive calculation.
+//
+// A Deal whose value is linked to one of these quotes (value_quote_id) is
+// unlinked and its value left as it is — the boot never rewrites revenue
+// (same rule as BackfillDealValueQuotes); it is linked again the next time one
+// of its quotes is accepted. No audit rows: nothing a user did. Runs once
+// (runOnce), so a quote made tax-inclusive after the fix is never touched.
+func KeepLegacyInclTaxQuoteTotals(db *gorm.DB) error {
+	return runOnce(db, legacyInclTaxQuotesBackfill, func(tx *gorm.DB) error {
+		var ids []uint
+		err := tx.Raw(`
+			UPDATE quotes SET price_type = ?
+			WHERE price_type = ? AND vat_enabled AND status IN ? AND created_at < ?
+			RETURNING id`,
+			models.QuotePriceTypeExclTax, models.QuotePriceTypeInclTax,
+			[]models.QuoteStatus{models.QuoteStatusSent, models.QuoteStatusAccepted, models.QuoteStatusRejected},
+			inclTaxFixMergedAt).Scan(&ids).Error
+		if err != nil {
+			return fmt.Errorf("keep legacy incl_tax quote totals: %w", err)
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		res := tx.Exec(`UPDATE deals SET value_quote_id = NULL WHERE value_quote_id IN ?`, ids)
+		if res.Error != nil {
+			return fmt.Errorf("unlink deals from legacy incl_tax quotes: %w", res.Error)
+		}
+		log.Printf("legacy incl_tax quotes: kept the pre-fix totals of %d sent/accepted/rejected quote(s) by switching them to excl_tax; unlinked %d deal value(s) from them, values unchanged", len(ids), res.RowsAffected)
+		return nil
+	})
 }
 
 // dealValueQuotesBackfill names BackfillDealValueQuotes' data_migrations row.
