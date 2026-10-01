@@ -2251,7 +2251,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Uploads a CSV file (header row skipped, up to 10MB / 5000 data rows) with columns name,industry,size,website — name is required per row. Dedupes primarily by normalized website domain, falling back to a case-insensitive/whitespace-trimmed name match when either side has no website (FR-CRM-014): a match updates the existing Company, otherwise a new one is created. Runs in one transaction with a savepoint per row, so a row that fails to save is rolled back, reported in errors and skipped while the rest are imported.",
+                "description": "Uploads a CSV file (header row skipped, up to 10MB / 5000 data rows) with columns name,industry,size,website — name is required per row. A row matches an existing Company by normalized website domain, else by case-insensitive/whitespace-trimmed name when the row or that Company has no website (FR-CRM-014): a match is updated (name is kept; industry/size/website only when the CSV cell is non-empty), otherwise a new Company is created. Runs in one transaction with a savepoint per row, so a row that fails to save is rolled back, reported in errors and skipped while the rest are imported.",
                 "consumes": [
                     "multipart/form-data"
                 ],
@@ -2280,6 +2280,13 @@
                     },
                     "400": {
                         "description": "Missing/invalid file, unsupported format (non-.csv), or row limit exceeded",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "413": {
+                        "description": "File over 10MB",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -2876,7 +2883,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a Contact. company_id and name are required; role_title must match an active configured job title (see /admin/job-titles). A contact whose email (case-insensitive) or phone (digits only, +66 read as 0) matches an existing contact, in any company, is a 409 unless allow_duplicate=true.",
+                "description": "Creates a Contact. company_id (an existing Company, else 422) and name are required; role_title must match an active configured job title (see /admin/job-titles). A contact whose email (case-insensitive) or phone (digits only, +66 read as 0) matches an existing contact, in any company, is a 409 unless allow_duplicate=true.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2912,7 +2919,14 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid body, missing fields, or invalid role_title",
+                        "description": "Invalid body (e.g. a field sent as the wrong JSON type)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Production role",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -2920,6 +2934,13 @@
                     },
                     "409": {
                         "description": "Another contact has the same email or phone (error.fields, error.duplicate_of)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Missing company_id/name, a company_id naming no Company, invalid email/phone, inactive role_title, or invalid status",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -2967,7 +2988,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Uploads a CSV file (header row skipped, up to 10MB / 5000 data rows) with columns company_id,name,email,phone,role_title — company_id and name are required per row, and every company_id must be an existing Company (422 before anything is imported). Dedupes by email per FR-CRM-014, case-insensitively and within the row's own Company: a match there is updated (name always; phone/role_title only when the CSV cell is non-empty), otherwise a new Contact is created — a Contact is never moved to another Company. Same savepoint-per-row treatment as ImportCompanies.",
+                "description": "Uploads a CSV file (header row skipped, up to 10MB / 5000 data rows) with columns company_id,name,email,phone,role_title — company_id (a whole number) and name are required per row, and every company_id must be an existing Company (422 before anything is imported). Dedupes by email per FR-CRM-014, case-insensitively and within the row's own Company: a match there is updated (name always; phone/role_title only when the CSV cell is non-empty), otherwise a new Contact is created — a Contact is never moved to another Company. Same savepoint-per-row treatment as ImportCompanies.",
                 "consumes": [
                     "multipart/form-data"
                 ],
@@ -2996,6 +3017,13 @@
                     },
                     "400": {
                         "description": "Missing/invalid file, unsupported format (non-.csv), or row limit exceeded",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "413": {
+                        "description": "File over 10MB",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -3098,7 +3126,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Updates a Contact. role_title must match an active configured job title.",
+                "description": "Updates a Contact (full replace). company_id 0 or omitted keeps the current Company. role_title must match an active configured job title. No duplicate check (that runs on Create only). is_primary true clears it on the Company's other Contacts.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3135,7 +3163,7 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid body or invalid role_title",
+                        "description": "Invalid body (e.g. a field sent as the wrong JSON type)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -3143,6 +3171,13 @@
                     },
                     "404": {
                         "description": "Contact not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Missing name, a changed company_id naming no Company, invalid email/phone, inactive role_title, or invalid status",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -9178,7 +9213,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Any authenticated role — not Admin-restricted, §2.2. Lightweight active-user list (id, name, email) for assignee dropdowns.",
+                "description": "Any authenticated role — not Admin-restricted, §2.2. Lightweight active-user list (id, name, email, role) for assignee dropdowns; role lets a picker offer only the sales-pipeline roles (Admin, Sales Rep, Sales Manager, Marketing) that assigned_to accepts.",
                 "produces": [
                     "application/json"
                 ],
@@ -12900,6 +12935,14 @@
                 },
                 "name": {
                     "type": "string"
+                },
+                "role": {
+                    "description": "Role lets pickers offer only users who may own a record: assigned_to\naccepts Admin, Sales Rep, Sales Manager and Marketing, not Production.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Role"
+                        }
+                    ]
                 }
             }
         },
