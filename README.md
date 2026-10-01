@@ -6,12 +6,12 @@ Implements the contract defined in [`biz_spec/api-system-spec.md`](biz_spec/api-
 
 ## Tech stack
 
-- **Go 1.25** + [Fiber v2](https://gofiber.io/) (HTTP framework)
+- **Go 1.26** + [Fiber v2](https://gofiber.io/) (HTTP framework)
 - **GORM** + `gorm.io/driver/postgres` (ORM)
 - **PostgreSQL** (database)
 - **golang-jwt/jwt/v5** (auth) + bcrypt (password hashing)
 
-`go.mod`'s `go` directive pins a specific patch version (not just `1.25`) deliberately — Go's `GOTOOLCHAIN=auto` (default since 1.21) then auto-fetches that exact patch for anyone building the repo, local or CI, which is how stdlib security fixes actually reach every environment without each one needing to separately upgrade its installed `go` binary. Bump it whenever `govulncheck` (run in CI, see below) reports a fixed-in version ahead of what's pinned.
+`go.mod`'s `go` directive pins a specific patch version (not just `1.26`) deliberately — Go's `GOTOOLCHAIN=auto` (default since 1.21) then auto-fetches that exact patch for anyone building the repo, local or CI, which is how stdlib security fixes actually reach every environment without each one needing to separately upgrade its installed `go` binary. Bump it whenever `govulncheck` (run in CI, see below) reports a fixed-in version ahead of what's pinned.
 
 ## Project layout
 
@@ -34,7 +34,7 @@ biz_spec/           api-system-spec.md — the API contract this repo implements
 
 ### Prerequisites
 
-- Go 1.25+
+- Go 1.26+
 - PostgreSQL (locally via Homebrew, or `docker-compose up -d` using the provided `docker-compose.yml`)
 
 ### Setup

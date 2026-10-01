@@ -27,7 +27,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache: true
 
       - run: go build ./...
@@ -101,7 +101,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache: true
 
       - uses: golangci/golangci-lint-action@v9
@@ -115,14 +115,13 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache: true
 
       # Catches both stdlib CVEs the resolved Go toolchain patch is behind on,
       # and known-vulnerable dependency versions actually reachable from our
       # code (e.g. the fasthttp double-encoded-path auth bypass fixed by
       # bumping to v1.70.0+ in go.mod) — go vet/golangci-lint don't cover this.
-      # Pinned (not @latest): govulncheck v1.8.0 requires go>=1.26, ahead of
-      # the go-version pinned above — v1.7.0 is the newest release that still
-      # only requires go1.25.
-      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+      # Pinned (not @latest) so a govulncheck release that requires a newer Go
+      # than the go-version above can't break CI unannounced.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
