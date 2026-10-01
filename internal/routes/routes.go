@@ -449,6 +449,10 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	quoteTemplates.Delete("/:id", quoteTemplateH.Delete)
 
 	// Quotes / Payments / Contracts (top-level, non-nested routes)
+	// The reads are salesPipelineRoles like the /deals group (a Quote is a
+	// Deal sub-resource; Production has no Deal access).
+	authed.Get("/quotes", salesPipelineRoles, quoteH.Search)
+	authed.Get("/quotes/:id", salesPipelineRoles, quoteH.Get)
 	authed.Put("/quotes/:id", quoteH.Update)
 	authed.Delete("/quotes/:id", quoteH.Delete)
 	authed.Get("/quotes/:id/export-pdf", quoteH.ExportPDF)
