@@ -547,10 +547,12 @@ func checkCompanyDormantRule(db *gorm.DB, cfg *config.Config, rule models.Notifi
 		Name           string
 		LastActivityAt *time.Time
 	}
+	// db.Table skips GORM's soft-delete scope, so deleted Companies (including
+	// merged-away duplicates) are excluded by hand.
 	if err := db.Table("companies").
 		Select("companies.id, companies.name, last_company_activity.last_activity_at as last_activity_at").
 		Joins("LEFT JOIN (SELECT related_id, MAX(created_at) as last_activity_at FROM activities WHERE related_type = ? GROUP BY related_id) as last_company_activity ON last_company_activity.related_id = companies.id", models.RelatedTypeCompany).
-		Where("companies.status = ?", models.StatusActive).
+		Where("companies.status = ? AND companies.deleted_at IS NULL", models.StatusActive).
 		Scan(&rows).Error; err != nil {
 		log.Printf("notifier: failed to query companies for rule %d: %v", rule.ID, err)
 		return

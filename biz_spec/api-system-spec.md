@@ -343,6 +343,40 @@ interface Company {
 | `PUT` | `/companies/:id` | 🟢 | Update (full replace). Exception: `branch_code`/`postal_code` keep their saved value when the key is absent from the body (explicit `null`/`""` clears), since they're newer than existing clients such as the staff Company form. Same rule as `stale_days` on the stage config resources. The tax ID + branch `409` only runs when the pair changes, so a legacy duplicate can still be edited. |
 | `DELETE` | `/companies/:id` | 🟢 | Sets `status: 'archived'` (soft delete, §1.6) — never a hard delete, since Deals/Contacts/Payments reference `company_id`. **Admin/Sales Manager only** (`403` otherwise). `409` while the Company has an open or Won (non-deleted) Deal. Delete and `POST /companies/:id/restore` write `company`/`deleted` and `company`/`restored` audit entries (§8.5). |
 | `POST` | `/companies/import` | 🟢 | Bulk import — see §6.2. `FR-CRM-014`. |
+| `POST` | `/companies/:id/merge` | 🟢 | Merge duplicate Companies into `:id`. **Admin/Sales Manager only.** See "Merging duplicates" below. |
+
+
+### Merging duplicates (`POST /companies/:id/merge`, `POST /contacts/:id/merge`)
+
+Added with the review follow-ups. `:id` is the target, which survives. Body `{ "source_ids": [n, ...] }`, 1–20 ids. Admin/Sales Manager only (`403` otherwise).
+
+- `422` with `error.fields.source_ids` when `source_ids` is missing or empty, has more than 20 ids, contains the target, or repeats an id.
+- `404` when the target or any source doesn't exist or is soft-deleted. The message lists the missing ids.
+- Everything runs in one transaction. The target and sources are locked `FOR UPDATE` in id order, so concurrent merges over the same records wait for each other instead of deadlocking. The loser of two opposite merges gets `404` because its source is already gone.
+- **References moved to the target** (soft-deleted rows too, with `updated_at` bumped):
+  - Company: `contacts`, `deals`, `leads.company_id`, `prospects`, `projects`, `customer_products`, company `activities`, `attachments` and `tasks` (incl. Campaign tasks), `leads.referred_by` (`lead_referrals`), and dormant-company `notification_logs`. A log for a tier the target already has stays on the source.
+  - Contact: `deals.contact_id`, contact `activities` and `tasks`, `leads.referred_by` (`lead_referrals`). A moved Deal keeps its own `company_id`.
+  - Not moved: audit log rows (a source's history stays on it), Open API request logs and idempotency keys. Quotes, contracts and payments follow their Deal.
+- **Fields.** The target keeps every non-empty field. An empty one takes the first non-empty value from the sources, in `source_ids` order. Tags are the union, lowercased and deduped (`normalizeTags`). `name` and `status` are always the target's.
+  - Company: `website` (with its derived domain), `tax_id` and `branch_code` identify the Company. `tax_id` is filled together with that source's `branch_code`. A source whose website domain, `tax_id`, or `branch_code` (same `tax_id`) differs from the target's is not copied and is listed in `conflicts`. Contacts that move keep at most one Primary: the target's own, else the first source's.
+  - Contact: `email` (case-insensitive) and `phone` (`utils.NormalizePhone`) are conflict-checked the same way. `is_primary` is filled only from a source in the target's own Company.
+- **Sources are soft-deleted** (`deleted_by` set), so they appear in Trash and drop out of duplicate detection (the 409 `duplicate_of` check skips deleted rows). A Company source's derived domain is cleared, so restoring it can't hit the unique domain index. **Restoring a merged source gives back an empty record**: its fields are still there but all its Deals, Contacts, Activities etc. stay on the target.
+- **Audit:** one `merged` row on the target (`before`: target snapshot, `after`: `{source_ids, moved, filled, conflicts}`) and one `merged_into` row per source (`before`: source snapshot, `after`: `{target_id}`). `entity_type` is `company`/`contact`.
+
+Response `200`:
+
+```ts
+{ data: {
+  target: Company | Contact          // Company includes last_activity_at, as on GET /companies/:id
+  moved: Record<string, number>      // per-table counts (every key present, 0 if none) + total
+  filled: string[]                   // target fields filled from a source, plus 'tags' if any were added
+  conflicts: { field: string, source_id: number, value: string }[]
+} }
+```
+
+Company `moved` keys: `contacts`, `deals`, `leads`, `prospects`, `projects`, `customer_products`, `activities`, `attachments`, `tasks`, `lead_referrals`, `notification_logs`, `total`. Contact `moved` keys: `deals`, `activities`, `tasks`, `lead_referrals`, `total`.
+
+The dormant-company rule (§8.8) now skips soft-deleted Companies, so a merged source doesn't get alerts.
 
 ---
 
@@ -372,6 +406,7 @@ interface Contact {
 | `PUT` | `/contacts/:id` | 🟢 | Update. |
 | `DELETE` | `/contacts/:id` | 🟢 | Soft-delete (`status: 'archived'`). **Admin/Sales Manager only** (`403` otherwise). Delete and `POST /contacts/:id/restore` write `contact`/`deleted` and `contact`/`restored` audit entries (§8.5). |
 | `POST` | `/contacts/import` | 🟢 | Bulk import — see §6.2, same FlowAccount-export path as Companies. |
+| `POST` | `/contacts/:id/merge` | 🟢 | Merge duplicate Contacts into `:id`. **Admin/Sales Manager only.** Sources may belong to other Companies; the target keeps its `company_id`. See "Merging duplicates" in §4. |
 
 > `FR-CRM-012` ("one Contact marked Primary per Company") is 🔜 **Planned** — no `is_primary` field exists in the frontend interface today. If added, it should live here as a boolean with a uniqueness constraint per `company_id`.
 
