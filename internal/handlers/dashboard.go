@@ -166,9 +166,8 @@ func periodStart(period string) (time.Time, bool) {
 
 // currentQuarterTarget resolves the actual target to use for THIS calendar
 // quarter's pipeline_coverage_ratio (FR-CRM-092): a SalesTarget row for the
-// current (year, quarter) if an Admin has set one, else the flat
-// AppSettings.QuarterlySalesTarget/4 fallback (today's pre-FR-CRM-092
-// behavior, unchanged for anyone who's never touched the new feature).
+// current (year, quarter) if an Admin has set one, else the annual
+// AppSettings figure passed in (fallbackAnnual) divided by 4.
 func (h *DashboardHandler) currentQuarterTarget(fallbackAnnual int64) float64 {
 	now := time.Now()
 	quarter := (int(now.Month())-1)/3 + 1
@@ -518,10 +517,17 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	})
 	run("revenue_trend", func() { revenueTrend = h.revenueTrend() })
 	// Both count open Deals by expected close day against today
-	// (server-local), over dims — see closeDatePipeline.
+	// (server-local), over dims — see closeDatePipeline. They share one
+	// load of those Deals; whichever runs first does it.
 	now := time.Now()
-	run("forecast_trend", func() { forecastTrendPoints = forecastTrend(dims, now) })
-	run("pipeline_coverage_ratio", func() { closeDates = closeDatePipeline(dims, now) })
+	var closeDays []openDealCloseDate
+	var loadCloseDays sync.Once
+	openCloseDays := func() []openDealCloseDate {
+		loadCloseDays.Do(func() { closeDays = openDealCloseDates(dims) })
+		return closeDays
+	}
+	run("forecast_trend", func() { forecastTrendPoints = forecastTrend(openCloseDays(), now) })
+	run("pipeline_coverage_ratio", func() { closeDates = closeDatePipeline(openCloseDays(), now) })
 	run("stage_breakdown", func() { stageBreakdown = h.stageBreakdown(dims, windows) })
 	run("forecast_by_category", func() { forecastByCategory = h.forecastByCategory(base) })
 	run("industry_breakdown", func() { industryBreakdown = h.industryBreakdown(dims, windows, companyTagSet) })
@@ -716,18 +722,18 @@ type closeDatePipelineTotals struct {
 	UndatedCount int64
 }
 
-// closeDatePipeline totals open Deals matching dims by expected close day
+// closeDatePipeline totals deals (openDealCloseDates) by expected close day
 // (closeDatePipelineTotals). Only the non-date filters apply: the figures
 // are defined by expected_close_date and today, so the created_at window
 // the other open-pipeline cards use would drop older Deals that are still
 // due this quarter.
-func closeDatePipeline(dims *gorm.DB, now time.Time) closeDatePipelineTotals {
+func closeDatePipeline(deals []openDealCloseDate, now time.Time) closeDatePipelineTotals {
 	today := calendar.Today(now)
 	quarterStart := calendar.QuarterStart(today)
 	nextQuarter := quarterStart.AddDate(0, 3, 0)
 
 	var t closeDatePipelineTotals
-	for _, d := range openDealCloseDates(dims) {
+	for _, d := range deals {
 		if !d.Dated {
 			t.UndatedValue += d.Value
 			t.UndatedCount++
@@ -755,7 +761,7 @@ type forecastTrendPoint struct {
 
 // forecastTrend is the forward-looking counterpart to revenueTrend: open
 // Deals' probability-weighted value by expected close month for the next 6
-// months (this month + 5 forward), over the Deals matching dims (Summary's
+// months (this month + 5 forward), over deals (openDealCloseDates: Summary's
 // non-date filters, as closeDatePipeline — the created_at window doesn't
 // apply to a by-close-date view).
 //
@@ -769,7 +775,7 @@ type forecastTrendPoint struct {
 // forecasted_revenue stat card, which sums open Deals regardless of date —
 // so this trend's points may sum to less than that total (see
 // undated_pipeline_value for the unweighted amount).
-func forecastTrend(dims *gorm.DB, now time.Time) []forecastTrendPoint {
+func forecastTrend(deals []openDealCloseDate, now time.Time) []forecastTrendPoint {
 	start := thisMonthStart(now)
 	bounds := monthBounds(start, 6)
 	today := calendar.Today(now)
@@ -778,7 +784,7 @@ func forecastTrend(dims *gorm.DB, now time.Time) []forecastTrendPoint {
 	for i := range points {
 		points[i].Label = bounds[i].Format("Jan")
 	}
-	for _, d := range openDealCloseDates(dims) {
+	for _, d := range deals {
 		if !d.Dated {
 			continue
 		}

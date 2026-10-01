@@ -151,6 +151,15 @@ func snapshotOf(v interface{}) models.JSONMap {
 	return out
 }
 
+// snapshotsOf is snapshotOf for each source, in order.
+func snapshotsOf[T any](sources []*T) []models.JSONMap {
+	out := make([]models.JSONMap, len(sources))
+	for i, s := range sources {
+		out[i] = snapshotOf(s)
+	}
+	return out
+}
+
 // writeMergeAudit writes the target's `merged` row and one `merged_into` row
 // per source.
 func writeMergeAudit(tx *gorm.DB, entityType string, targetID uint, before models.JSONMap,
@@ -220,10 +229,7 @@ func (h *CompanyHandler) Merge(c *fiber.Ctx) error {
 			return err
 		}
 		before := snapshotOf(target)
-		sourceSnaps := make([]models.JSONMap, len(sources))
-		for i, s := range sources {
-			sourceSnaps[i] = snapshotOf(s)
-		}
+		sourceSnaps := snapshotsOf(sources)
 
 		moved, err := repointCompanyRefs(tx, targetID, sourceIDs)
 		if err != nil {
@@ -290,10 +296,7 @@ func (h *ContactHandler) Merge(c *fiber.Ctx) error {
 			return err
 		}
 		before := snapshotOf(target)
-		sourceSnaps := make([]models.JSONMap, len(sources))
-		for i, s := range sources {
-			sourceSnaps[i] = snapshotOf(s)
-		}
+		sourceSnaps := snapshotsOf(sources)
 
 		moved, err := repointContactRefs(tx, targetID, sourceIDs)
 		if err != nil {

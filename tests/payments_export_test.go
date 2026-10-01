@@ -116,3 +116,34 @@ func TestPaymentsExport_BadFilters(t *testing.T) {
 		assert.Equal(t, http.StatusUnprocessableEntity, status, q)
 	}
 }
+
+// TestPaymentsExport_PagesNeitherSkipNorRepeatRows: an export longer than
+// one page (exportBatchSize = 500) holds every payment exactly once, in
+// paid_at then id order — paid_at runs against id order here.
+func TestPaymentsExport_PagesNeitherSkipNorRepeatRows(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	deal := seedDeal(t, db, nil)
+
+	const n = 1103
+	payments := make([]models.Payment, n)
+	base := localDay(2026, 1, 1)
+	for i := range payments {
+		// Later ids get earlier days; every 3 share a day, so id breaks ties.
+		payments[i] = models.Payment{DealID: deal.ID, Amount: float64(i + 1), Method: models.PaymentMethodCash,
+			PaidAt: base.AddDate(0, 0, (n-i)/3)}
+	}
+	require.NoError(t, db.CreateInBatches(&payments, 500).Error)
+
+	status, rows, _ := exportPayments(t, app, admin, "")
+	require.Equal(t, http.StatusOK, status)
+	require.Len(t, rows, n+1, "header + every payment")
+	seen := map[string]bool{}
+	for _, r := range rows[1:] {
+		assert.False(t, seen[r[5]], "amount %s exported twice", r[5])
+		seen[r[5]] = true
+	}
+	for i := 2; i < len(rows); i++ {
+		assert.LessOrEqual(t, rows[i-1][0], rows[i][0], "paid_at ascending at row %d", i)
+	}
+}

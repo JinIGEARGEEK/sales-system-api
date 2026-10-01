@@ -348,3 +348,22 @@ func TestQuoteLifecycle_StatusChangesAreAudited(t *testing.T) {
 	assert.Equal(t, "accepted", entries[1].After["status"])
 	assert.Equal(t, admin.ID, entries[1].ActorID)
 }
+
+// TestQuoteLifecycle_DiscountCapUsesRoundedSubtotal: discount_total is
+// capped at the subtotal the quote prints (each line rounded to satang,
+// then summed), not the unrounded sum. Three lines of 100 at 33.333% off
+// are 66.667 each unrounded (200.001) but 66.67 each printed (200.01).
+func TestQuoteLifecycle_DiscountCapUsesRoundedSubtotal(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	deal := seedDeal(t, db, nil)
+	draft := seedLifecycleQuote(t, db, deal.ID, models.QuoteStatusDraft, "QT-ROUND")
+	line := map[string]interface{}{"description": "x", "qty": 1, "price": 100, "discount_percent": 33.333}
+	items := []map[string]interface{}{line, line, line}
+
+	resp, _ := putQuote(t, app, admin, draft.ID, map[string]interface{}{"items": items, "discount_total": 200.01})
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "a discount equal to the printed subtotal is allowed")
+
+	resp, _ = putQuote(t, app, admin, draft.ID, map[string]interface{}{"items": items, "discount_total": 200.02})
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode, "one satang over the printed subtotal is not")
+}

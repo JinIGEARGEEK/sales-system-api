@@ -458,7 +458,7 @@ definitions:
       value_quote_id:
         description: |-
           ValueQuoteID is the Accepted Quote whose pre-VAT taxable amount the
-          Deal's Value was last synced from (handlers.syncDealValue), nil when
+          Deal's Value was last synced from (handlers.syncDealValueForQuote), nil when
           Value is the rep's own figure. While set, PUT /deals/:id can't change
           Value. FK to quotes(id), ON DELETE SET NULL (database.
           ensureDealValueQuoteFK). Create-only for GORM writes ("<-:create"): a
@@ -1821,7 +1821,7 @@ definitions:
       value_quote_id:
         description: |-
           ValueQuoteID is the Accepted Quote whose pre-VAT taxable amount the
-          Deal's Value was last synced from (handlers.syncDealValue), nil when
+          Deal's Value was last synced from (handlers.syncDealValueForQuote), nil when
           Value is the rep's own figure. While set, PUT /deals/:id can't change
           Value. FK to quotes(id), ON DELETE SET NULL (database.
           ensureDealValueQuoteFK). Create-only for GORM writes ("<-:create"): a
@@ -2567,8 +2567,8 @@ definitions:
         allOf:
         - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Role'
         description: |-
-          Role lets pickers offer only users who may own the record (e.g. no
-          Production on Deals/Tasks — validateAssignee).
+          Role lets pickers offer only users who may own a record: assigned_to
+          accepts Admin, Sales Rep, Sales Manager and Marketing, not Production.
     type: object
   internal_handlers.userDeleteForm:
     properties:
@@ -4513,6 +4513,11 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "409":
+          description: A live company now has this one's website domain
+          schema:
+            additionalProperties: true
+            type: object
       security:
       - BearerAuth: []
       summary: Restore a deleted company (Admin/Sales Manager only)
@@ -4545,11 +4550,12 @@ paths:
       - multipart/form-data
       description: 'Uploads a CSV file (header row skipped, up to 10MB / 5000 data
         rows) with columns name,industry,size,website — name is required per row.
-        Dedupes primarily by normalized website domain, falling back to a case-insensitive/whitespace-trimmed
-        name match when either side has no website (FR-CRM-014): a match updates the
-        existing Company, otherwise a new one is created. Runs in one transaction
-        with a savepoint per row, so a row that fails to save is rolled back, reported
-        in errors and skipped while the rest are imported.'
+        A row matches an existing Company by normalized website domain, else by case-insensitive/whitespace-trimmed
+        name when the row or that Company has no website (FR-CRM-014): a match is
+        updated (name is kept; industry/size/website only when the CSV cell is non-empty),
+        otherwise a new Company is created. Runs in one transaction with a savepoint
+        per row, so a row that fails to save is rolled back, reported in errors and
+        skipped while the rest are imported.'
       parameters:
       - description: 'CSV file: name,industry,size,website'
         in: formData
@@ -4566,6 +4572,11 @@ paths:
         "400":
           description: Missing/invalid file, unsupported format (non-.csv), or row
             limit exceeded
+          schema:
+            additionalProperties: true
+            type: object
+        "413":
+          description: File over 10MB
           schema:
             additionalProperties: true
             type: object
@@ -4650,10 +4661,11 @@ paths:
     post:
       consumes:
       - application/json
-      description: Creates a Contact. company_id and name are required; role_title
-        must match an active configured job title (see /admin/job-titles). A contact
-        whose email (case-insensitive) or phone (digits only, +66 read as 0) matches
-        an existing contact, in any company, is a 409 unless allow_duplicate=true.
+      description: Creates a Contact. company_id (an existing Company, else 422) and
+        name are required; role_title must match an active configured job title (see
+        /admin/job-titles). A contact whose email (case-insensitive) or phone (digits
+        only, +66 read as 0) matches an existing contact, in any company, is a 409
+        unless allow_duplicate=true.
       parameters:
       - description: Contact fields
         in: body
@@ -4674,13 +4686,24 @@ paths:
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Contact'
         "400":
-          description: Invalid body, missing fields, or invalid role_title
+          description: Invalid body (e.g. a field sent as the wrong JSON type)
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Production role
           schema:
             additionalProperties: true
             type: object
         "409":
           description: Another contact has the same email or phone (error.fields,
             error.duplicate_of)
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Missing company_id/name, a company_id naming no Company, invalid
+            email/phone, inactive role_title, or invalid status
           schema:
             additionalProperties: true
             type: object
@@ -4746,8 +4769,10 @@ paths:
     put:
       consumes:
       - application/json
-      description: Updates a Contact. role_title must match an active configured job
-        title.
+      description: Updates a Contact (full replace). company_id 0 or omitted keeps
+        the current Company. role_title must match an active configured job title.
+        No duplicate check (that runs on Create only). is_primary true clears it on
+        the Company's other Contacts.
       parameters:
       - description: Contact ID
         in: path
@@ -4768,12 +4793,18 @@ paths:
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Contact'
         "400":
-          description: Invalid body or invalid role_title
+          description: Invalid body (e.g. a field sent as the wrong JSON type)
           schema:
             additionalProperties: true
             type: object
         "404":
           description: Contact not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Missing name, a changed company_id naming no Company, invalid
+            email/phone, inactive role_title, or invalid status
           schema:
             additionalProperties: true
             type: object
@@ -4897,13 +4928,13 @@ paths:
       consumes:
       - multipart/form-data
       description: 'Uploads a CSV file (header row skipped, up to 10MB / 5000 data
-        rows) with columns company_id,name,email,phone,role_title — company_id and
-        name are required per row, and every company_id must be an existing Company
-        (422 before anything is imported). Dedupes by email per FR-CRM-014, case-insensitively
-        and within the row''s own Company: a match there is updated (name always;
-        phone/role_title only when the CSV cell is non-empty), otherwise a new Contact
-        is created — a Contact is never moved to another Company. Same savepoint-per-row
-        treatment as ImportCompanies.'
+        rows) with columns company_id,name,email,phone,role_title — company_id (a
+        whole number) and name are required per row, and every company_id must be
+        an existing Company (422 before anything is imported). Dedupes by email per
+        FR-CRM-014, case-insensitively and within the row''s own Company: a match
+        there is updated (name always; phone/role_title only when the CSV cell is
+        non-empty), otherwise a new Contact is created — a Contact is never moved
+        to another Company. Same savepoint-per-row treatment as ImportCompanies.'
       parameters:
       - description: 'CSV file: company_id,name,email,phone,role_title'
         in: formData
@@ -4920,6 +4951,11 @@ paths:
         "400":
           description: Missing/invalid file, unsupported format (non-.csv), or row
             limit exceeded
+          schema:
+            additionalProperties: true
+            type: object
+        "413":
+          description: File over 10MB
           schema:
             additionalProperties: true
             type: object
@@ -5005,7 +5041,7 @@ paths:
             additionalProperties: true
             type: object
         "409":
-          description: Contract is signed (locked)
+          description: Contract is signed (locked), or its status changed meanwhile
           schema:
             additionalProperties: true
             type: object
@@ -5092,7 +5128,7 @@ paths:
             additionalProperties: true
             type: object
         "409":
-          description: Contract is already signed
+          description: Contract is already signed, or its status changed meanwhile
           schema:
             additionalProperties: true
             type: object
@@ -5321,8 +5357,7 @@ paths:
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal'
         "400":
-          description: Invalid request body, or validation error (required fields,
-            value, expected_close_date, probability, lost_reason, stage/channel/business_unit)
+          description: Invalid request body
           schema:
             additionalProperties: true
             type: object
@@ -5332,7 +5367,10 @@ paths:
             additionalProperties: true
             type: object
         "422":
-          description: assigned_to is not an active sales-role user
+          description: Validation error (required fields, value, expected_close_date,
+            probability, forecast_category, lost_reason, stage/channel/business_unit,
+            signed contract required for Won), or assigned_to is not an active sales-role
+            user
           schema:
             additionalProperties: true
             type: object
@@ -5712,8 +5750,7 @@ paths:
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Quote'
         "400":
-          description: Invalid request body, or validation error (status, price_type,
-            credit_days, wht_rate, discount_total)
+          description: Invalid request body
           schema:
             additionalProperties: true
             type: object
@@ -5734,8 +5771,8 @@ paths:
             additionalProperties: true
             type: object
         "422":
-          description: Invalid field (items[i].qty/price/discount_percent, discount_total,
-            wht_rate, issue_date, validity_date)
+          description: Invalid field (status, price_type, credit_days, wht_rate, discount_total,
+            items[i].qty/price/discount_percent, issue_date, validity_date)
           schema:
             additionalProperties: true
             type: object
@@ -5910,8 +5947,7 @@ paths:
           schema:
             $ref: '#/definitions/internal_handlers.dealDetail'
         "400":
-          description: Invalid request body, or validation error (required fields,
-            value, expected_close_date, probability, lost_reason, stage/channel/business_unit)
+          description: Invalid request body
           schema:
             additionalProperties: true
             type: object
@@ -5933,8 +5969,9 @@ paths:
             additionalProperties: true
             type: object
         "422":
-          description: assigned_to is not an active sales-role user, or value changed
-            while synced from an Accepted quote (fields.value synced_from_quote)
+          description: Validation error (as Create), assigned_to is not an active
+            sales-role user, or value changed while synced from an Accepted quote
+            (fields.value synced_from_quote)
           schema:
             additionalProperties: true
             type: object
@@ -6022,14 +6059,13 @@ paths:
         status to won/lost alongside stage — or open (clearing lost_reason) on a move
         into any other stage — and re-derives probability in the same transaction;
         writes a stage_changed audit log entry per §8.5's explicit minimum scope.
-        Moving into a stage resolved as Won is blocked (422-style validation error)
-        if AppSettings.RequireSignedContractBeforeWon is enabled and the deal has
-        no Contract with status Signed. A move into a Lost stage requires lost_reason
-        (422), unless the Deal is already Lost with one stored. Moving a Won Deal
-        with money attached out of Won is 409 WON_DEAL_PROTECTED for non-managers;
-        a manager must pass ?reason= (409 REASON_REQUIRED without it), recorded in
-        a won_reversed audit entry. Only the assigned Sales Rep (or Admin/Sales Manager)
-        may move it.
+        Moving into a stage resolved as Won is blocked (422) if AppSettings.RequireSignedContractBeforeWon
+        is enabled and the deal has no Contract with status Signed. A move into a
+        Lost stage requires lost_reason (422), unless the Deal is already Lost with
+        one stored. Moving a Won Deal with money attached out of Won is 409 WON_DEAL_PROTECTED
+        for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without
+        it), recorded in a won_reversed audit entry. Only the assigned Sales Rep (or
+        Admin/Sales Manager) may move it.
       parameters:
       - description: Deal ID
         in: path
@@ -6060,9 +6096,7 @@ paths:
           schema:
             $ref: '#/definitions/internal_handlers.dealDetail'
         "400":
-          description: Invalid request body, stage is required, stage is not a valid
-            active pipeline stage, or a signed contract is required before marking
-            this deal Won
+          description: Invalid request body
           schema:
             additionalProperties: true
             type: object
@@ -6083,8 +6117,9 @@ paths:
             additionalProperties: true
             type: object
         "422":
-          description: position out of range (±1e9), or lost_reason missing/invalid
-            on a move into Lost
+          description: stage missing or not an active pipeline stage, a signed contract
+            is required before marking this deal Won, position out of range (±1e9),
+            or lost_reason missing/invalid on a move into Lost
           schema:
             additionalProperties: true
             type: object
@@ -8046,14 +8081,14 @@ paths:
             additionalProperties: true
             type: object
         "409":
-          description: Status transition not allowed, quote is read-only, or the deal
-            already has an Accepted quote
+          description: Status transition not allowed, quote is read-only, the deal
+            already has an Accepted quote, or the quote's status changed meanwhile
           schema:
             additionalProperties: true
             type: object
         "422":
-          description: Invalid field (items[i].qty/price/discount_percent, discount_total,
-            wht_rate, issue_date, validity_date)
+          description: Invalid field (status, price_type, credit_days, wht_rate, discount_total,
+            items[i].qty/price/discount_percent, issue_date, validity_date)
           schema:
             additionalProperties: true
             type: object
@@ -9141,7 +9176,9 @@ paths:
   /team-members:
     get:
       description: Any authenticated role — not Admin-restricted, §2.2. Lightweight
-        active-user list (id, name, email) for assignee dropdowns.
+        active-user list (id, name, email, role) for assignee dropdowns; role lets
+        a picker offer only the sales-pipeline roles (Admin, Sales Rep, Sales Manager,
+        Marketing) that assigned_to accepts.
       produces:
       - application/json
       responses:

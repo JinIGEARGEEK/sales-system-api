@@ -96,7 +96,7 @@ func TestRBAC_ProspectsAllowMarketingSalesManagerAndSalesRep(t *testing.T) {
 // PipelineStage/LeadSource config, both Admin-only): any authenticated role,
 // including Sales Rep, could rename/deactivate/create shared tags used across
 // Companies/Deals/Contacts. List stays open to every role (tag pickers need
-// it); writes are now Admin/Sales-Manager only, same as bulkRoles elsewhere.
+// it); writes are now Admin/Sales-Manager only, same as managerRoles elsewhere.
 func TestRBAC_TagsWritesAreRestricted(t *testing.T) {
 	app, db := testutil.App(t)
 	rep := testutil.CreateUser(t, db, models.RoleSalesRep)

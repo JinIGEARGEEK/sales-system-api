@@ -49,6 +49,25 @@ func fillPtr(dst **string, name string, filled *[]string, values []*string) {
 	}
 }
 
+// sourceValues reads one field from each source, in source_ids order.
+func sourceValues[T, V any](sources []*T, get func(*T) V) []V {
+	out := make([]V, len(sources))
+	for i, s := range sources {
+		out[i] = get(s)
+	}
+	return out
+}
+
+// mergeSourceTags sets *dst to the union of its tags and every source's,
+// adding "tags" to filled when that added any.
+func mergeSourceTags[T any](dst *pq.StringArray, sources []*T, tags func(*T) pq.StringArray, filled *[]string) {
+	var added bool
+	*dst, added = unionTags(*dst, sourceValues(sources, tags)...)
+	if added {
+		*filled = append(*filled, "tags")
+	}
+}
+
 // unionTags appends the sources' tags to the target's; reports whether any
 // were added.
 func unionTags(target pq.StringArray, sources ...pq.StringArray) (pq.StringArray, bool) {
@@ -67,20 +86,8 @@ func unionTags(target pq.StringArray, sources ...pq.StringArray) (pq.StringArray
 func fillCompanyFields(target *models.Company, sources []*models.Company) (filled []string, conflicts []mergeConflict) {
 	filled = []string{}
 	conflicts = []mergeConflict{}
-	pick := func(get func(*models.Company) string) []string {
-		out := make([]string, len(sources))
-		for i, s := range sources {
-			out[i] = get(s)
-		}
-		return out
-	}
-	pickPtr := func(get func(*models.Company) *string) []*string {
-		out := make([]*string, len(sources))
-		for i, s := range sources {
-			out[i] = get(s)
-		}
-		return out
-	}
+	pick := func(get func(*models.Company) string) []string { return sourceValues(sources, get) }
+	pickPtr := func(get func(*models.Company) *string) []*string { return sourceValues(sources, get) }
 
 	fillString(&target.Industry, "industry", &filled, pick(func(c *models.Company) string { return c.Industry }))
 	fillString(&target.Size, "size", &filled, pick(func(c *models.Company) string { return c.Size }))
@@ -149,15 +156,7 @@ func fillCompanyFields(target *models.Company, sources []*models.Company) (fille
 		}
 	}
 
-	tagSets := make([]pq.StringArray, len(sources))
-	for i, s := range sources {
-		tagSets[i] = s.Tags
-	}
-	var added bool
-	target.Tags, added = unionTags(target.Tags, tagSets...)
-	if added {
-		filled = append(filled, "tags")
-	}
+	mergeSourceTags(&target.Tags, sources, func(c *models.Company) pq.StringArray { return c.Tags }, &filled)
 	return filled, conflicts
 }
 
@@ -168,13 +167,7 @@ func fillCompanyFields(target *models.Company, sources []*models.Company) (fille
 func fillContactFields(target *models.Contact, sources []*models.Contact) (filled []string, conflicts []mergeConflict) {
 	filled = []string{}
 	conflicts = []mergeConflict{}
-	pick := func(get func(*models.Contact) string) []string {
-		out := make([]string, len(sources))
-		for i, s := range sources {
-			out[i] = get(s)
-		}
-		return out
-	}
+	pick := func(get func(*models.Contact) string) []string { return sourceValues(sources, get) }
 	fillString(&target.Email, "email", &filled, pick(func(c *models.Contact) string { return c.Email }))
 	fillString(&target.Phone, "phone", &filled, pick(func(c *models.Contact) string { return c.Phone }))
 	fillString(&target.RoleTitle, "role_title", &filled, pick(func(c *models.Contact) string { return c.RoleTitle }))
@@ -198,14 +191,6 @@ func fillContactFields(target *models.Contact, sources []*models.Contact) (fille
 		}
 	}
 
-	tagSets := make([]pq.StringArray, len(sources))
-	for i, s := range sources {
-		tagSets[i] = s.Tags
-	}
-	var added bool
-	target.Tags, added = unionTags(target.Tags, tagSets...)
-	if added {
-		filled = append(filled, "tags")
-	}
+	mergeSourceTags(&target.Tags, sources, func(c *models.Contact) pq.StringArray { return c.Tags }, &filled)
 	return filled, conflicts
 }

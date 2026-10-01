@@ -25,8 +25,9 @@ func CanWrite(c *fiber.Ctx, assignedTo *uint) bool {
 	return assignedTo == nil || *assignedTo == middleware.CurrentUserID(c)
 }
 
-// respondFindErr maps errForbidden/gorm-not-found from a loader helper to the
-// right HTTP status, so call sites don't need to know which occurred.
+// respondFindErr maps errForbidden/gorm-not-found from a Deal sub-resource
+// loader (dealForSubResource and friends) to the right HTTP status, so call
+// sites don't need to know which occurred.
 func respondFindErr(c *fiber.Ctx, err error, notFoundMsg string) error {
 	if errors.Is(err, errForbidden) {
 		return utils.Forbidden(c, "Not authorized to modify this deal's records")
@@ -77,8 +78,29 @@ func CanSetAssignee(c *fiber.Ctx, current, next *uint) bool {
 
 // sameAssignee reports whether two nullable assigned_to values are equal.
 func sameAssignee(a, b *uint) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
+	return utils.UintPtrEqual(a, b)
+}
+
+// checkNewAssignee applies the incoming-assignee rules a write that sets
+// assigned_to shares: CanWrite on next (a Sales Rep may assign only to
+// themselves or leave it unassigned; 403 with forbiddenMsg), then, when
+// next differs from current, validateAssignee (422 on assigned_to). An
+// unchanged assignee isn't re-validated, so a record still owned by a
+// since-deactivated user stays editable. Pass current nil on a create.
+//
+// Returns utils.ErrHandled once a response is written; the caller should
+// `return nil`.
+func checkNewAssignee(c *fiber.Ctx, db *gorm.DB, current, next *uint, forbiddenMsg string) error {
+	if !CanWrite(c, next) {
+		_ = utils.Forbidden(c, forbiddenMsg)
+		return utils.ErrHandled
 	}
-	return *a == *b
+	if sameAssignee(current, next) {
+		return nil
+	}
+	if err := validateAssignee(db, next); err != nil {
+		_ = respondAssigneeErr(c, err)
+		return utils.ErrHandled
+	}
+	return nil
 }

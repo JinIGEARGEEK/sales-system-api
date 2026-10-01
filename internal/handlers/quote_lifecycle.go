@@ -41,6 +41,22 @@ func lockRow(tx *gorm.DB, model interface{}, id uint, cols ...string) error {
 	return tx.Unscoped().Clauses(clause.Locking{Strength: "UPDATE"}).Select(cols).First(model, id).Error
 }
 
+// lockStatusUnchanged locks row id of table inside tx and fails with a
+// lifecycleConflict when its stored status is no longer want — what the
+// caller's lifecycle guard checked — so a concurrent status change can't be
+// overwritten by a stale full-row Save. noun names the row in the message.
+func lockStatusUnchanged[S ~string](tx *gorm.DB, table string, id uint, want S, noun string) error {
+	var stored struct{ Status S }
+	if err := tx.Table(table).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("status").Where("id = ?", id).Take(&stored).Error; err != nil {
+		return err
+	}
+	if stored.Status != want {
+		return &lifecycleConflict{fmt.Sprintf("this %s was changed to %s meanwhile; reload it and try again", noun, stored.Status)}
+	}
+	return nil
+}
+
 // quoteLabel names a quote in a message: its number, else its id.
 func quoteLabel(q models.Quote) string {
 	if q.Number != nil && *q.Number != "" {
@@ -68,9 +84,7 @@ func ensureSoleAcceptedQuote(tx *gorm.DB, dealID, quoteID uint) error {
 }
 
 // saveQuote persists an Update. Every save locks the quote row and checks
-// its stored status is still oldStatus (what the lifecycle guard checked),
-// so a concurrent status change can't be overwritten by a stale full-row
-// Save. A status change also locks the Deal row first (always Deal, then
+// its stored status is still oldStatus (lockStatusUnchanged). A status change also locks the Deal row first (always Deal, then
 // quote), enforces one Accepted quote per Deal, syncs or unsyncs the Deal's
 // value (syncDealValueForQuote), and writes a quote status_changed audit
 // entry in the same transaction.
@@ -82,12 +96,8 @@ func (h *QuoteHandler) saveQuote(c *fiber.Ctx, quote *models.Quote, oldStatus mo
 				return err
 			}
 		}
-		var stored models.Quote
-		if err := lockRow(tx, &stored, quote.ID, "id", "status"); err != nil {
+		if err := lockStatusUnchanged(tx, models.Quote{}.TableName(), quote.ID, oldStatus, "quote"); err != nil {
 			return err
-		}
-		if stored.Status != oldStatus {
-			return &lifecycleConflict{fmt.Sprintf("this quote was changed to %s meanwhile; reload it and try again", stored.Status)}
 		}
 		if statusChanged && quote.Status == models.QuoteStatusAccepted {
 			if err := ensureSoleAcceptedQuote(tx, quote.DealID, quote.ID); err != nil {
@@ -215,23 +225,13 @@ func quoteFieldErrors(form quoteForm) map[string][]string {
 	return fields
 }
 
-// quoteItemsSubtotal is the items' summed line totals after each item's
-// own discount_percent — what discount_total is taken from. Kept here
-// rather than read from utils.ComputeQuoteTotals: the cap is on the
-// entered prices whichever price_type they're in.
-func quoteItemsSubtotal(items []models.QuoteItem) float64 {
-	var subtotal float64
-	for _, item := range items {
-		subtotal += item.Qty * item.Price * (1 - item.DiscountPercent/100)
-	}
-	return subtotal
-}
-
 // validateQuoteDiscount checks discount_total doesn't exceed the subtotal
-// of the items the quote will be saved with (so it can't push the taxable
-// amount below zero). Writes the 422 itself and returns false on failure.
+// of the items the quote will be saved with — utils.ComputeQuoteTotals'
+// Subtotal, each line rounded to satang as printed, which doesn't depend on
+// price_type, VAT or WHT — so it can't push the taxable amount below zero.
+// Writes the 422 itself and returns false on failure.
 func validateQuoteDiscount(c *fiber.Ctx, items []models.QuoteItem, discountTotal float64) bool {
-	subtotal := quoteItemsSubtotal(items)
+	subtotal := utils.ComputeQuoteTotals(items, 0, models.QuotePriceTypeExclTax, false, false, 0).Subtotal
 	if discountTotal <= subtotal+utils.MoneyEpsilon {
 		return true
 	}
