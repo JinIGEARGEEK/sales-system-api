@@ -171,6 +171,9 @@ func AutoMigrate(db *gorm.DB) error {
 		return err
 	}
 
+	if err := ensureQuoteRevisionFK(db); err != nil {
+		return err
+	}
 	if err := backfillCompanyDomains(db); err != nil {
 		return err
 	}
@@ -529,6 +532,24 @@ func NormalizeCompanyTaxIDs(db *gorm.DB) error {
 		if err := db.Unscoped().Model(&models.Company{}).Where("id = ?", co.ID).UpdateColumn("tax_id", value).Error; err != nil {
 			return fmt.Errorf("normalize tax_id for company %d: %w", co.ID, err)
 		}
+	}
+	return nil
+}
+
+// ensureQuoteRevisionFK makes quotes.revision_of_id a real foreign key to
+// quotes(id). Added by hand rather than through a GORM association, which
+// would put a RevisionOf field on the Quote JSON. ON DELETE SET NULL: only a
+// Draft can be deleted, and its copies just lose the link.
+func ensureQuoteRevisionFK(db *gorm.DB) error {
+	err := db.Exec(`
+		DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_quotes_revision_of') THEN
+				ALTER TABLE quotes ADD CONSTRAINT fk_quotes_revision_of
+					FOREIGN KEY (revision_of_id) REFERENCES quotes(id) ON DELETE SET NULL;
+			END IF;
+		END $$`).Error
+	if err != nil {
+		return fmt.Errorf("add quotes revision_of_id foreign key: %w", err)
 	}
 	return nil
 }

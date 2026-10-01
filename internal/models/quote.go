@@ -38,6 +38,49 @@ func IsValidQuoteStatus(s QuoteStatus) bool {
 	return false
 }
 
+// quoteStatusTransitions is the Quote lifecycle: the stored statuses each
+// stored status may move to via PUT. Staying in the same status is always
+// allowed (a full-replace PUT resends it).
+//
+//	draft    → sent, accepted, rejected
+//	sent     → draft (recalled to revise), accepted, rejected
+//	accepted → rejected (the deal's Accepted quote is replaced by another)
+//	rejected → nothing (terminal; Duplicate it to start a new revision)
+//
+// "expired" is never stored: it is EffectiveStatus for a Sent quote past its
+// validity date. Such a quote is still "sent" here, except that it can no
+// longer be accepted (see CanTransitionQuoteStatus) — recall it to draft and
+// move the validity date, or reject it.
+var quoteStatusTransitions = map[QuoteStatus][]QuoteStatus{
+	QuoteStatusDraft:    {QuoteStatusSent, QuoteStatusAccepted, QuoteStatusRejected},
+	QuoteStatusSent:     {QuoteStatusDraft, QuoteStatusAccepted, QuoteStatusRejected},
+	QuoteStatusAccepted: {QuoteStatusRejected},
+	QuoteStatusRejected: {},
+}
+
+// CanTransitionQuoteStatus reports whether a quote whose stored status is
+// from (and whose EffectiveStatus is effective) may be set to to.
+func CanTransitionQuoteStatus(from, effective, to QuoteStatus) bool {
+	if from == to {
+		return true
+	}
+	if effective == QuoteStatusExpired && to == QuoteStatusAccepted {
+		return false
+	}
+	for _, v := range quoteStatusTransitions[from] {
+		if v == to {
+			return true
+		}
+	}
+	return false
+}
+
+// IsLocked reports whether the quote's content is read-only: an Accepted or
+// Rejected quote can only change status (see quoteStatusTransitions).
+func (q *Quote) IsLocked() bool {
+	return q.Status == QuoteStatusAccepted || q.Status == QuoteStatusRejected
+}
+
 // QuotePriceType records whether Quote.Items' Price values are tax-exclusive
 // or tax-inclusive, and utils.ComputeQuoteTotals computes VAT accordingly:
 // "excl_tax" adds 7% VAT on top of the (discounted) prices; "incl_tax" means
@@ -158,6 +201,13 @@ type Quote struct {
 	// reason as Number above — existing rows never had this column.
 	ExtractionStatus   *string        `gorm:"type:varchar(16)" json:"extraction_status,omitempty"`
 	ExtractionWarnings pq.StringArray `gorm:"type:text[]" json:"extraction_warnings,omitempty"`
+	// RevisionOfID/RevisionNo link a quote made by Duplicate back to the
+	// first quote of its chain (the root, never an intermediate copy), so
+	// every revision of one offer shares a RevisionOfID. The root itself has
+	// nil and 0; each copy gets the chain's highest RevisionNo + 1. The FK
+	// (ON DELETE SET NULL) is added by database.ensureQuoteRevisionFK.
+	RevisionOfID *uint `gorm:"index" json:"revision_of_id"`
+	RevisionNo   int   `gorm:"not null;default:0" json:"revision_no"`
 }
 
 func (Quote) TableName() string { return "quotes" }

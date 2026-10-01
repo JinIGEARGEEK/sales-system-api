@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/lib/pq"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
@@ -482,12 +483,14 @@ func (h *CompanyHandler) Update(c *fiber.Ctx) error {
 
 // Delete godoc
 // @Summary Delete a company
-// @Description Soft-delete (AuditedModel) — recoverable via Restore/Trash below. Never a hard delete, since Deals/Contacts/Payments reference company_id.
+// @Description Soft-delete (AuditedModel) — recoverable via Restore/Trash below. Never a hard delete, since Deals/Contacts/Payments reference company_id. Admin/Sales Manager only; 409 while the Company has an open or Won Deal. Writes a company/deleted audit entry.
 // @Tags companies
 // @Security BearerAuth
 // @Param id path int true "Company ID"
 // @Success 204 "No Content"
+// @Failure 403 {object} map[string]interface{} "Not Admin/Sales Manager"
 // @Failure 404 {object} map[string]interface{} "Company not found"
+// @Failure 409 {object} map[string]interface{} "Company has open or Won deals"
 // @Router /companies/{id} [delete]
 func (h *CompanyHandler) Delete(c *fiber.Ctx) error {
 	var company models.Company
@@ -495,11 +498,37 @@ func (h *CompanyHandler) Delete(c *fiber.Ctx) error {
 		return nil
 	}
 	actorID := middleware.CurrentUserID(c)
-	if err := utils.GenericSoftDelete(h.DB, &company, actorID); err != nil {
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		// Lock the Company row so the deal check and the delete see the same state.
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&company, company.ID).Error; err != nil {
+			return err
+		}
+		var activeDeals int64
+		if err := tx.Model(&models.Deal{}).
+			Where("company_id = ? AND status IN ?", company.ID, []models.DealStatus{models.DealStatusOpen, models.DealStatusWon}).
+			Count(&activeDeals).Error; err != nil {
+			return err
+		}
+		if activeDeals > 0 {
+			return errCompanyHasDeals
+		}
+		if err := utils.GenericSoftDelete(tx, &company, actorID); err != nil {
+			return err
+		}
+		return utils.WriteAuditLog(tx, "company", company.ID, "deleted", models.JSONMap{"name": company.Name}, nil, actorID)
+	})
+	if errors.Is(err, errCompanyHasDeals) {
+		return utils.Conflict(c, "Company has open or Won deals; close or reassign them before deleting it")
+	}
+	if err != nil {
 		return utils.Internal(c, "Failed to delete company")
 	}
 	return utils.NoContent(c)
 }
+
+// errCompanyHasDeals blocks Company Delete while an open or Won Deal still
+// points at it.
+var errCompanyHasDeals = errors.New("company has open or won deals")
 
 // Trash godoc
 // @Summary List deleted companies (Admin/Sales Manager only)
@@ -517,7 +546,7 @@ func (h *CompanyHandler) Trash(c *fiber.Ctx) error {
 
 // Restore godoc
 // @Summary Restore a deleted company (Admin/Sales Manager only)
-// @Description Un-deletes a soft-deleted Company.
+// @Description Un-deletes a soft-deleted Company. Writes a company/restored audit entry.
 // @Tags companies
 // @Security BearerAuth
 // @Produce json
@@ -527,5 +556,6 @@ func (h *CompanyHandler) Trash(c *fiber.Ctx) error {
 // @Failure 404 {object} map[string]interface{} "Deleted company not found"
 // @Router /companies/{id}/restore [post]
 func (h *CompanyHandler) Restore(c *fiber.Ctx) error {
-	return utils.GenericRestore[models.Company](c, h.DB, "Deleted company not found", "Failed to restore company")
+	return utils.GenericRestoreWithAudit(c, h.DB, "company", func(m *models.Company) uint { return m.ID },
+		middleware.CurrentUserID(c), "Deleted company not found", "Failed to restore company")
 }

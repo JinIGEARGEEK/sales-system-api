@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -236,7 +237,7 @@ func (h *PaymentInstallmentHandler) BulkCreate(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Edit a planned installment (Admin/Sales Rep/Sales Manager)
-// @Description Same validation as Create. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may edit.
+// @Description Same validation as Create. Writes a payment_installment updated audit entry (before/after) when something changed. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may edit.
 // @Tags payment-installments
 // @Security BearerAuth
 // @Accept json
@@ -264,16 +265,30 @@ func (h *PaymentInstallmentHandler) Update(c *fiber.Ctx) error {
 		return nil
 	}
 
+	before := installmentSnapshot(installment)
 	installment.Amount, installment.DueDate, installment.Note = form.Amount, *form.DueDate, form.Note
-	if err := h.DB.Save(&installment).Error; err != nil {
+	after := installmentSnapshot(installment)
+	changed := !reflect.DeepEqual(before, after)
+	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error { return tx.Save(&installment).Error },
+		changed, "payment_installment", installment.ID, "updated", before, after, middleware.CurrentUserID(c))
+	if err != nil {
 		return utils.Internal(c, "Failed to update payment installment")
 	}
 	return utils.OK(c, installment)
 }
 
+// installmentSnapshot is a PaymentInstallment's audit-log before/after:
+// plain values, so two snapshots compare with reflect.DeepEqual.
+func installmentSnapshot(i models.PaymentInstallment) models.JSONMap {
+	return models.JSONMap{
+		"deal_id": i.DealID, "amount": i.Amount,
+		"due_date": i.DueDate.Format(time.RFC3339), "note": i.Note,
+	}
+}
+
 // Delete godoc
 // @Summary Delete a planned installment
-// @Description Hard delete. Payments linked to it (installment_id) are unlinked, not deleted — their money rejoins the Deal's waterfall. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.
+// @Description Hard delete, with a payment_installment deleted audit entry holding the row as it was. Payments linked to it (installment_id, deleted ones included) are unlinked, not deleted — their money rejoins the Deal's waterfall. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.
 // @Tags payment-installments
 // @Security BearerAuth
 // @Param id path int true "Payment Installment ID"
@@ -289,12 +304,18 @@ func (h *PaymentInstallmentHandler) Delete(c *fiber.Ctx) error {
 	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(installment.DealID)); err != nil {
 		return respondFindErr(c, err, "Deal not found")
 	}
+	before := installmentSnapshot(installment)
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&models.Payment{}).Where("installment_id = ?", installment.ID).
+		// Unscoped: a deleted Payment must not keep pointing at a row that's
+		// gone; its own deleted audit entry still records the link.
+		if err := tx.Unscoped().Model(&models.Payment{}).Where("installment_id = ?", installment.ID).
 			Update("installment_id", nil).Error; err != nil {
 			return err
 		}
-		return tx.Delete(&installment).Error
+		if err := tx.Delete(&installment).Error; err != nil {
+			return err
+		}
+		return utils.WriteAuditLog(tx, "payment_installment", installment.ID, "deleted", before, nil, middleware.CurrentUserID(c))
 	})
 	if err != nil {
 		return utils.Internal(c, "Failed to delete payment installment")

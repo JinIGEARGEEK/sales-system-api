@@ -21,6 +21,8 @@ func TestPayment_TaxFieldsRoundTripAndPartialUpdate(t *testing.T) {
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 	deal := seedDeal(t, db, nil)
+	// The payment below settles 10,000; the receivable must cover it.
+	require.NoError(t, db.Model(deal).Update("value", 10000).Error)
 	inst := &models.PaymentInstallment{DealID: deal.ID, Amount: 10000, DueDate: time.Now().AddDate(0, 0, -3)}
 	require.NoError(t, db.Create(inst).Error)
 
@@ -372,14 +374,14 @@ func TestContractEndDateAndCustomerProductRenewalFields(t *testing.T) {
 		Data models.Contract `json:"data"`
 	}
 	resp := doJSON(t, app, testutil.AuthRequest(t, http.MethodPost, "/api/v1/deals/"+itoa(deal.ID)+"/contracts", map[string]interface{}{
-		"status": "signed", "end_date": "2027-03-31",
+		"status": "sent", "end_date": "2027-03-31",
 	}, admin.ID, admin.Role), &contract)
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	require.NotNil(t, contract.Data.EndDate)
 	assert.Equal(t, "2027-03-31", contract.Data.EndDate.Format("2006-01-02"))
 
 	// Update without end_date keeps it; null clears it; garbage is a 422.
-	resp = doJSON(t, app, testutil.AuthRequest(t, http.MethodPut, "/api/v1/contracts/"+itoa(contract.Data.ID), map[string]interface{}{"status": "signed"}, admin.ID, admin.Role), &contract)
+	resp = doJSON(t, app, testutil.AuthRequest(t, http.MethodPut, "/api/v1/contracts/"+itoa(contract.Data.ID), map[string]interface{}{"status": "sent"}, admin.ID, admin.Role), &contract)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.NotNil(t, contract.Data.EndDate)
 	resp = doJSON(t, app, testutil.AuthRequest(t, http.MethodPut, "/api/v1/contracts/"+itoa(contract.Data.ID), map[string]interface{}{"end_date": "31/03/2027"}, admin.ID, admin.Role), nil)

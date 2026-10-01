@@ -70,3 +70,22 @@ func GenericRestore[T any](c *fiber.Ctx, db *gorm.DB, notFoundMsg, failMsg strin
 	}
 	return OK(c, item)
 }
+
+// GenericRestoreWithAudit is GenericRestore plus an entityType/"restored"
+// audit entry written in the same transaction. id reads the row's primary key.
+func GenericRestoreWithAudit[T any](c *fiber.Ctx, db *gorm.DB, entityType string, id func(*T) uint, actorID uint, notFoundMsg, failMsg string) error {
+	var item T
+	if err := db.Unscoped().Where("deleted_at IS NOT NULL").First(&item, c.Params("id")).Error; err != nil {
+		return NotFound(c, notFoundMsg)
+	}
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Unscoped().Model(&item).Updates(map[string]interface{}{"deleted_at": nil, "deleted_by": nil}).Error; err != nil {
+			return err
+		}
+		return WriteAuditLog(tx, entityType, id(&item), "restored", nil, nil, actorID)
+	})
+	if err != nil {
+		return Internal(c, failMsg)
+	}
+	return OK(c, item)
+}

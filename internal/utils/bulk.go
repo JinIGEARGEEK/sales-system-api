@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/gofiber/fiber/v2"
@@ -36,6 +37,11 @@ func ValidateBulkIDCount(c *fiber.Ctx, ids []uint) bool {
 	return true
 }
 
+// ErrBulkSkip, returned from BulkUpdate's apply before it has written
+// anything, leaves that row unchanged and un-audited and moves on to the next
+// id instead of rolling back the batch. The caller reports skipped ids itself.
+var ErrBulkSkip = errors.New("bulk row skipped")
+
 // BulkUpdate runs one transaction that loads each id in ids, hands the loaded
 // row (and the same tx, so DB ops stay atomic) to apply, then writes one
 // audit-log entry per row from apply's before/after. This is the shared
@@ -52,6 +58,9 @@ func BulkUpdate[T any](db *gorm.DB, ids []uint, entityType, action string, actor
 				return err
 			}
 			before, after, err := apply(tx, &item)
+			if errors.Is(err, ErrBulkSkip) {
+				continue
+			}
 			if err != nil {
 				return err
 			}

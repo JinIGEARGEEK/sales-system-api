@@ -33,8 +33,11 @@ func IsValidPaymentMethod(m PaymentMethod) bool {
 // Payment — api-system-spec.md §7.5. Records money actually received; the
 // invoice/receipt itself is issued in FlowAccount, so this only keeps that
 // document's number (DocumentNumber) rather than numbering anything here.
+// Soft-deleted (AuditedModel): a deleted payment drops out of every total
+// through GORM's default scope but stays in the table, next to the audit
+// log's before/after, for accounting to reconcile against FlowAccount.
 type Payment struct {
-	HardDeleteModel
+	AuditedModel
 	DealID uint `gorm:"not null;index" json:"deal_id"`
 	// Amount is the cash that arrived — net of any withholding tax.
 	Amount float64       `json:"amount"`
