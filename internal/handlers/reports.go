@@ -598,15 +598,13 @@ func quotePtr(q models.Quote, ok bool) *models.Quote {
 // from the Deal's latest Accepted Quote (nil if none), Payments and
 // installment schedule. Pure — no DB — so the money math is unit-testable.
 func computeOutstandingRow(r *outstandingBalanceRow, acceptedQuote *models.Quote, payments []models.Payment, installments []models.PaymentInstallment, now time.Time) {
-	r.ReceivableAmount, r.ReceivableSource = r.DealValue, ReceivableSourceDealValue
-	if acceptedQuote != nil {
-		totals := utils.ComputeQuoteTotals(acceptedQuote.Items, acceptedQuote.DiscountTotal, acceptedQuote.VatEnabled, acceptedQuote.WhtEnabled, acceptedQuote.WhtRate)
-		// Only a quote with priced line items says what the customer owes;
-		// an uploaded PDF whose extraction failed is Accepted with no items,
-		// and the Deal value is the better figure then.
-		if totals.Subtotal > 0 {
-			r.ReceivableAmount, r.ReceivableSource = totals.ReceivableAmount(), ReceivableSourceQuote
-		}
+	// Only a quote with priced line items says what the customer owes; an
+	// uploaded PDF whose extraction failed is Accepted with no items, and the
+	// Deal value is the better figure then (utils.DealReceivable).
+	amount, fromQuote := utils.DealReceivable(r.DealValue, acceptedQuote)
+	r.ReceivableAmount, r.ReceivableSource = amount, ReceivableSourceDealValue
+	if fromQuote {
+		r.ReceivableSource = ReceivableSourceQuote
 	}
 
 	r.PaidAmount, r.WhtAmount = 0, 0
@@ -743,7 +741,7 @@ func (h *ReportHandler) fetchQuotesExpiringSoon(c *fiber.Ctx) ([]quoteExpiringSo
 		}
 		for _, qwd := range dealQuotes {
 			q := qwd.quote
-			total := utils.ComputeQuoteTotals(q.Items, q.DiscountTotal, q.VatEnabled, q.WhtEnabled, q.WhtRate).GrandTotal
+			total := utils.QuoteTotalsOf(&q).GrandTotal
 			result = append(result, quoteExpiringSoonRow{
 				QuoteID: qwd.quote.ID, DealID: dealID, DealTitle: deal.Title,
 				CompanyName: companyNameByID[deal.CompanyID], ValidityDate: *qwd.quote.ValidityDate, TotalValue: total,

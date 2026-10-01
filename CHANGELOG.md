@@ -4,6 +4,13 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-10-01 — Quote money fixes: tax-inclusive VAT, satang rounding, Accepted lock, schedule cap
+
+- **Tax-inclusive quotes no longer charge VAT twice.** With `price_type: "incl_tax"` and VAT on, `ComputeQuoteTotals` backs VAT out of the prices (taxable = net × 100/107, VAT = net − taxable) instead of adding 7% on top. Affects the quote PDF, the Outstanding Balance receivable and expiring-soon `total_value`. `excl_tax` and VAT-off quotes are unchanged. WHT stays on the pre-VAT amount.
+- **Totals round to satang at every step** (line, subtotal, net, taxable, VAT, WHT; grand total from the rounded parts), half up like the frontend, so the PDF's printed lines add up exactly. A receivable can move by a satang.
+- **Accepted quotes' pricing is locked.** `PUT /quotes/:id` on a stored-Accepted quote returns `422` (`accepted_locked`) for a change to items, price type, VAT/WHT or discount. Same values resent, status changes and text fields still work.
+- **Generated payment schedules can't exceed the receivable.** `POST /deals/:dealId/payment-installments/bulk` returns `422` (`exceeds_receivable`) when existing + new installments would total more than the Deal's receivable (skipped when it's 0).
+
 ## 2026-09-28 — Review pass: sessions, access, deal states, report dates, deploy hardening
 
 Fixes from a full review of auth, handlers, reports and infrastructure.

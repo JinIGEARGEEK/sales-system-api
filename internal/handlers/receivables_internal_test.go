@@ -40,6 +40,21 @@ func TestComputeOutstandingRow_QuoteReceivableInclVatSettledInclWht(t *testing.T
 	assert.InDelta(t, 0, full.OutstandingAmount, 0.001)
 }
 
+// A tax-inclusive Accepted Quote already contains its VAT: what's owed is
+// the prices as entered, not prices + 7% again.
+func TestComputeOutstandingRow_InclTaxQuoteNotDoubleTaxed(t *testing.T) {
+	quote := &models.Quote{
+		Items:     models.JSONItems{{Description: "Build", Qty: 1, Price: 107000}},
+		PriceType: models.QuotePriceTypeInclTax, VatEnabled: true, WhtEnabled: true, WhtRate: 3,
+	}
+	r := outstandingBalanceRow{DealValue: 100000}
+	// Paid net of 3% WHT on the 100,000 pre-VAT base: fully settled.
+	computeOutstandingRow(&r, quote, []models.Payment{{Amount: 104000, WhtAmount: 3000}}, nil, time.Now())
+	assert.Equal(t, ReceivableSourceQuote, r.ReceivableSource)
+	assert.InDelta(t, 107000, r.ReceivableAmount, 0.001)
+	assert.InDelta(t, 0, r.OutstandingAmount, 0.001)
+}
+
 func TestComputeOutstandingRow_FallsBackToDealValue(t *testing.T) {
 	r := outstandingBalanceRow{DealValue: 5000}
 	computeOutstandingRow(&r, nil, []models.Payment{{Amount: 1000}}, nil, time.Now())

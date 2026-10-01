@@ -507,7 +507,7 @@ type QuoteStatus = 'draft' | 'sent' | 'accepted' | 'rejected'
 // validity_date has passed (Quote.EffectiveStatus) — see quotes-expiring-soon
 // (§8.4) for the forward-looking mirror of this same check.
 
-type QuotePriceType = 'excl_tax' | 'incl_tax'   // display/PDF concern only — doesn't change how VAT is computed
+type QuotePriceType = 'excl_tax' | 'incl_tax'   // excl_tax adds 7% VAT on top; incl_tax backs it out of the prices (see "Quote totals" below)
 
 interface QuoteItem {
   description: string
@@ -556,8 +556,10 @@ interface Quote {
 | `GET` | `/deals/:dealId/quotes` | 🟢 | List quotes for a Deal. `status` on each row reflects `EffectiveStatus` (may report `expired`), not necessarily the raw stored value. |
 | `POST` | `/deals/:dealId/quotes` | 🟢 | Create a line-item quote. `number` is always server-generated — not client-settable. |
 | `POST` | `/deals/:dealId/quotes/upload` | 🟢 | Upload a PDF quote (§6.1) — sets `file_name/file_url/file_size/uploaded_at` and attempts FlowAccount field extraction (see above), setting `extraction_status`/`extraction_warnings` and pre-filling whatever fields it could read; `items` stays empty only if extraction found none. |
-| `PUT` | `/quotes/:id` | 🟢 | Update status/items and every other field above (`number` excepted — immutable after Create). |
+| `PUT` | `/quotes/:id` | 🟢 | Update status/items and every other field above (`number` excepted — immutable after Create). No status-transition validation (any settable status; `expired` is never settable — it's read-derived). **Accepted quotes' pricing is locked (2026-10-01):** while the *stored* status is `accepted`, changing `items`, `price_type`, `vat_enabled`, `wht_enabled`, `wht_rate` or `discount_total` → `422`, `fields.<field>: ["accepted_locked"]` (`rejectAcceptedQuotePricingEdit`). Resending the stored values unchanged is allowed (and keeps the stored items — Product prices aren't re-snapshotted); `status` and the text fields stay editable, so the quote can be moved out of Accepted and then edited. To revise prices, `POST /quotes/:id/duplicate`. This was previously guarded only by the frontend. |
 | `DELETE` | `/quotes/:id` | 🟢 | Delete. |
+
+> **Quote totals (`utils.ComputeQuoteTotals`, 2026-10-01).** Every step rounds to satang (`utils.RoundSatang`, half up — same as the frontend's `roundSatang`), and the frontend's `useQuoteTotals` mirrors it operation for operation: line = qty × price × (1 − discount_percent/100); subtotal = Σ lines; net = subtotal − `discount_total`. `excl_tax`: taxable = net, VAT = taxable × 7%. `incl_tax` (prices already include VAT): taxable = net × 100/107, VAT = net − taxable, so taxable + VAT is exactly what was quoted. VAT off: taxable = net for both. WHT = taxable × `wht_rate`% (pre-VAT). Grand total = taxable + VAT − WHT. Before this, `incl_tax` was a label only and VAT was added on top again — overstating tax-inclusive quotes with VAT on by 7% in the PDF, the Outstanding Balance receivable, and expiring-soon `total_value`. Receivable (`utils.DealReceivable`) = latest Accepted Quote's taxable + VAT when priced, else Deal value; revenue is the taxable amount. The PDF prints "Amount before VAT" and "VAT (7%, included)" for `incl_tax`.
 | `GET` | `/quotes/:id/export-pdf` | 🟢 | `FR-CRM-042` — returns a generated PDF (`github.com/go-pdf/fpdf`): document number, scope of work, line items table (with per-item discount and tax/WHT totals), Deal/Company/Contact header (Company address with postal code, tax ID with branch — same `utils.CompanyPartyLines` block as the Contract PDF, since 2026-09-27), validity date, status, and `notes` (never `internal_notes`). Read-only, same access level as List (no `CanWrite` ownership check). |
 
 ### 7.5 Payments
@@ -610,6 +612,7 @@ interface InstallmentStatus {
 |---|---|---|---|
 | `GET` | `/deals/:dealId/payment-installments` | 🟢 | Returns `InstallmentStatus[]` — every installment on the Deal plus its derived status. Backs the Deal detail page's Payment Schedule section. Also exposed read-only to API keys as `/open/deals/:dealId/payment-installments` (§8.9, added 2026-09-25). |
 | `POST` | `/deals/:dealId/payment-installments` | 🟢 | Body: `{amount, due_date, note}`. `amount` must be `> 0`, `due_date` is required. No validation against the Deal's value or existing installments' total — permissive, matching `Payment`'s own lack of a "can't exceed deal value" check. Same `dealForSubResource`/`CanWrite` RBAC as Payments/Quotes/Contracts (only the Deal's assigned Sales Rep, or Admin/Sales Manager, may create). |
+| `POST` | `/deals/:dealId/payment-installments/bulk` | 🟢 | Body: `{ installments: [{amount, due_date, note}] }` — one batch insert + one audit-log entry; per-row rules as Create, non-empty, all-or-nothing. **2026-10-01:** `422`, `fields.installments: ["exceeds_receivable"]` (nothing inserted) when the Deal's existing installments (paid ones included) + the batch would total more than its receivable (the Outstanding Balance rule, `utils.DealReceivable`), to the satang. Skipped when the receivable is 0 (no Accepted Quote and no Deal value). The single-row Create above stays permissive. |
 | `PUT` | `/payment-installments/:id` | 🟢 | Same body/validation as Create. Same ownership check, resolved via the installment's own `deal_id`. |
 | `DELETE` | `/payment-installments/:id` | 🟢 | Hard delete (`HardDeleteModel`, matching `Payment`'s own delete semantics) — planning data, not audit-critical. Same ownership check as Update. |
 
