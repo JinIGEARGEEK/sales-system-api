@@ -558,7 +558,7 @@ interface Tag {
 }
 ```
 
-Tags are a shared taxonomy referenced by Company/Deal/Contact — writes are Admin/Sales-Manager only (same `bulkRoles` gate as Deal/Lead bulk actions) since renaming or deactivating a tag affects filtering/reporting for every user, not just its creator; `GET` stays open to every authenticated role since tag pickers on Company/Deal/Contact forms need it regardless of role.
+Tags are a shared taxonomy referenced by Company/Deal/Contact — writes are Admin/Sales-Manager only (same `managerRoles` gate as Deal/Lead bulk actions) since renaming or deactivating a tag affects filtering/reporting for every user, not just its creator; `GET` stays open to every authenticated role since tag pickers on Company/Deal/Contact forms need it regardless of role.
 
 | Method | Path | Auth | Status | Description |
 |---|---|---|---|---|

@@ -16,7 +16,7 @@ import (
 // TestBulkOps_DefenseInDepth_RejectsOtherRepsRecords guards bulk_ops.go's
 // own per-row CanWrite check inside bulkReassignEntity/bulkTagEntity/
 // bulkArchiveEntity — independent of routes.go's Admin/Sales-Manager-only
-// bulkRoles gate, which is what actually protects these endpoints in
+// managerRoles gate, which is what actually protects these endpoints in
 // production today (CanWrite is always true for those two roles, per
 // middleware.IsManager). Routes.go's own gate makes this unreachable via the
 // real HTTP routes with a plain Sales Rep (RequireRoles 403s first), so this
