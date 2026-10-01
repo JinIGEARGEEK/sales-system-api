@@ -144,7 +144,7 @@ Per `feature-spec.md` §2.2 / `user-story.md`. `FR-CRM-080` (RBAC enforcement) i
 | **Admin** | Full access to every resource, including Users, Tags, and (once built) Product Catalog / pipeline config |
 | **Sales Rep / Account Manager** | Full CRUD on Leads/Companies/Contacts/Deals/Activities/Tasks/Quotes/Payments they're assigned to or that are unassigned; read access to teammates' records. Also full read+write on Prospects (added 2026-09-08 — see Marketing row below) and, since the same date, read access to `/audit-log` restricted to Deal stage-change history only (§8.5). |
 | **Sales Manager** | Same as Sales Rep, plus read access to all reps' data and all `/reports/*` endpoints, plus deal reassignment. Its own `/audit-log` restriction is a superset of Sales Rep's — Deal `stage_changed` plus `reassigned`/`bulk_reassigned` (widened 2026-09-09, §8.5) — since a Sales Manager is the one actually performing reassignments. |
-| **Production (limited)** | Write access to *only* `status` and `production_reference` on `Project` records (§8.3) — no access to any other resource |
+| **Production (limited)** | Write access to *only* `status` and `production_reference` on `Project` records (§8.3) — no access to any other resource. Companies/Contacts/Quotes/Payments/installments/Contracts are route-gated (`403`); `GET /projects` returns `company_name` so the Projects page needs no Company read. |
 | **Marketing** | Added 2026-09-01 for the Prospect funnel (§3a) — full CRUD on Prospects they're assigned to or that are unassigned, same ownership model as Sales Rep has for Leads. No access to Leads/Deals/any other resource; Admin and Sales Manager retain oversight access to `/prospects` alongside Marketing, and since 2026-09-08 Sales Rep gets full read+write access too (they work Prospects ahead of the Lead hand-off the same way they work Leads/Deals). Not part of the original `feature-spec.md` §2.2 role table — see `internal/models/user.go`'s `RoleMarketing` doc comment. **Updated 2026-09-23 (FR-CRM-123): Marketing now has full Sales Rep parity on Leads/Deals** (and everything nested under a Deal — Quotes, Payments, Contracts, attachments, project create, the Sales-Rep slice of `/audit-log`), via the shared `salesPipelineRoles` gate. The earlier "no access to Leads/Deals" rule no longer applies. Bulk/trash/restore/export and the `/reports` group stay Admin/Sales Manager only, the same line Sales Rep sits behind. Production is now the only role those gates keep out. |
 
 Suggested enforcement: role on the JWT claims, checked server-side per route — not by trusting a client-sent role header.
@@ -303,6 +303,8 @@ interface Prospect {
 
 ## 4. Companies
 
+**Access (review round 2):** every `/companies*` route (including `/companies/:companyId/products|projects`) and `PATCH /customer-products/:id` is `salesPipelineRoles` — Admin/Sales Rep/Sales Manager/Marketing; Production gets `403` (§1.7). Production's Projects page doesn't need them: `GET /projects` rows already carry `company_name`. The same gate covers §5 Contacts and the top-level `/quotes/:id*`, `/payments/:id`, `/payment-installments/:id` and `/contracts/:id*` routes (including both `export-pdf`).
+
 `interfaces/crm.d.ts` → `Company`:
 
 ```ts
@@ -339,7 +341,7 @@ interface Company {
 | `POST` | `/companies` | 🟢 | Create. `branch_code`/`postal_code`, if non-blank, must be exactly 5 digits (`422`); they're trimmed, and blank is stored as `null`. **Since 2026-09-27:** `tax_id` is stored with every Unicode space and dash removed (`utils.NormalizeTaxID`; blank after that → `null`), and existing rows are normalized on boot (`database.NormalizeCompanyTaxIDs`, which doesn't touch `updated_at`). `409` if another Company has the same `tax_id` + `branch_code` (a `null` branch only matches another `null`; no `tax_id`, no check). That check is app-level only, with no unique index, because older rows may already share a pair. Every check runs before `industry` auto-registration, so a rejected request never adds an industry option. |
 | `GET` | `/companies/:id` | 🟢 | Single company — `pages/crm/companies/[id].vue`'s Overview tab. |
 | `PUT` | `/companies/:id` | 🟢 | Update (full replace). Exception: `branch_code`/`postal_code` keep their saved value when the key is absent from the body (explicit `null`/`""` clears), since they're newer than existing clients such as the staff Company form. Same rule as `stale_days` on the stage config resources. The tax ID + branch `409` only runs when the pair changes, so a legacy duplicate can still be edited. |
-| `DELETE` | `/companies/:id` | 🟢 | Sets `status: 'archived'` (soft delete, §1.6) — never a hard delete, since Deals/Contacts/Payments reference `company_id`. |
+| `DELETE` | `/companies/:id` | 🟢 | Sets `status: 'archived'` (soft delete, §1.6) — never a hard delete, since Deals/Contacts/Payments reference `company_id`. **Admin/Sales Manager only** (`403` otherwise). `409` while the Company has an open or Won (non-deleted) Deal. Delete and `POST /companies/:id/restore` write `company`/`deleted` and `company`/`restored` audit entries (§8.5). |
 | `POST` | `/companies/import` | 🟢 | Bulk import — see §6.2. `FR-CRM-014`. |
 
 ---
@@ -368,7 +370,7 @@ interface Contact {
 | `POST` | `/contacts` | 🟢 | Create. |
 | `GET` | `/contacts/:id` | 🟢 | Single contact — `pages/crm/contacts/[id].vue`. |
 | `PUT` | `/contacts/:id` | 🟢 | Update. |
-| `DELETE` | `/contacts/:id` | 🟢 | Soft-delete (`status: 'archived'`). |
+| `DELETE` | `/contacts/:id` | 🟢 | Soft-delete (`status: 'archived'`). **Admin/Sales Manager only** (`403` otherwise). Delete and `POST /contacts/:id/restore` write `contact`/`deleted` and `contact`/`restored` audit entries (§8.5). |
 | `POST` | `/contacts/import` | 🟢 | Bulk import — see §6.2, same FlowAccount-export path as Companies. |
 
 > `FR-CRM-012` ("one Contact marked Primary per Company") is 🔜 **Planned** — no `is_primary` field exists in the frontend interface today. If added, it should live here as a boolean with a uniqueness constraint per `company_id`.
@@ -767,7 +769,7 @@ interface Project {
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/companies/:companyId/projects` | any | List — Company profile's "Projects" section (`FR-CRM-070`). |
+| `GET` | `/companies/:companyId/projects` | Sales/Admin | List — Company profile's "Projects" section (`FR-CRM-070`). |
 | `POST` | `/companies/:companyId/projects` | Sales/Admin | Create manually, or prompted when a Deal is marked Won (`FR-CRM-068`). |
 | `GET` | `/projects` | any | Cross-company list — a global Projects view, since `/companies/:companyId/projects` can only show one company at a time. Supports `status`, `company_id` filters; each row's `company_name` is merged in the same way `/companies/:companyId/products` merges Product into CustomerProduct. |
 | `PATCH` | `/projects/:id` | Sales/Admin **or** Production (§1.7) | Production's role is scoped to `status` and `production_reference` only — enforce field-level, not just endpoint-level, authorization here: reject the request if the body contains any other key, don't just silently drop them. Writes a `project`/`status_changed` audit entry (§8.5) when `status` actually changes, same as `PATCH /customer-products/:id`. `components/Crm/AddProjectModal.vue` mirrors this client-side — a Production caller only ever sees/submits `status`/`production_reference`, since submitting the full field set would 403 against this same restriction. |

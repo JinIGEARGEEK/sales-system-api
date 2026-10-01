@@ -3814,7 +3814,9 @@ paths:
   /companies/{id}:
     delete:
       description: Soft-delete (AuditedModel) — recoverable via Restore/Trash below.
-        Never a hard delete, since Deals/Contacts/Payments reference company_id.
+        Never a hard delete, since Deals/Contacts/Payments reference company_id. Admin/Sales
+        Manager only; 409 while the Company has an open or Won Deal. Writes a company/deleted
+        audit entry.
       parameters:
       - description: Company ID
         in: path
@@ -3824,8 +3826,18 @@ paths:
       responses:
         "204":
           description: No Content
+        "403":
+          description: Not Admin/Sales Manager
+          schema:
+            additionalProperties: true
+            type: object
         "404":
           description: Company not found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Company has open or Won deals
           schema:
             additionalProperties: true
             type: object
@@ -3915,7 +3927,8 @@ paths:
       - companies
   /companies/{id}/restore:
     post:
-      description: Un-deletes a soft-deleted Company.
+      description: Un-deletes a soft-deleted Company. Writes a company/restored audit
+        entry.
       parameters:
       - description: Company ID
         in: path
@@ -4106,6 +4119,7 @@ paths:
     delete:
       description: Soft-delete (AuditedModel) — recoverable via Restore/Trash below.
         Never a hard delete, since Deal/Activity/Task records reference contact_id.
+        Admin/Sales Manager only. Writes a contact/deleted audit entry.
       parameters:
       - description: Contact ID
         in: path
@@ -4115,6 +4129,11 @@ paths:
       responses:
         "204":
           description: No Content
+        "403":
+          description: Not Admin/Sales Manager
+          schema:
+            additionalProperties: true
+            type: object
         "404":
           description: Contact not found
           schema:
@@ -4191,7 +4210,8 @@ paths:
       - contacts
   /contacts/{id}/restore:
     post:
-      description: Un-deletes a soft-deleted Contact.
+      description: Un-deletes a soft-deleted Contact. Writes a contact/restored audit
+        entry.
       parameters:
       - description: Contact ID
         in: path

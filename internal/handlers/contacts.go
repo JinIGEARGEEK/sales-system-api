@@ -237,11 +237,12 @@ func (h *ContactHandler) Update(c *fiber.Ctx) error {
 
 // Delete godoc
 // @Summary Delete a contact
-// @Description Soft-delete (AuditedModel) — recoverable via Restore/Trash below. Never a hard delete, since Deal/Activity/Task records reference contact_id.
+// @Description Soft-delete (AuditedModel) — recoverable via Restore/Trash below. Never a hard delete, since Deal/Activity/Task records reference contact_id. Admin/Sales Manager only. Writes a contact/deleted audit entry.
 // @Tags contacts
 // @Security BearerAuth
 // @Param id path int true "Contact ID"
 // @Success 204 "No Content"
+// @Failure 403 {object} map[string]interface{} "Not Admin/Sales Manager"
 // @Failure 404 {object} map[string]interface{} "Contact not found"
 // @Router /contacts/{id} [delete]
 func (h *ContactHandler) Delete(c *fiber.Ctx) error {
@@ -250,7 +251,14 @@ func (h *ContactHandler) Delete(c *fiber.Ctx) error {
 		return nil
 	}
 	actorID := middleware.CurrentUserID(c)
-	if err := utils.GenericSoftDelete(h.DB, &contact, actorID); err != nil {
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := utils.GenericSoftDelete(tx, &contact, actorID); err != nil {
+			return err
+		}
+		return utils.WriteAuditLog(tx, "contact", contact.ID, "deleted",
+			models.JSONMap{"name": contact.Name, "company_id": contact.CompanyID}, nil, actorID)
+	})
+	if err != nil {
 		return utils.Internal(c, "Failed to delete contact")
 	}
 	return utils.NoContent(c)
@@ -272,7 +280,7 @@ func (h *ContactHandler) Trash(c *fiber.Ctx) error {
 
 // Restore godoc
 // @Summary Restore a deleted contact (Admin/Sales Manager only)
-// @Description Un-deletes a soft-deleted Contact.
+// @Description Un-deletes a soft-deleted Contact. Writes a contact/restored audit entry.
 // @Tags contacts
 // @Security BearerAuth
 // @Produce json
@@ -282,5 +290,6 @@ func (h *ContactHandler) Trash(c *fiber.Ctx) error {
 // @Failure 404 {object} map[string]interface{} "Deleted contact not found"
 // @Router /contacts/{id}/restore [post]
 func (h *ContactHandler) Restore(c *fiber.Ctx) error {
-	return utils.GenericRestore[models.Contact](c, h.DB, "Deleted contact not found", "Failed to restore contact")
+	return utils.GenericRestoreWithAudit(c, h.DB, "contact", func(m *models.Contact) uint { return m.ID },
+		middleware.CurrentUserID(c), "Deleted contact not found", "Failed to restore contact")
 }

@@ -4,6 +4,15 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## Unreleased — Review round 2
+
+**Access.**
+- Production is now `403` on every `/companies*` and `/contacts*` route (including `/companies/:companyId/products|projects` and `PATCH /customer-products/:id`) and on the top-level `/quotes/:id*`, `/payments/:id`, `/payment-installments/:id` and `/contracts/:id*` routes, including both `export-pdf` (spec §1.7). Its Projects page is unaffected: `GET /projects` already returns `company_name`. **Frontend:** hide the Projects page's "View company" action for Production.
+- Marketing keeps Sales Rep access to all of the above.
+- `DELETE /companies/:id` and `DELETE /contacts/:id` are Admin/Sales Manager only (`403` for Sales Rep/Marketing), like trash/restore. **Frontend:** hide the delete action for other roles.
+- `DELETE /companies/:id` returns `409` while the Company has an open or Won Deal that isn't deleted.
+- Single Company/Contact delete and restore write `company`/`contact` audit entries (`deleted`, `restored`).
+
 ## 2026-09-28 — Review pass: sessions, access, deal states, report dates, deploy hardening
 
 Fixes from a full review of auth, handlers, reports and infrastructure.
