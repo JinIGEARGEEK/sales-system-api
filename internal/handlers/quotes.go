@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -78,8 +79,7 @@ type quoteWithDeal struct {
 // @Router /quotes [get]
 func (h *QuoteHandler) Search(c *fiber.Ctx) error {
 	page, perPage, offset := utils.Pagination(c)
-	query := h.DB.Model(&models.Quote{}).
-		Joins("JOIN deals ON deals.id = quotes.deal_id AND deals.deleted_at IS NULL")
+	query := h.quotesWithLiveDeal()
 	if v := strings.TrimSpace(c.Query("search")); v != "" {
 		like := utils.LikePattern(v)
 		query = query.Where("(quotes.number ILIKE ? ESCAPE '\\' OR quotes.reference_number ILIKE ? ESCAPE '\\' OR deals.title ILIKE ? ESCAPE '\\')", like, like, like)
@@ -91,7 +91,7 @@ func (h *QuoteHandler) Search(c *fiber.Ctx) error {
 	}
 
 	rows := []quoteWithDeal{}
-	if err := query.Select("quotes.*, deals.title AS deal_title").
+	if err := query.Select(quoteWithDealColumns).
 		Order("quotes.created_at DESC, quotes.id DESC").
 		Limit(perPage).Offset(offset).Find(&rows).Error; err != nil {
 		return utils.Internal(c, "Failed to list quotes")
@@ -114,15 +114,31 @@ func (h *QuoteHandler) Search(c *fiber.Ctx) error {
 // @Failure 404 {object} map[string]interface{} "Quote not found, or its Deal is deleted"
 // @Router /quotes/{id} [get]
 func (h *QuoteHandler) Get(c *fiber.Ctx) error {
-	var quote models.Quote
-	if err := utils.FindByID(c, h.DB, &quote, "Quote not found"); err != nil {
-		return nil
+	id, err := c.ParamsInt("id")
+	if err != nil || id <= 0 {
+		return utils.NotFound(c, "Quote not found")
 	}
-	var deal models.Deal
-	if err := h.DB.Select("id", "title").First(&deal, quote.DealID).Error; err != nil {
-		return utils.NotFound(c, "Deal not found")
+	var row quoteWithDeal
+	err = h.quotesWithLiveDeal().Select(quoteWithDealColumns).
+		Where("quotes.id = ?", id).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return utils.NotFound(c, "Quote not found")
 	}
-	return utils.OK(c, quoteWithDeal{Quote: withEffectiveStatus(quote), DealTitle: deal.Title})
+	if err != nil {
+		return utils.Internal(c, "Failed to load quote")
+	}
+	row.Quote = withEffectiveStatus(row.Quote)
+	return utils.OK(c, row)
+}
+
+// quoteWithDealColumns is the Select list that fills quoteWithDeal.
+const quoteWithDealColumns = "quotes.*, deals.title AS deal_title"
+
+// quotesWithLiveDeal is the Quote query Search and Get share: quotes joined
+// to their Deal, leaving out quotes whose Deal is soft-deleted.
+func (h *QuoteHandler) quotesWithLiveDeal() *gorm.DB {
+	return h.DB.Model(&models.Quote{}).
+		Joins("JOIN deals ON deals.id = quotes.deal_id AND deals.deleted_at IS NULL")
 }
 
 // withEffectiveStatuses overrides each Quote's Status field with its
