@@ -213,13 +213,19 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// would).
 	idempotency := middleware.RequireIdempotency(db)
 
-	openCompanies := open.Group("/companies")
+	// Sales-pipeline roles — every role but Production (Marketing has Sales
+	// Rep parity, feature-spec.md FR-CRM-123). Declared ahead of the Open API
+	// so an API key owned by a Production user gets the same 403s on
+	// Companies/Contacts/Leads/Prospects/Deals as the staff routes.
+	salesPipelineRoles := middleware.RequireRoles(models.SalesPipelineRoles...)
+
+	openCompanies := open.Group("/companies", salesPipelineRoles)
 	openCompanies.Get("/", companyH.List)
 	openCompanies.Post("/", idempotency, companyH.Create)
 	openCompanies.Get("/:id", companyH.Get)
 	openCompanies.Put("/:id", companyH.Update)
 
-	openContacts := open.Group("/contacts")
+	openContacts := open.Group("/contacts", salesPipelineRoles)
 	openContacts.Get("/", contactH.List)
 	openContacts.Post("/", idempotency, contactH.Create)
 	openContacts.Get("/:id", contactH.Get)
@@ -248,24 +254,18 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// Prospects — full List/Create/Get/Update already exist top-level;
 	// reused as-is (same CanWrite ownership rule the staff /prospects routes
 	// enforce, evaluated against the API key's owner_user_id/role).
-	openProspects := open.Group("/prospects")
+	openProspects := open.Group("/prospects", salesPipelineRoles)
 	openProspects.Get("/", prospectH.List)
 	openProspects.Post("/", idempotency, prospectH.Create)
 	openProspects.Get("/:id", prospectH.Get)
 	openProspects.Put("/:id", prospectH.Update)
 
 	// Leads — same treatment as Prospects above.
-	openLeads := open.Group("/leads")
+	openLeads := open.Group("/leads", salesPipelineRoles)
 	openLeads.Get("/", leadH.List)
 	openLeads.Post("/", idempotency, leadH.Create)
 	openLeads.Get("/:id", leadH.Get)
 	openLeads.Put("/:id", leadH.Update)
-
-	// Sales-pipeline roles — the Lead/Deal gate: every role but Production
-	// (Marketing has Sales Rep parity here, feature-spec.md FR-CRM-123).
-	// Declared ahead of `authed` so the Open API's Deal route below shares
-	// it with the staff /deals group.
-	salesPipelineRoles := middleware.RequireRoles(models.SalesPipelineRoles...)
 
 	// Deal payment schedules — read-only, the one Deal sub-resource exposed
 	// here, so an integration can follow a Project's deal_id to its planned

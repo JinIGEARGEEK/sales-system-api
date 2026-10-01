@@ -12,6 +12,7 @@ Entries before this file existed are reconstructed from git/PR history — going
 - `DELETE /companies/:id` and `DELETE /contacts/:id` are Admin/Sales Manager only (`403` for Sales Rep/Marketing), like trash/restore. **Frontend:** hide the delete action for other roles.
 - `DELETE /companies/:id` returns `409` while the Company has an open or Won Deal that isn't deleted.
 - Single Company/Contact delete and restore write `company`/`contact` audit entries (`deleted`, `restored`).
+- The Open API `/open/companies`, `/open/contacts`, `/open/leads` and `/open/prospects` routes are `403` for a key owned by a Production user, like `/open/deals`. `/open/projects` and `/open/products` are unchanged.
 
 ## 2026-09-28 — Review pass: sessions, access, deal states, report dates, deploy hardening
 
