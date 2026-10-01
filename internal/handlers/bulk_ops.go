@@ -12,27 +12,14 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
-// This file holds the three bulk-operation shapes shared by DealHandler,
-// LeadHandler, and ProspectHandler's own BulkReassign/BulkTag/BulkArchive —
-// previously each handler defined its own copy of all three, identical
-// except for the model type, entity-name string, and the accessor for the
-// one field being mutated. get/set accessor closures let one generic
-// implementation reach each type's own AssignedTo/Tags field — Go generics
-// can't do struct-field access by name, so this is the lightest-weight way
-// to share the loop/transaction/audit-log shape without requiring every
-// caller to implement a shared interface.
+// The bulk-operation shapes behind Deal/Lead/Prospect's BulkReassign,
+// BulkTag and BulkArchive. get/set closures reach each type's AssignedTo or
+// Tags field, since Go generics can't access struct fields by name.
 //
-// Every one of the three checks CanWrite per row, exactly like each
-// resource's own single-record Update/Delete does — even though today's
-// only callers (Deal/Lead/Prospect) route these through routes.go's
-// Admin/Sales-Manager-only bulkRoles gate, where CanWrite is always true
-// (middleware.IsManager). That route-level gate is what actually protects
-// these endpoints right now; the check here is defense in depth so the
-// generic helpers themselves are correct independent of who calls them —
-// if a future caller ever wires one of these into a route open to a plain
-// Sales Rep (the way Task's own hand-written bulk endpoints already are,
-// see tasks.go), it fails closed instead of silently having no ownership
-// check at all.
+// Each helper checks CanWrite per row, like the single-record writes do.
+// Their routes are Admin/Sales Manager only (managerRoles in routes.go), so
+// today that check always passes; it keeps the helpers fail-closed if one is
+// ever wired to a route a Sales Rep can reach.
 func bulkReassignEntity[T any](c *fiber.Ctx, db *gorm.DB, entityType string,
 	getAssignedTo func(*T) *uint, setAssignedTo func(*T, *uint)) error {
 	var form bulkReassignForm
@@ -42,11 +29,9 @@ func bulkReassignEntity[T any](c *fiber.Ctx, db *gorm.DB, entityType string,
 	if !utils.ValidateBulkIDCount(c, form.IDs) {
 		return nil
 	}
-	if !CanWrite(c, form.AssignedTo) {
-		return utils.Forbidden(c, fmt.Sprintf("Cannot assign a %s to another team member", entityType))
-	}
-	if err := validateAssignee(db, form.AssignedTo); err != nil {
-		return respondAssigneeErr(c, err)
+	if err := checkNewAssignee(c, db, nil, form.AssignedTo,
+		fmt.Sprintf("Cannot assign a %s to another team member", entityType)); err != nil {
+		return nil
 	}
 
 	actorID := middleware.CurrentUserID(c)
@@ -194,13 +179,7 @@ func runBulkArchive[T any](c *fiber.Ctx, db *gorm.DB, entityType string, getAssi
 			if err := tx.Model(item).Update("deleted_by", actorID).Error; err != nil {
 				return nil, nil, err
 			}
-			// No real "before" state to log here — every row this loop
-			// visits is, by construction, not yet soft-deleted (BulkUpdate
-			// only loads rows matching the default not-deleted scope), so a
-			// fabricated `{"deleted_at": nil}` before-value carries no
-			// information beyond "this row wasn't deleted yet," which is
-			// always true. after.deleted_by is the only fact worth an
-			// audit-log entry for.
+			// No before: BulkUpdate only loads rows that aren't deleted yet.
 			err := tx.Delete(item).Error
 			return nil, models.JSONMap{"deleted_by": actorID}, err
 		})

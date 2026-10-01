@@ -43,6 +43,10 @@ func (h *TaskHandler) List(c *fiber.Ctx) error {
 	return utils.List(c, tasks, page, perPage, total)
 }
 
+// errAssignTaskToOther is the 403 message for a Sales Rep assigning a task
+// to someone else.
+const errAssignTaskToOther = "Cannot assign a task to another sales rep"
+
 type taskForm struct {
 	RelatedType models.TaskRelatedType `json:"related_type"`
 	RelatedID   uint                   `json:"related_id"`
@@ -66,11 +70,8 @@ func (h *TaskHandler) Create(c *fiber.Ctx) error {
 	if !models.IsValidTaskPriority(form.Priority) {
 		return utils.ValidationError(c, "priority is invalid", map[string][]string{"priority": {"invalid"}})
 	}
-	if !CanWrite(c, form.AssignedTo) {
-		return utils.Forbidden(c, "Cannot assign a task to another sales rep")
-	}
-	if err := validateAssignee(h.DB, form.AssignedTo); err != nil {
-		return respondAssigneeErr(c, err)
+	if err := checkNewAssignee(c, h.DB, nil, form.AssignedTo, errAssignTaskToOther); err != nil {
+		return nil
 	}
 
 	task := models.Task{
@@ -121,17 +122,8 @@ func (h *TaskHandler) Update(c *fiber.Ctx) error {
 	if !models.IsValidTaskPriority(form.Priority) {
 		return utils.ValidationError(c, "priority is invalid", map[string][]string{"priority": {"invalid"}})
 	}
-	// Reassigning to someone else is itself an assignment action, same rule
-	// Create/BulkReassign apply to the incoming assignee.
-	if !CanWrite(c, form.AssignedTo) {
-		return utils.Forbidden(c, "Cannot assign a task to another sales rep")
-	}
-	// Only a changed owner is checked, so a task whose owner was since
-	// deactivated can still be edited (same rule as PUT /deals/:id).
-	if !sameAssignee(task.AssignedTo, form.AssignedTo) {
-		if err := validateAssignee(h.DB, form.AssignedTo); err != nil {
-			return respondAssigneeErr(c, err)
-		}
+	if err := checkNewAssignee(c, h.DB, task.AssignedTo, form.AssignedTo, errAssignTaskToOther); err != nil {
+		return nil
 	}
 
 	task.Title = form.Title
@@ -175,18 +167,10 @@ type taskBulkIDsForm struct {
 }
 
 // BulkMarkDone — PATCH /tasks/bulk-mark-done. Marks every id done in one
-// transaction. Ownership-gated per row via CanWrite, the same rule Toggle
-// uses for a single task — not restricted to Admin/Sales Manager like
-// Deals'/Leads' bulk endpoints, since a Sales Rep bulk-marking their own
-// backlog done is the primary use case for a personal task list.
-//
-// Deliberately NOT built on bulk_ops.go's bulkReassignEntity/bulkTagEntity/
-// bulkArchiveEntity generic helpers (unlike Deal/Lead/Prospect's own bulk
-// endpoints) — this one, and BulkReassign below, need a per-row CanWrite
-// ownership check inside the loop that those three don't (their routes are
-// already Admin/Sales-Manager-gated, so CanWrite there is always true — see
-// bulkRoles in routes.go); forcing this one through the same generic shape
-// would mean threading an extra accessor just for this resource.
+// transaction. Open to every role (a Sales Rep clearing their own backlog is
+// the main use), so ownership is checked per row with CanWrite, the rule
+// Toggle uses; one forbidden row rolls back the whole call. That per-row
+// check is why this and BulkReassign don't use bulk_ops.go's helpers.
 func (h *TaskHandler) BulkMarkDone(c *fiber.Ctx) error {
 	var form taskBulkIDsForm
 	if err := c.BodyParser(&form); err != nil {
@@ -221,11 +205,9 @@ type taskBulkReassignForm struct {
 	AssignedTo *uint  `json:"assigned_to"`
 }
 
-// BulkReassign — PATCH /tasks/bulk-reassign. Same ownership rule as
-// BulkMarkDone above: checks CanWrite against the new assignee (the same
-// check Create makes) up front, since it's identical for every row, then
-// against each task's current assignee (the same check Toggle/Delete make)
-// inside the loop.
+// BulkReassign — PATCH /tasks/bulk-reassign. Checks the new assignee once
+// up front (checkNewAssignee, as Create does), then CanWrite against each
+// task's current assignee inside the loop, as BulkMarkDone does.
 func (h *TaskHandler) BulkReassign(c *fiber.Ctx) error {
 	var form taskBulkReassignForm
 	if err := c.BodyParser(&form); err != nil {
@@ -234,11 +216,8 @@ func (h *TaskHandler) BulkReassign(c *fiber.Ctx) error {
 	if !utils.ValidateBulkIDCount(c, form.IDs) {
 		return nil
 	}
-	if !CanWrite(c, form.AssignedTo) {
-		return utils.Forbidden(c, "Cannot assign a task to another sales rep")
-	}
-	if err := validateAssignee(h.DB, form.AssignedTo); err != nil {
-		return respondAssigneeErr(c, err)
+	if err := checkNewAssignee(c, h.DB, nil, form.AssignedTo, errAssignTaskToOther); err != nil {
+		return nil
 	}
 
 	actorID := middleware.CurrentUserID(c)
@@ -261,13 +240,9 @@ func (h *TaskHandler) BulkReassign(c *fiber.Ctx) error {
 	return utils.NoContent(c)
 }
 
-// Delete — DELETE /tasks/:id. A genuine hard delete (models.Task embeds
-// HardDeleteModel, not AuditedModel) — deliberately, unlike every other
-// resource in this codebase (Lead/Prospect/Deal/Company/Contact/User), which
-// all soft-delete with a Trash/Restore pair. Tasks are ephemeral, per-rep
-// to-dos rather than a business record anyone needs an audit trail or
-// recovery path for, so there's no Trash/Restore here to bring it in line
-// with those — this is the intended shape, not an oversight.
+// Delete — DELETE /tasks/:id. A hard delete: models.Task embeds
+// HardDeleteModel, as Tasks are per-rep to-dos with no Trash/Restore, unlike
+// the soft-deleted Lead/Prospect/Deal/Company/Contact/User records.
 func (h *TaskHandler) Delete(c *fiber.Ctx) error {
 	var task models.Task
 	if err := utils.FindByID(c, h.DB, &task, "Task not found"); err != nil {
