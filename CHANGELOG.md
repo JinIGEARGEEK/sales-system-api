@@ -4,6 +4,13 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-10-01 — Quote search; `GET /quotes/:id` registered
+
+- **New `GET /quotes`** (`search`, `page`, `per_page`) for the frontend's global search: matches quote `number`, `reference_number` or the Deal title (case-insensitive), newest first, in the `GET /deals` envelope. Rows are the Quote plus `deal_title`; quotes on soft-deleted Deals are left out. Sales-pipeline roles only (Production `403`), no per-rep scoping (same as `GET /deals`).
+- **Fixed: `GET /quotes/:id` was never registered.** The spec listed it and the frontend's full-page Quote editor calls it, but every request was a `404`. It now returns the Quote (effective status) plus `deal_title`. Sales-pipeline roles only; `404` for a missing Quote or a soft-deleted Deal.
+
+Regression-guarded: `tests/quote_search_test.go`. Swagger regenerated.
+
 ## 2026-09-28 — Review pass: sessions, access, deal states, report dates, deploy hardening
 
 Fixes from a full review of auth, handlers, reports and infrastructure.
