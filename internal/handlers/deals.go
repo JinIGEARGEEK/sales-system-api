@@ -349,17 +349,19 @@ func (h *DealHandler) Get(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Update a deal (Admin/Sales Rep/Sales Manager)
-// @Description Full update of a Deal — same validation as Create. An omitted stage/status keeps the stored value; moving from a Won/Lost stage to an open one sets status open. Writes a stage_changed audit log entry when the submitted stage differs from the deal's current one. Only the assigned Sales Rep (or Admin/Sales Manager) may update; a Sales Rep cannot reassign to another rep. api-system-spec.md §7.1.
+// @Description Full update of a Deal — same validation as Create. An omitted stage/status keeps the stored value; moving from a Won/Lost stage to an open one sets status open. Moving a Won Deal with money attached (a non-deleted Payment, any installment, or a signed Contract) out of Won is 409 (WON_DEAL_PROTECTED) for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without it), recorded in a won_reversed audit entry. Writes a stage_changed audit log entry when the submitted stage differs from the deal's current one. Only the assigned Sales Rep (or Admin/Sales Manager) may update; a Sales Rep cannot reassign to another rep. api-system-spec.md §7.1.
 // @Tags deals
 // @Security BearerAuth
 // @Accept json
 // @Produce json
 // @Param id path int true "Deal ID"
 // @Param body body dealForm true "Deal fields"
+// @Param reason query string false "Required from a manager moving a Won Deal with money out of Won (max 500 chars)"
 // @Success 200 {object} models.Deal
 // @Failure 400 {object} map[string]interface{} "Invalid request body, or validation error (required fields, value, expected_close_date, probability, lost_reason, stage/channel/business_unit)"
 // @Failure 403 {object} map[string]interface{} "Not authorized to update this deal, or cannot assign a deal to another sales rep"
 // @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Failure 409 {object} map[string]interface{} "Won Deal with money: WON_DEAL_PROTECTED (not a manager) or REASON_REQUIRED"
 // @Router /deals/{id} [put]
 func (h *DealHandler) Update(c *fiber.Ctx) error {
 	var deal models.Deal
@@ -419,6 +421,16 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	if err := validateStageAndChannel(c, h.DB, form, to); err != nil {
 		return nil
 	}
+	// Leaving Won (for an open stage or Lost) on a Deal with money attached
+	// is a manager's call, with a reason — see guardProtectedWonDeal.
+	var unwinReason string
+	forcedUnwin := false
+	if deal.Status == models.DealStatusWon && status != models.DealStatusWon {
+		var err error
+		if unwinReason, forcedUnwin, err = guardProtectedWonDeal(c, h.DB, &deal, "move out of Won"); err != nil {
+			return nil
+		}
+	}
 
 	before := models.JSONMap{"stage": deal.Stage, "status": deal.Status}
 
@@ -453,6 +465,11 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 		if err := tx.Save(&deal).Error; err != nil {
 			return err
 		}
+		if forcedUnwin {
+			if err := writeWonReversedAudit(tx, &deal, before, unwinReason, middleware.CurrentUserID(c)); err != nil {
+				return err
+			}
+		}
 		if stageChanged {
 			subject := fmt.Sprintf("Deal stage changed: %s → %s", oldStage, deal.Stage)
 			return utils.LogCompanyActivity(tx, deal.CompanyID, subject, middleware.CurrentUserID(c))
@@ -468,13 +485,15 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 
 // Delete godoc
 // @Summary Delete a deal (Admin/Sales Rep/Sales Manager)
-// @Description Soft-delete (AuditedModel) — recoverable via Restore/Trash below. Only the assigned Sales Rep (or Admin/Sales Manager) may delete.
+// @Description Soft-delete (AuditedModel) — recoverable via Restore/Trash below, and written to the audit log (action deleted). Only the assigned Sales Rep (or Admin/Sales Manager) may delete. A Won Deal with money attached (a non-deleted Payment, any installment, or a signed Contract) is 409 WON_DEAL_PROTECTED for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without it), stored in the audit entry.
 // @Tags deals
 // @Security BearerAuth
 // @Param id path int true "Deal ID"
+// @Param reason query string false "Required from a manager deleting a Won Deal with money (max 500 chars)"
 // @Success 204 "No Content"
 // @Failure 403 {object} map[string]interface{} "Not authorized to delete this deal"
 // @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Failure 409 {object} map[string]interface{} "Won Deal with money: WON_DEAL_PROTECTED (not a manager) or REASON_REQUIRED"
 // @Router /deals/{id} [delete]
 func (h *DealHandler) Delete(c *fiber.Ctx) error {
 	var deal models.Deal
@@ -484,8 +503,24 @@ func (h *DealHandler) Delete(c *fiber.Ctx) error {
 	if !CanWrite(c, deal.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to delete this deal")
 	}
+	reason, forced, err := guardProtectedWonDeal(c, h.DB, &deal, "delete")
+	if err != nil {
+		return nil
+	}
+
 	actorID := middleware.CurrentUserID(c)
-	if err := utils.GenericSoftDelete(h.DB, &deal, actorID); err != nil {
+	before := models.JSONMap{"title": deal.Title, "stage": deal.Stage, "status": deal.Status, "value": deal.Value}
+	after := models.JSONMap{"deleted_by": actorID}
+	if forced {
+		after["reason"] = reason
+	}
+	err = h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := utils.GenericSoftDelete(tx, &deal, actorID); err != nil {
+			return err
+		}
+		return utils.WriteAuditLog(tx, "deal", deal.ID, "deleted", before, after, actorID)
+	})
+	if err != nil {
 		return utils.Internal(c, "Failed to delete deal")
 	}
 	return utils.NoContent(c)
@@ -506,7 +541,7 @@ func (h *DealHandler) Trash(c *fiber.Ctx) error {
 
 // Restore godoc
 // @Summary Restore a deleted deal (Admin/Sales Manager)
-// @Description Restores a soft-deleted Deal.
+// @Description Restores a soft-deleted Deal, writing a restored audit log entry.
 // @Tags deals
 // @Security BearerAuth
 // @Produce json
@@ -515,7 +550,23 @@ func (h *DealHandler) Trash(c *fiber.Ctx) error {
 // @Failure 404 {object} map[string]interface{} "Deleted deal not found"
 // @Router /deals/{id}/restore [post]
 func (h *DealHandler) Restore(c *fiber.Ctx) error {
-	return utils.GenericRestore[models.Deal](c, h.DB, "Deleted deal not found", "Failed to restore deal")
+	var deal models.Deal
+	if err := h.DB.Unscoped().Where("deleted_at IS NOT NULL").First(&deal, c.Params("id")).Error; err != nil {
+		return utils.NotFound(c, "Deleted deal not found")
+	}
+	actorID := middleware.CurrentUserID(c)
+	before := models.JSONMap{"deleted_at": deal.DeletedAt.Time, "deleted_by": deal.DeletedBy}
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Unscoped().Model(&deal).Updates(map[string]interface{}{"deleted_at": nil, "deleted_by": nil}).Error; err != nil {
+			return err
+		}
+		return utils.WriteAuditLog(tx, "deal", deal.ID, "restored", before, nil, actorID)
+	})
+	if err != nil {
+		return utils.Internal(c, "Failed to restore deal")
+	}
+	deal.DeletedAt, deal.DeletedBy = gorm.DeletedAt{}, nil
+	return utils.OK(c, deal)
 }
 
 type bulkIDsForm struct {
@@ -570,17 +621,17 @@ func (h *DealHandler) BulkTag(c *fiber.Ctx) error {
 
 // BulkArchive godoc
 // @Summary Bulk archive deals (Admin/Sales Manager)
-// @Description Soft-deletes every listed Deal (same as Delete), in one transaction, writing a bulk_archived audit entry per row.
+// @Description Soft-deletes every listed Deal (same as Delete), in one transaction, writing a bulk_archived audit entry per row. A Won Deal with money attached (a non-deleted Payment, any installment, or a signed Contract) is skipped and reported, not archived — delete it singly with a reason. Returns 200 { archived: id[], skipped: [{ id, reason: "won_deal_with_money" }] }.
 // @Tags deals
 // @Security BearerAuth
 // @Accept json
 // @Produce json
 // @Param body body bulkIDsForm true "Deal IDs"
-// @Success 204 "No Content"
+// @Success 200 {object} bulkArchiveResult
 // @Failure 400 {object} map[string]interface{} "Invalid request body, or ids is required"
 // @Router /deals/bulk-archive [patch]
 func (h *DealHandler) BulkArchive(c *fiber.Ctx) error {
-	return bulkArchiveEntity(c, h.DB, "deal", func(d *models.Deal) *uint { return d.AssignedTo })
+	return bulkArchiveDeals(c, h.DB)
 }
 
 // mergeTags appends tags not already present, case-sensitively, preserving order.
@@ -606,28 +657,30 @@ type dealStageForm struct {
 	// dropdown-move, is distinguishable from an explicit 0) — see
 	// Deal.Position's doc comment (models/deal.go).
 	Position *float64 `json:"position"`
-	// LostReason is optional here (the Kanban drag doesn't collect one), but
-	// when sent on a move into a Lost stage it's validated and saved — the
-	// Overview Pipeline's side panel asks for it (FR-CRM-123). Ignored on a
-	// move into any other stage.
+	// LostReason is required on a move into a Lost stage, as on PUT (a
+	// Deal already Lost with a stored reason may omit it to reposition) —
+	// the Kanban drag and the Overview Pipeline's side panel (FR-CRM-123)
+	// both ask for it. Ignored on a move into any other stage.
 	LostReason *models.LostReason `json:"lost_reason"`
 }
 
 // UpdateStage godoc
 // @Summary Move a deal to a new pipeline stage (Admin/Sales Rep/Sales Manager)
-// @Description Dedicated endpoint for the Kanban drag-and-drop quick-move. Sets status to won/lost alongside stage — or open (clearing lost_reason) on a move into any other stage — and re-derives probability in the same transaction; writes a stage_changed audit log entry per §8.5's explicit minimum scope. Moving into a stage resolved as Won is blocked (422-style validation error) if AppSettings.RequireSignedContractBeforeWon is enabled and the deal has no Contract with status Signed. Only the assigned Sales Rep (or Admin/Sales Manager) may move it.
+// @Description Dedicated endpoint for the Kanban drag-and-drop quick-move. Sets status to won/lost alongside stage — or open (clearing lost_reason) on a move into any other stage — and re-derives probability in the same transaction; writes a stage_changed audit log entry per §8.5's explicit minimum scope. Moving into a stage resolved as Won is blocked (422-style validation error) if AppSettings.RequireSignedContractBeforeWon is enabled and the deal has no Contract with status Signed. A move into a Lost stage requires lost_reason (422), unless the Deal is already Lost with one stored. Moving a Won Deal with money attached out of Won is 409 WON_DEAL_PROTECTED for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without it), recorded in a won_reversed audit entry. Only the assigned Sales Rep (or Admin/Sales Manager) may move it.
 // @Tags deals
 // @Security BearerAuth
 // @Accept json
 // @Produce json
 // @Param id path int true "Deal ID"
 // @Param body body dealStageForm true "New stage"
+// @Param reason query string false "Required from a manager moving a Won Deal with money out of Won (max 500 chars)"
 // @Success 200 {object} models.Deal
 // @Header 200 {string} X-Lane-Rebalanced "\"true\" when the destination lane was renumbered to 1..n — refetch the lane, its other cards' positions changed"
 // @Failure 400 {object} map[string]interface{} "Invalid request body, stage is required, stage is not a valid active pipeline stage, or a signed contract is required before marking this deal Won"
 // @Failure 403 {object} map[string]interface{} "Not authorized to update this deal"
 // @Failure 404 {object} map[string]interface{} "Deal not found"
-// @Failure 422 {object} map[string]interface{} "position out of range (±1e9)"
+// @Failure 409 {object} map[string]interface{} "Won Deal with money: WON_DEAL_PROTECTED (not a manager) or REASON_REQUIRED"
+// @Failure 422 {object} map[string]interface{} "position out of range (±1e9), or lost_reason missing/invalid on a move into Lost"
 // @Router /deals/{id}/stage [patch]
 func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	var deal models.Deal
@@ -649,8 +702,14 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	if !to.Active {
 		return utils.ValidationError(c, "stage is not a valid active pipeline stage", map[string][]string{"stage": {"invalid"}})
 	}
+	if form.LostReason != nil && *form.LostReason == "" {
+		form.LostReason = nil
+	}
 	if form.LostReason != nil && !models.IsValidLostReason(*form.LostReason) {
 		return utils.ValidationError(c, "lost_reason is invalid", map[string][]string{"lost_reason": {"invalid"}})
+	}
+	if to.Lost && form.LostReason == nil && (deal.Status != models.DealStatusLost || deal.LostReason == nil) {
+		return utils.ValidationError(c, "lost_reason is required when marking a deal Lost", map[string][]string{"lost_reason": {"required"}})
 	}
 	if err := validateCardPosition(c, form.Position); err != nil {
 		return nil
@@ -659,6 +718,16 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	// value), not on a reposition within the Won lane.
 	if to.Won && deal.Status != models.DealStatusWon {
 		if err := validateContractSignedBeforeWon(c, h.DB, deal.ID); err != nil {
+			return nil
+		}
+	}
+	// Any move out of the Won lane un-wins (the status follows the stage);
+	// on a Deal with money that needs a manager and a reason.
+	var unwinReason string
+	forcedUnwin := false
+	if deal.Status == models.DealStatusWon && !to.Won {
+		var err error
+		if unwinReason, forcedUnwin, err = guardProtectedWonDeal(c, h.DB, &deal, "move out of Won"); err != nil {
 			return nil
 		}
 	}
@@ -672,7 +741,7 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	deal.Status = status
 	switch {
 	case to.Lost:
-		// lost_reason is optional here; saved when sent with a move into Lost.
+		// Required above unless the Deal already has one stored.
 		if form.LostReason != nil {
 			deal.LostReason = form.LostReason
 		}
@@ -702,6 +771,11 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error {
 		if err := tx.Save(&deal).Error; err != nil {
 			return err
+		}
+		if forcedUnwin {
+			if err := writeWonReversedAudit(tx, &deal, before, unwinReason, middleware.CurrentUserID(c)); err != nil {
+				return err
+			}
 		}
 		var err error
 		if rebalanced, err = dealLanes.rebalanceIfCrowded(tx, deal.Stage, deal.ID, &deal.Position); err != nil {

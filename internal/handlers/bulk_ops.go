@@ -104,24 +104,89 @@ func bulkTagEntity[T any](c *fiber.Ctx, db *gorm.DB, entityType string,
 	return utils.NoContent(c)
 }
 
-// bulkArchiveEntity is the shared implementation behind Deal/Lead/
-// Prospect's own BulkArchive — soft-deletes every listed id (same effect as
-// each resource's own single-record Delete) in one transaction. See
-// bulkReassignEntity's doc above for why this checks CanWrite per row.
+// bulkArchiveEntity is the shared implementation behind Lead/Prospect's own
+// BulkArchive — soft-deletes every listed id (same effect as each resource's
+// own single-record Delete) in one transaction. See bulkReassignEntity's doc
+// above for why this checks CanWrite per row. Deals go through
+// bulkArchiveDeals instead, which skips protected Won Deals.
 func bulkArchiveEntity[T any](c *fiber.Ctx, db *gorm.DB, entityType string, getAssignedTo func(*T) *uint) error {
+	if _, err := runBulkArchive(c, db, entityType, getAssignedTo, nil); err != nil {
+		return nil
+	}
+	return utils.NoContent(c)
+}
+
+// bulkArchiveSkip is one id bulk archive left alone, and why.
+type bulkArchiveSkip struct {
+	ID     uint   `json:"id"`
+	Reason string `json:"reason"`
+}
+
+// bulkArchiveResult is PATCH /deals/bulk-archive's body: the ids archived
+// and the ones skipped. An id is in exactly one of the two lists.
+type bulkArchiveResult struct {
+	Archived []uint            `json:"archived"`
+	Skipped  []bulkArchiveSkip `json:"skipped"`
+}
+
+// bulkArchiveDeals archives every listed Deal except a Won Deal with money
+// attached (isProtectedWonDeal), which is skipped and reported rather than
+// failing the batch — a manager deletes one of those singly, with a reason.
+func bulkArchiveDeals(c *fiber.Ctx, db *gorm.DB) error {
+	result := bulkArchiveResult{Archived: []uint{}, Skipped: []bulkArchiveSkip{}}
+	skipped := map[uint]bool{}
+	ids, err := runBulkArchive(c, db, "deal", func(d *models.Deal) *uint { return d.AssignedTo },
+		func(tx *gorm.DB, d *models.Deal) (string, error) {
+			protected, err := isProtectedWonDeal(tx, d)
+			if err != nil || !protected {
+				return "", err
+			}
+			skipped[d.ID] = true
+			result.Skipped = append(result.Skipped, bulkArchiveSkip{ID: d.ID, Reason: skipReasonWonDealWithMoney})
+			return skipReasonWonDealWithMoney, nil
+		})
+	if err != nil {
+		return nil
+	}
+	for _, id := range ids {
+		if !skipped[id] {
+			result.Archived = append(result.Archived, id)
+		}
+	}
+	return utils.OK(c, result)
+}
+
+// runBulkArchive parses and validates the ids, then soft-deletes each row in
+// one transaction (bulk_archived audit entry per row). skip, when set, names
+// why a row should be left alone ("" archives it); skipped rows get no write
+// and no audit entry. Returns the deduped ids it visited (archived or
+// skipped), or utils.ErrHandled once an error response has been written.
+func runBulkArchive[T any](c *fiber.Ctx, db *gorm.DB, entityType string, getAssignedTo func(*T) *uint,
+	skip func(tx *gorm.DB, item *T) (string, error)) ([]uint, error) {
 	var form bulkIDsForm
 	if err := c.BodyParser(&form); err != nil {
-		return utils.BadRequest(c, "Invalid request body")
+		_ = utils.BadRequest(c, "Invalid request body")
+		return nil, utils.ErrHandled
 	}
 	if !utils.ValidateBulkIDCount(c, form.IDs) {
-		return nil
+		return nil, utils.ErrHandled
 	}
 
 	actorID := middleware.CurrentUserID(c)
-	err := utils.BulkUpdate(db, form.IDs, entityType, "bulk_archived", actorID,
+	ids := utils.DedupeUints(form.IDs)
+	err := utils.BulkUpdate(db, ids, entityType, "bulk_archived", actorID,
 		func(tx *gorm.DB, item *T) (models.JSONMap, models.JSONMap, error) {
 			if !CanWrite(c, getAssignedTo(item)) {
 				return nil, nil, errForbidden
+			}
+			if skip != nil {
+				reason, err := skip(tx, item)
+				if err != nil {
+					return nil, nil, err
+				}
+				if reason != "" {
+					return nil, nil, utils.ErrBulkSkip
+				}
 			}
 			if err := tx.Model(item).Update("deleted_by", actorID).Error; err != nil {
 				return nil, nil, err
@@ -138,9 +203,11 @@ func bulkArchiveEntity[T any](c *fiber.Ctx, db *gorm.DB, entityType string, getA
 		})
 	if err != nil {
 		if errors.Is(err, errForbidden) {
-			return utils.Forbidden(c, fmt.Sprintf("Not authorized to archive one or more of these %ss", entityType))
+			_ = utils.Forbidden(c, fmt.Sprintf("Not authorized to archive one or more of these %ss", entityType))
+		} else {
+			_ = utils.Internal(c, fmt.Sprintf("Failed to bulk archive %ss", entityType))
 		}
-		return utils.Internal(c, fmt.Sprintf("Failed to bulk archive %ss", entityType))
+		return nil, utils.ErrHandled
 	}
-	return utils.NoContent(c)
+	return ids, nil
 }

@@ -4,6 +4,26 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## Unreleased — Review round 2
+
+**Won deals and payments.**
+- A Won Deal with money attached (a non-deleted Payment, any Payment Installment, or a Contract stored as `signed`) is protected. `DELETE /deals/:id` and any move out of Won (`PUT /deals/:id` or `PATCH /deals/:id/stage`, to an open stage or Lost) are `409` with `error.code` `WON_DEAL_PROTECTED` for anyone but Admin/Sales Manager. A manager must pass `?reason=` (query string, max 500 chars). Without it the answer is `409` `REASON_REQUIRED`, so the frontend can ask for a reason and retry.
+- **`PATCH /deals/bulk-archive` now returns `200 { archived: [...], skipped: [{ id, reason: "won_deal_with_money" }] }`** (was `204`). Protected Deals are skipped, not archived, and the rest of the batch still goes through. Lead/Prospect bulk archive is unchanged (`204`).
+- Audit log: a Deal `DELETE` writes `deleted` (with the manager's `reason` when forced) and Restore writes `restored`. A forced un-win writes `won_reversed` with the reason, on top of the usual `stage_changed`.
+- `PATCH /deals/:id/stage` into a Lost stage requires `lost_reason` (`422`, `fields.lost_reason`), like `PUT`. A Deal that is already Lost with a stored reason can still be repositioned without one.
+- Payments are soft-deleted now (`AuditedModel`; AutoMigrate adds `deleted_at`/`created_by`/`updated_by`/`deleted_by`). A deleted Payment drops out of the Payments list and totals, installment statuses, the outstanding-balance report and the payment-installment rule, all through GORM's default scope.
+- Payment Create/Update/Delete write `payment` audit entries (`created`/`updated`/`deleted`, before/after). Payment-installment Update/Delete write `payment_installment` entries.
+- New payment checks:
+  - Create on a Lost Deal is `422` (`fields.deal_id`).
+  - `paid_at` later than today (server-local) is `422` (`fields.paid_at`).
+  - A non-empty `document_number` already used by another non-deleted Payment, on any Deal, is `409`. Update only checks this when the number changes.
+  - If cash + WHT would pass the Deal's receivable (the Outstanding Balance rule: latest Accepted Quote incl. VAT when it has priced items, else Deal value) by more than `utils.MoneyEpsilon`, the request is `422` `fields.amount: ["exceeds_receivable"]` unless the body sends `allow_overpayment: true`. Update only checks this when the payment's own cash + WHT goes up.
+  - Saves lock the Deal row, so concurrent payments are checked one at a time.
+- Deleting an installment also unlinks deleted Payments that pointed at it.
+- `utils.ErrBulkSkip` lets a `BulkUpdate` apply leave one row alone without failing the batch.
+
+Regression-guarded: `tests/won_deal_protection_test.go`, `tests/payment_guards_test.go`. Swagger annotations updated; regenerate `docs/` after merging.
+
 ## 2026-09-28 — Review pass: sessions, access, deal states, report dates, deploy hardening
 
 Fixes from a full review of auth, handlers, reports and infrastructure.
