@@ -73,6 +73,22 @@ func clearOtherPrimaryContacts(tx *gorm.DB, companyID uint, exceptID uint) error
 		Update("is_primary", false).Error
 }
 
+// validateContactCompany writes a 422 on company_id and returns
+// utils.ErrHandled when companyID names no live Company. Nothing in the
+// schema stops a Contact pointing at a missing Company, so this is the guard.
+func validateContactCompany(c *fiber.Ctx, db *gorm.DB, companyID uint) error {
+	var n int64
+	if err := db.Model(&models.Company{}).Where("id = ?", companyID).Count(&n).Error; err != nil {
+		_ = utils.Internal(c, "Failed to check company_id")
+		return utils.ErrHandled
+	}
+	if n == 0 {
+		_ = utils.ValidationError(c, "company_id not found", map[string][]string{"company_id": {"not_found"}})
+		return utils.ErrHandled
+	}
+	return nil
+}
+
 // validateContactForm runs every check ContactHandler.Create and Update
 // share — required name (and, on Create, company_id — Update allows
 // company_id=0 to mean "keep the current Company", so requireCompanyID is
@@ -117,7 +133,7 @@ func validateContactForm(c *fiber.Ctx, db *gorm.DB, form contactForm, requireCom
 
 // Create godoc
 // @Summary Create a contact
-// @Description Creates a Contact. company_id and name are required; role_title must match an active configured job title (see /admin/job-titles). A contact whose email (case-insensitive) or phone (digits only, +66 read as 0) matches an existing contact, in any company, is a 409 unless allow_duplicate=true.
+// @Description Creates a Contact. company_id (an existing Company, else 422) and name are required; role_title must match an active configured job title (see /admin/job-titles). A contact whose email (case-insensitive) or phone (digits only, +66 read as 0) matches an existing contact, in any company, is a 409 unless allow_duplicate=true.
 // @Tags contacts
 // @Security BearerAuth
 // @Accept json
@@ -125,8 +141,10 @@ func validateContactForm(c *fiber.Ctx, db *gorm.DB, form contactForm, requireCom
 // @Param body body contactForm true "Contact fields"
 // @Param allow_duplicate query bool false "true creates the contact even if another has the same email or phone"
 // @Success 201 {object} models.Contact
-// @Failure 400 {object} map[string]interface{} "Invalid body, missing fields, or invalid role_title"
+// @Failure 400 {object} map[string]interface{} "Invalid body (e.g. a field sent as the wrong JSON type)"
+// @Failure 403 {object} map[string]interface{} "Production role"
 // @Failure 409 {object} map[string]interface{} "Another contact has the same email or phone (error.fields, error.duplicate_of)"
+// @Failure 422 {object} map[string]interface{} "Missing company_id/name, a company_id naming no Company, invalid email/phone, inactive role_title, or invalid status"
 // @Router /contacts [post]
 func (h *ContactHandler) Create(c *fiber.Ctx) error {
 	var form contactForm
@@ -135,6 +153,9 @@ func (h *ContactHandler) Create(c *fiber.Ctx) error {
 	}
 	status, err := validateContactForm(c, h.DB, form, true)
 	if err != nil {
+		return nil
+	}
+	if err := validateContactCompany(c, h.DB, form.CompanyID); err != nil {
 		return nil
 	}
 	if err := rejectDuplicate(c, h.DB, &models.Contact{}, "contact", form.Email, form.Phone); err != nil {
@@ -187,7 +208,7 @@ func (h *ContactHandler) Get(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Update a contact
-// @Description Updates a Contact. role_title must match an active configured job title.
+// @Description Updates a Contact (full replace). company_id 0 or omitted keeps the current Company. role_title must match an active configured job title. No duplicate check (that runs on Create only). is_primary true clears it on the Company's other Contacts.
 // @Tags contacts
 // @Security BearerAuth
 // @Accept json
@@ -195,8 +216,9 @@ func (h *ContactHandler) Get(c *fiber.Ctx) error {
 // @Param id path int true "Contact ID"
 // @Param body body contactForm true "Contact fields"
 // @Success 200 {object} models.Contact
-// @Failure 400 {object} map[string]interface{} "Invalid body or invalid role_title"
+// @Failure 400 {object} map[string]interface{} "Invalid body (e.g. a field sent as the wrong JSON type)"
 // @Failure 404 {object} map[string]interface{} "Contact not found"
+// @Failure 422 {object} map[string]interface{} "Missing name, a changed company_id naming no Company, invalid email/phone, inactive role_title, or invalid status"
 // @Router /contacts/{id} [put]
 func (h *ContactHandler) Update(c *fiber.Ctx) error {
 	var contact models.Contact
@@ -211,6 +233,13 @@ func (h *ContactHandler) Update(c *fiber.Ctx) error {
 	status, err := validateContactForm(c, h.DB, form, false)
 	if err != nil {
 		return nil
+	}
+	// Only a changed company_id is checked, so a Contact whose Company was
+	// since deleted can still be edited.
+	if form.CompanyID != 0 && form.CompanyID != contact.CompanyID {
+		if err := validateContactCompany(c, h.DB, form.CompanyID); err != nil {
+			return nil
+		}
 	}
 
 	if form.CompanyID != 0 {
