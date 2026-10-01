@@ -23,6 +23,19 @@ Entries before this file existed are reconstructed from git/PR history — going
 - On `PUT /deals/:id` a Sales Rep or Marketing user can keep their deal or claim an unassigned one, but not unassign it or give it to someone else (`403`).
 - `PUT /deals/:id` audits `value`/`company_id` changes (`updated`) and `assigned_to` changes (`reassigned`, the same shape as `PATCH /deals/:id/reassign`, so Sales Managers see them), with before/after.
 
+**Quote and contract lifecycle.**
+- Quote status moves follow a fixed table (`models.CanTransitionQuoteStatus`): draft → sent/accepted/rejected, sent → draft/accepted/rejected, accepted → rejected, rejected → nothing. A Sent quote past its validity date (shown as `expired`) can't be accepted; move it back to draft with a new `validity_date`, or duplicate it. Anything else is `409`.
+- An Accepted or Rejected quote is read-only: a `PUT` that would change any field other than `status` is `409`. Resending the stored values, or sending only `{"status": "rejected"}`, is fine.
+- One Accepted quote per Deal. Accepting (or creating as accepted) while another quote of the Deal is Accepted is `409` naming that quote's number; reject it first. The Deal row is locked, so two concurrent accepts can't both win. Every quote save also re-checks the stored status under a row lock, so a stale full-row `PUT` can't overwrite a concurrent status change (`409`, reload).
+- `DELETE /quotes/:id` only deletes drafts (`409` otherwise).
+- `POST /quotes/:id/duplicate` sets the new `revision_of_id` (the chain's root quote, FK, `ON DELETE SET NULL`) and `revision_no` (chain max + 1; `0` on an original). The original is not changed.
+- Quote Create/Update return `422` with `error.fields` for: item `qty` ≤ 0, `price` < 0, `discount_percent` outside 0–100 (keys `items[i].qty` etc.), `discount_total` above the items' subtotal, `wht_rate` outside 0–100, and an `issue_date`/`validity_date` that isn't a date.
+- A contract becomes `signed` through `POST /contracts/:id/upload`. Create with `status: "signed"` is `422`, and so is `PUT` unless the contract already has a signed file and `signed_date`.
+- A contract whose stored status is `signed` is locked: any `status`/`quote_id`/`end_date` change is `409`, and a second signed upload is `409`. Further files go on as Attachments. A signed contract past its `end_date` stays locked.
+- Quote and contract status changes write a `status_changed` audit entry (`entity_type` `quote`/`contract`, before/after `status`).
+
+Regression-guarded: `tests/quote_lifecycle_test.go`, `tests/contract_lock_test.go`.
+
 ## 2026-09-28 — Review pass: sessions, access, deal states, report dates, deploy hardening
 
 Fixes from a full review of auth, handlers, reports and infrastructure.

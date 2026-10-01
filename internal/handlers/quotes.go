@@ -101,9 +101,12 @@ type quoteForm struct {
 // validateQuoteForm runs the checks shared by Create and Update: status enum,
 // price_type enum (only when explicitly provided — both are optional-on-PUT
 // the same way settingsForm's lead_scoring_mql_threshold is, see settings.go),
-// and non-negative CreditDays/WhtRate/DiscountTotal. Writes the 422 response
-// itself and returns false on failure, mirroring requireNonNegative's
-// convention in settings.go.
+// non-negative CreditDays/DiscountTotal, WhtRate 0–100 (the spec names no
+// fixed list of Thai WHT rates, so any percentage is accepted), then the
+// per-item and date checks of quoteFieldErrors in one 422. discount_total's
+// upper bound (the subtotal) is validateQuoteDiscount, once the items are
+// known. Writes the 422 response itself and returns false on failure,
+// mirroring requireNonNegative's convention in settings.go.
 func validateQuoteForm(c *fiber.Ctx, form quoteForm) bool {
 	if form.Status != "" && !models.IsValidQuoteStatus(form.Status) {
 		_ = utils.ValidationError(c, "status is invalid", map[string][]string{"status": {"invalid"}})
@@ -117,12 +120,16 @@ func validateQuoteForm(c *fiber.Ctx, form quoteForm) bool {
 		_ = utils.ValidationError(c, "credit_days must be non-negative", map[string][]string{"credit_days": {"must be >= 0"}})
 		return false
 	}
-	if form.WhtRate != nil && *form.WhtRate < 0 {
-		_ = utils.ValidationError(c, "wht_rate must be non-negative", map[string][]string{"wht_rate": {"must be >= 0"}})
+	if form.WhtRate != nil && (*form.WhtRate < 0 || *form.WhtRate > 100) {
+		_ = utils.ValidationError(c, "wht_rate must be between 0 and 100", map[string][]string{"wht_rate": {"must be between 0 and 100"}})
 		return false
 	}
 	if form.DiscountTotal != nil && *form.DiscountTotal < 0 {
 		_ = utils.ValidationError(c, "discount_total must be non-negative", map[string][]string{"discount_total": {"must be >= 0"}})
+		return false
+	}
+	if fields := quoteFieldErrors(form); len(fields) > 0 {
+		_ = utils.ValidationError(c, "quote has invalid fields", fields)
 		return false
 	}
 	return true
@@ -185,6 +192,8 @@ func snapshotQuoteItems(db *gorm.DB, items []models.QuoteItem) []models.QuoteIte
 // @Failure 400 {object} map[string]interface{} "Invalid request body, or validation error (status, price_type, credit_days, wht_rate, discount_total)"
 // @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
 // @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Failure 409 {object} map[string]interface{} "Created as accepted while the deal already has an Accepted quote"
+// @Failure 422 {object} map[string]interface{} "Invalid field (items[i].qty/price/discount_percent, discount_total, wht_rate, issue_date, validity_date)"
 // @Router /deals/{dealId}/quotes [post]
 func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 	deal, err := dealForSubResource(c, h.DB, c.Params("dealId"))
@@ -229,15 +238,27 @@ func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 	if form.DiscountTotal != nil {
 		quote.DiscountTotal = *form.DiscountTotal
 	}
+	if !validateQuoteDiscount(c, quote.Items, quote.DiscountTotal) {
+		return nil
+	}
 
 	// Number generation shares the Create transaction: a failed insert (e.g.
 	// a DB constraint error) must roll the sequence increment back too, or a
-	// retried create after a failed save would burn numbers.
+	// retried create after a failed save would burn numbers. A quote created
+	// already Accepted takes the Deal lock, like an accept on Update.
 	err = h.DB.Transaction(func(tx *gorm.DB) error {
+		if quote.Status == models.QuoteStatusAccepted {
+			if err := lockRow(tx, &models.Deal{}, deal.ID, "id"); err != nil {
+				return err
+			}
+			if err := ensureSoleAcceptedQuote(tx, deal.ID, 0); err != nil {
+				return err
+			}
+		}
 		return createQuoteNumbered(tx, &quote, time.Now())
 	})
 	if err != nil {
-		return utils.Internal(c, "Failed to create quote")
+		return respondLifecycleErr(c, err, "Deal not found", "Failed to create quote")
 	}
 	return utils.Created(c, withEffectiveStatus(quote))
 }
@@ -355,7 +376,7 @@ func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Update a quote
-// @Description Updates status/items and every other Quote field (number excepted — immutable after Create). Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §7.4.
+// @Description Updates status/items and every other Quote field (number excepted — immutable after Create). Status moves follow models.CanTransitionQuoteStatus (draft→sent/accepted/rejected, sent→draft/accepted/rejected, accepted→rejected; an expired Sent quote can't be accepted), else 409. An Accepted/Rejected quote is read-only: changing any other field is a 409 (resending stored values is not). One Accepted quote per Deal (409 naming the existing one). Status changes are audited. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §7.4.
 // @Tags quotes
 // @Security BearerAuth
 // @Accept json
@@ -366,6 +387,8 @@ func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 // @Failure 400 {object} map[string]interface{} "Invalid request body, or validation error (status, price_type, credit_days, wht_rate, discount_total)"
 // @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
 // @Failure 404 {object} map[string]interface{} "Quote not found, or deal not found"
+// @Failure 409 {object} map[string]interface{} "Status transition not allowed, quote is read-only, or the deal already has an Accepted quote"
+// @Failure 422 {object} map[string]interface{} "Invalid field (items[i].qty/price/discount_percent, discount_total, wht_rate, issue_date, validity_date)"
 // @Router /quotes/{id} [put]
 func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	var quote models.Quote
@@ -380,6 +403,32 @@ func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
+
+	// ---- Quote lifecycle guard ----
+	// The status move must be in models.CanTransitionQuoteStatus' table
+	// (409). An Accepted/Rejected quote is read-only: a body that would
+	// change any other field is a 409, and only its status is applied and
+	// saved. Content validation below is for editable (draft/sent) quotes.
+	oldStatus := quote.Status
+	if form.Status != "" && !models.IsValidQuoteStatus(form.Status) {
+		return utils.ValidationError(c, "status is invalid", map[string][]string{"status": {"invalid"}})
+	}
+	newStatus := oldStatus
+	if form.Status != "" {
+		newStatus = form.Status
+	}
+	if !checkQuoteTransition(c, quote, newStatus) {
+		return nil
+	}
+	if quote.IsLocked() {
+		if field := lockedQuoteChange(c, quote, form); field != "" {
+			return utils.Conflict(c, fmt.Sprintf("an %s quote is read-only (%s can't change); duplicate it to revise", quote.Status, field))
+		}
+		quote.Status = newStatus
+		return h.saveQuote(c, &quote, oldStatus)
+	}
+	// ---- end quote lifecycle guard ----
+
 	if !validateQuoteForm(c, form) {
 		return nil
 	}
@@ -424,11 +473,11 @@ func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	if form.DiscountTotal != nil {
 		quote.DiscountTotal = *form.DiscountTotal
 	}
-
-	if err := h.DB.Save(&quote).Error; err != nil {
-		return utils.Internal(c, "Failed to update quote")
+	if !validateQuoteDiscount(c, quote.Items, quote.DiscountTotal) {
+		return nil
 	}
-	return utils.OK(c, withEffectiveStatus(quote))
+
+	return h.saveQuote(c, &quote, oldStatus)
 }
 
 // duplicateQuoteDates returns the copy's issue date (today, local) and its
@@ -462,7 +511,7 @@ func duplicateQuoteDates(src models.Quote, now time.Time) (issue string, validit
 
 // Duplicate godoc
 // @Summary Duplicate a quote as a new Draft (Admin/Sales Rep/Sales Manager/Marketing)
-// @Description Creates a new Draft Quote on the same Deal, copying every editable field (items, scope_of_work, reference_number, credit_days, price_type, vat_enabled, wht_enabled, wht_rate, discount_total, notes, internal_notes). The copy gets a new server-generated number, issue_date = today, and validity_date = today + the original's issue→validity gap (else + credit_days, else null). Never copied: status (always draft), uploaded file fields, extraction_status/warnings. Same permission as creating a quote on that Deal.
+// @Description Creates a new Draft Quote on the same Deal, copying every editable field (items, scope_of_work, reference_number, credit_days, price_type, vat_enabled, wht_enabled, wht_rate, discount_total, notes, internal_notes). The copy gets a new server-generated number, issue_date = today, and validity_date = today + the original's issue→validity gap (else + credit_days, else null). Never copied: status (always draft), uploaded file fields, extraction_status/warnings. The copy gets revision_of_id = the original chain's root quote and revision_no = the chain's highest + 1; the original is not changed. Same permission as creating a quote on that Deal.
 // @Tags quotes
 // @Security BearerAuth
 // @Produce json
@@ -496,7 +545,26 @@ func (h *QuoteHandler) Duplicate(c *fiber.Ctx) error {
 		quote.PriceType = models.QuotePriceTypeExclTax
 	}
 
+	// The copy joins src's revision chain: revision_of_id is the chain's
+	// root (src itself when src is an original), revision_no the chain's
+	// highest + 1. Locking the root row serializes concurrent duplicates of
+	// one chain so they can't take the same number. The original is left
+	// as it is — rejecting it is the caller's call.
+	root := src.ID
+	if src.RevisionOfID != nil {
+		root = *src.RevisionOfID
+	}
 	err = h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := lockRow(tx, &models.Quote{}, root, "id"); err != nil {
+			return err
+		}
+		var maxNo int
+		if err := tx.Model(&models.Quote{}).Where("id = ? OR revision_of_id = ?", root, root).
+			Select("COALESCE(MAX(revision_no), 0)").Scan(&maxNo).Error; err != nil {
+			return err
+		}
+		quote.RevisionOfID = &root
+		quote.RevisionNo = maxNo + 1
 		return createQuoteNumbered(tx, &quote, now)
 	})
 	if err != nil {
@@ -507,13 +575,14 @@ func (h *QuoteHandler) Duplicate(c *fiber.Ctx) error {
 
 // Delete godoc
 // @Summary Delete a quote
-// @Description Hard delete of a Quote. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.
+// @Description Hard delete of a Draft Quote; any other status is a 409. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.
 // @Tags quotes
 // @Security BearerAuth
 // @Param id path int true "Quote ID"
 // @Success 204 "No Content"
 // @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
 // @Failure 404 {object} map[string]interface{} "Quote not found, or deal not found"
+// @Failure 409 {object} map[string]interface{} "Quote is not a draft"
 // @Router /quotes/{id} [delete]
 func (h *QuoteHandler) Delete(c *fiber.Ctx) error {
 	var quote models.Quote
@@ -523,8 +592,17 @@ func (h *QuoteHandler) Delete(c *fiber.Ctx) error {
 	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(quote.DealID)); err != nil {
 		return respondFindErr(c, err, "Deal not found")
 	}
-	if err := h.DB.Delete(&quote).Error; err != nil {
+	// Only a Draft was never in front of the customer. Conditional on the
+	// stored status, so a quote sent between the read and here isn't lost.
+	if quote.Status != models.QuoteStatusDraft {
+		return utils.Conflict(c, fmt.Sprintf("a %s quote can't be deleted; only drafts can", quote.Status))
+	}
+	res := h.DB.Where("status = ?", models.QuoteStatusDraft).Delete(&quote)
+	if res.Error != nil {
 		return utils.Internal(c, "Failed to delete quote")
+	}
+	if res.RowsAffected == 0 {
+		return utils.Conflict(c, "only draft quotes can be deleted; this quote has changed, reload it")
 	}
 	return utils.NoContent(c)
 }

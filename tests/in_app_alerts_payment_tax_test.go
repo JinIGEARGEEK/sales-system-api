@@ -372,14 +372,14 @@ func TestContractEndDateAndCustomerProductRenewalFields(t *testing.T) {
 		Data models.Contract `json:"data"`
 	}
 	resp := doJSON(t, app, testutil.AuthRequest(t, http.MethodPost, "/api/v1/deals/"+itoa(deal.ID)+"/contracts", map[string]interface{}{
-		"status": "signed", "end_date": "2027-03-31",
+		"status": "sent", "end_date": "2027-03-31",
 	}, admin.ID, admin.Role), &contract)
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	require.NotNil(t, contract.Data.EndDate)
 	assert.Equal(t, "2027-03-31", contract.Data.EndDate.Format("2006-01-02"))
 
 	// Update without end_date keeps it; null clears it; garbage is a 422.
-	resp = doJSON(t, app, testutil.AuthRequest(t, http.MethodPut, "/api/v1/contracts/"+itoa(contract.Data.ID), map[string]interface{}{"status": "signed"}, admin.ID, admin.Role), &contract)
+	resp = doJSON(t, app, testutil.AuthRequest(t, http.MethodPut, "/api/v1/contracts/"+itoa(contract.Data.ID), map[string]interface{}{"status": "sent"}, admin.ID, admin.Role), &contract)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.NotNil(t, contract.Data.EndDate)
 	resp = doJSON(t, app, testutil.AuthRequest(t, http.MethodPut, "/api/v1/contracts/"+itoa(contract.Data.ID), map[string]interface{}{"end_date": "31/03/2027"}, admin.ID, admin.Role), nil)

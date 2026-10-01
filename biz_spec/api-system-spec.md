@@ -545,8 +545,12 @@ interface Quote {
   uploaded_at?: string
   extraction_status?: 'ok' | 'partial' | 'failed'   // see note below — only set on PDF-uploaded quotes
   extraction_warnings?: string[]
+  revision_of_id: number | null    // set by Duplicate: the root quote of this revision chain
+  revision_no: number              // 0 on an original, chain max + 1 on each copy
 }
 ```
+
+> **Lifecycle (review round 2).** Status moves: draft → sent/accepted/rejected, sent → draft/accepted/rejected, accepted → rejected, rejected → none (`409` otherwise). A Sent quote shown as `expired` can't be accepted. An Accepted/Rejected quote is read-only apart from that status move (`409`). At most one Accepted quote per Deal (`409` naming the existing one). Only drafts can be deleted. Invalid items (`qty` ≤ 0, `price` < 0, `discount_percent` outside 0–100), `discount_total` above the subtotal, `wht_rate` outside 0–100 or an unparseable `issue_date`/`validity_date` are `422` with `error.fields`. Status changes are audited (`quote`/`status_changed`).
 
 > **FlowAccount PDF extraction.** `POST /deals/:dealId/quotes/upload` attempts best-effort field extraction from an uploaded FlowAccount quotation PDF, pre-filling `number`/`scope_of_work`/`items`/dates/totals instead of leaving the Quote fully blank. `extraction_status`/`extraction_warnings` are `nil`/empty for every Quote created the normal line-item way (extraction never runs for those) — they're only set on the upload path:
 > - `"ok"` — every field extraction looked for was found and self-consistent.
@@ -559,7 +563,7 @@ interface Quote {
 | `POST` | `/deals/:dealId/quotes` | 🟢 | Create a line-item quote. `number` is always server-generated — not client-settable. |
 | `POST` | `/deals/:dealId/quotes/upload` | 🟢 | Upload a PDF quote (§6.1) — sets `file_name/file_url/file_size/uploaded_at` and attempts FlowAccount field extraction (see above), setting `extraction_status`/`extraction_warnings` and pre-filling whatever fields it could read; `items` stays empty only if extraction found none. |
 | `PUT` | `/quotes/:id` | 🟢 | Update status/items and every other field above (`number` excepted — immutable after Create). |
-| `DELETE` | `/quotes/:id` | 🟢 | Delete. |
+| `DELETE` | `/quotes/:id` | 🟢 | Delete a draft (`409` for any other status). |
 | `GET` | `/quotes/:id/export-pdf` | 🟢 | `FR-CRM-042` — returns a generated PDF (`github.com/go-pdf/fpdf`): document number, scope of work, line items table (with per-item discount and tax/WHT totals), Deal/Company/Contact header (Company address with postal code, tax ID with branch — same `utils.CompanyPartyLines` block as the Contract PDF, since 2026-09-27), validity date, status, and `notes` (never `internal_notes`). Read-only, same access level as List (no `CanWrite` ownership check). |
 
 ### 7.5 Payments
@@ -698,6 +702,8 @@ interface Contract {
   created_at: string
 }
 ```
+
+> **Signed is locked (review round 2).** `signed` is set by the upload below; Create/PUT with `signed` is `422` unless the contract already has a signed file and `signed_date`. A contract whose stored status is `signed` takes no further `status`/`quote_id`/`end_date` change or second upload (`409`); add other files as Attachments. Status changes are audited (`contract`/`status_changed`).
 
 | Method | Path | Description |
 |---|---|---|
