@@ -215,23 +215,13 @@ func quoteFieldErrors(form quoteForm) map[string][]string {
 	return fields
 }
 
-// quoteItemsSubtotal is the items' summed line totals after each item's
-// own discount_percent — what discount_total is taken from. Kept here
-// rather than read from utils.ComputeQuoteTotals: the cap is on the
-// entered prices whichever price_type they're in.
-func quoteItemsSubtotal(items []models.QuoteItem) float64 {
-	var subtotal float64
-	for _, item := range items {
-		subtotal += item.Qty * item.Price * (1 - item.DiscountPercent/100)
-	}
-	return subtotal
-}
-
 // validateQuoteDiscount checks discount_total doesn't exceed the subtotal
-// of the items the quote will be saved with (so it can't push the taxable
-// amount below zero). Writes the 422 itself and returns false on failure.
+// of the items the quote will be saved with — utils.ComputeQuoteTotals'
+// Subtotal, each line rounded to satang as printed, which doesn't depend on
+// price_type, VAT or WHT — so it can't push the taxable amount below zero.
+// Writes the 422 itself and returns false on failure.
 func validateQuoteDiscount(c *fiber.Ctx, items []models.QuoteItem, discountTotal float64) bool {
-	subtotal := quoteItemsSubtotal(items)
+	subtotal := utils.ComputeQuoteTotals(items, 0, models.QuotePriceTypeExclTax, false, false, 0).Subtotal
 	if discountTotal <= subtotal+utils.MoneyEpsilon {
 		return true
 	}
