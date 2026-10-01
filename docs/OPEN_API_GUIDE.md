@@ -14,6 +14,8 @@ This CRM is meant to be the **source of truth** for this data across our interna
 - One more read-only endpoint returns a **Deal's payment schedule** (§11a) — reach it from a Project's `deal_id`. Deals themselves (and their quotes, payments and contracts) aren't exposed.
 - **A key can read/write every record of these types in the system, not just ones its owner created.** There's no per-key or per-owner data partition — if you issue keys to more than one external partner, each one can see and modify every other partner's records too. Plan key issuance accordingly (§2) if that matters for your integration.
 - **Prospect/Lead's ownership rule (`CanWrite`) applies to create/update only, not list/get.** A key acting as a Sales Rep can only *create or update* a Prospect/Lead that's unassigned or already assigned to that same rep (a key acting as Admin or Sales Manager can write any of them) — but `GET /open/prospects`, `GET /open/leads`, and their `/:id` counterparts return every Prospect/Lead in the system regardless of who it's assigned to, for every key, the same "no per-row ownership filter on reads" behavior the staff app's own `/prospects`/`/leads` List and Get already have. Pick your key's `owner_user_id` (§2) with the write-side restriction in mind — it doesn't limit what that key can read.
+- **The owner's role gates whole resources.** A key whose owner is a **Production** user gets `403` on Companies, Contacts, Prospects, Leads and the Deal payment schedules, the same as that user in the staff app; Projects and Products stay open. Admin, Sales Manager, Sales Rep and Marketing owners can reach every resource here.
+- **`assigned_to` must name an active Admin, Sales Manager, Sales Rep or Marketing user** (`422` on `assigned_to` otherwise; Production and deactivated users can't own records). On update this is only checked when the value changes.
 - Only an **Admin** can issue or revoke keys (§2 below). If you're an external integrator, get your key from whoever administers this CRM for your organization — you cannot self-serve one.
 
 ## 2. Getting a key (Admin only)
@@ -325,7 +327,7 @@ Every field is a **JSON string** except `company_id` (integer), `tags` (array of
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `company_id` | integer | ✅ | Must reference an existing Company's numeric `id` — not a string, not the company name. |
+| `company_id` | integer | ✅ | Must reference an existing Company's numeric `id` — not a string, not the company name. An id that names no Company is `422` (`fields.company_id: ["not_found"]`). |
 | `name` | string | ✅ | |
 | `email` | string | | A lenient email-format check (`someone@somewhere.tld`) — empty is fine, garbage is rejected (`422`). |
 | `phone` | string | | A lenient check — digits, spaces, `+`, `-`, `(`, `)`, 6-20 chars; empty is fine. |
@@ -334,7 +336,7 @@ Every field is a **JSON string** except `company_id` (integer), `tags` (array of
 | `status` | string | | `"active"` or `"archived"`, matched/stored case-insensitively; defaults to `active`. |
 | `is_primary` | boolean | | `true`/`false` JSON boolean. At most one Contact per Company can be primary — setting this on one automatically un-sets it on any other Contact of the same Company. |
 
-`201 Created` on success. `422` if `company_id`/`name` is missing, `email`/`phone` isn't a valid format, or `role_title`/`status` doesn't match an active option/allowed value. `400 Bad Request` for a field sent as the wrong JSON type (a string for `company_id`, a number for `is_primary`, etc.).
+`201 Created` on success. `422` if `company_id`/`name` is missing, `company_id` names no Company, `email`/`phone` isn't a valid format, or `role_title`/`status` doesn't match an active option/allowed value. `409 Conflict` if another Contact (in any Company) has the same email or phone; resend with `?allow_duplicate=true` to create it anyway (§12c). `400 Bad Request` for a field sent as the wrong JSON type (a string for `company_id`, a number for `is_primary`, etc.).
 
 ### `GET /api/v1/open/contacts/:id` — Get
 
@@ -347,10 +349,12 @@ X-API-Key: sk_live_...
 
 Same body shape and validation as Create (`name` is required here too), with the same general rule as Company Update (an omitted field is cleared, not preserved) and **two exceptions** worth calling out explicitly:
 
-- `company_id` — omit it (or send `0`) and the Contact keeps its current Company; it cannot be blanked out this way.
+- `company_id` — omit it (or send `0`) and the Contact keeps its current Company; it cannot be blanked out this way. A *changed* `company_id` must name an existing Company (`422`); resending the current one always works.
 - `status` — same as Company: omit it (or send `""`) and the current status is kept.
 
 Everything else, including **`is_primary`, is a true full replace** — this is the field most likely to bite you: omitting it (or sending `false`) on an update to an already-primary Contact will un-set `is_primary`, since the field has no "leave unchanged" default. Always send the Contact's current `is_primary` value explicitly if you're not deliberately changing it.
+
+Update has no duplicate email/phone check; that runs on Create only.
 
 ```
 PUT /api/v1/open/contacts/101
@@ -597,7 +601,7 @@ Content-Type: application/json
 | `business_unit` | string \| null | | `"Project"` or `"Product"`. |
 | `business_unit_item` | string \| null | | |
 
-`201 Created` on success. `422 Unprocessable Entity` for a missing `name`, an invalid `email`, a `source`/`status`/`business_unit` that isn't valid, or an attempt to set `status: "Converted"` directly. `403 Forbidden` if `assigned_to` names someone other than the key's own owner while acting as a Sales Rep.
+`201 Created` on success. `422 Unprocessable Entity` for a missing `name`, an invalid `email`, a `source`/`status`/`business_unit` that isn't valid, an `assigned_to` that isn't an active sales-role user (§1), or an attempt to set `status: "Converted"` directly. `403 Forbidden` if `assigned_to` names someone other than the key's own owner while acting as a Sales Rep or Marketing user. `409 Conflict` if another Prospect has the same email or phone, unless `?allow_duplicate=true` (§12c).
 
 ### `GET /api/v1/open/prospects/:id` — Get
 
@@ -689,7 +693,7 @@ Content-Type: application/json
 | `business_unit` | string \| null | | `"Project"` or `"Product"`. |
 | `business_unit_item` | string \| null | | |
 
-`201 Created` on success. `422 Unprocessable Entity` for a missing `name`, invalid `email`, or invalid `source`/`business_unit`. `403 Forbidden` if `assigned_to` names someone other than the key's own owner while acting as a Sales Rep.
+`201 Created` on success. `422 Unprocessable Entity` for a missing `name`, invalid `email`, invalid `source`/`business_unit`, or an `assigned_to` that isn't an active sales-role user (§1). `403 Forbidden` if `assigned_to` names someone other than the key's own owner while acting as a Sales Rep or Marketing user. `404 Not Found` if `company_id` names no Company. `409 Conflict` if another Lead has the same email or phone, unless `?allow_duplicate=true` (§12c).
 
 ### `GET /api/v1/open/leads/:id` — Get
 
@@ -761,7 +765,7 @@ Ordered by `due_date` ascending. Not paginated. An empty `data` array means no s
 
 ## 12. Avoiding duplicates (idempotent retries + Company dedupe)
 
-This CRM is the source of truth other internal systems sync this data through, so an accidental duplicate isn't just clutter here — it propagates to everything reading from it. Two independent safeguards:
+This CRM is the source of truth other internal systems sync this data through, so an accidental duplicate isn't just clutter here — it propagates to everything reading from it. Three independent safeguards:
 
 ### 12a. `Idempotency-Key` — safe retries
 
@@ -779,7 +783,7 @@ Content-Type: application/json
 - **Same key, same body, retried** → the original `201` (or `422`/etc.) response is returned again verbatim; no new row is created.
 - **Same key, a DIFFERENT body** → `409 Conflict` — you've reused a key for two different requests, which is rejected outright rather than silently picking one.
 - **A request with that key still in flight** (you fired two copies at once) → `409 Conflict` on whichever one loses the race, rather than both proceeding.
-- **No `Idempotency-Key` header at all** → works exactly as before this existed; it's opt-in.
+- **No `Idempotency-Key` header at all** → no replay protection; it's opt-in.
 
 Idempotency keys are scoped per API key and stay valid for replay for 24 hours after the original attempt — a truly new call should use a fresh key value (don't reuse one across unrelated operations).
 
@@ -802,11 +806,26 @@ On a `409` here, `GET`/`PUT` the existing id rather than retrying Create — tha
 - Spaces and dashes are ignored (`0-1055-55555-55-5` clashes with `0105555555555`).
 - A Company with a tax ID but no `branch_code` clashes only with another that also has no branch. `null` and `"00000"` (head office) are treated as different.
 - A Company with no `tax_id` is never checked.
-- On `PUT`, the check only runs when you change the pair. Older records that already shared a pair before this check existed can still be edited, as long as you resend their current `tax_id` and `branch_code`.
+- On `PUT`, the check only runs when you change the pair. Records that already share a pair can still be edited, as long as you resend their current `tax_id` and `branch_code`.
 
 Unlike the website check, this one has no database constraint behind it, so two Creates sent at exactly the same moment can both succeed. Look up with `GET /open/companies?tax_id=…&branch_code=…` first, and `POST` (with an `Idempotency-Key`, §12a) only when nothing matches.
 
-**No such dedupe exists for Project/Product/Prospect/Lead** — only the Idempotency-Key safeguard above protects those from a retried Create.
+### 12c. Contact, Prospect and Lead duplicates on Create: email or phone
+
+`POST /open/contacts`, `/open/prospects` and `/open/leads` each check the new record's `email` and `phone` against the existing, non-deleted records of the same type (Contacts across every Company). Emails match case-insensitively; phones match on digits only, with a leading `+66` read as `0`, so `+66 81-234-5678` and `0812345678` are the same number. A match is `409 Conflict` naming the matching fields and records:
+
+```json
+{ "error": {
+    "code": "CONFLICT",
+    "message": "A contact with the same email already exists",
+    "fields": { "email": ["duplicate"] },
+    "duplicate_of": [101]
+} }
+```
+
+`duplicate_of` lists up to 10 matching ids. If it really is a different person, resend the same request with `?allow_duplicate=true` and the check is skipped. Update (`PUT`) never runs this check.
+
+**Projects and Products have no dedupe** — only the Idempotency-Key safeguard above protects those from a retried Create.
 
 ## 13. Error reference
 
@@ -826,10 +845,10 @@ Every error follows the same envelope:
 |---|---|---|
 | 400 | `BAD_REQUEST` | Request body isn't valid JSON, or a field's JSON type doesn't match what's expected (e.g. `revenue_size` sent as a number instead of a string, `company_id` sent as a string instead of a number, `tags` sent as a single string instead of an array). This happens *before* any field-level validation runs, so the response has no `fields` map — check every field's type against the tables in [§6](#6-companies) through [§11](#11-leads). |
 | 401 | `UNAUTHORIZED` | Missing/invalid/revoked API key |
-| 403 | `FORBIDDEN` | The key's owner is a Production user calling Companies, Contacts, Leads, Prospects or Deals; or the key's owner (a Sales Rep) tried to create/update/assign a Prospect or Lead they don't own — see §1's ownership note; or read a payment schedule on a Deal assigned to someone else, or the owner is a Production user (§11a) |
+| 403 | `FORBIDDEN` | The key's owner is a Production user calling Companies, Contacts, Leads, Prospects or Deals; or the key's owner (a Sales Rep or Marketing user) tried to create/update/assign a Prospect or Lead they don't own — see §1's ownership note; or read a payment schedule on a Deal assigned to someone else, or the owner is a Production user (§11a) |
 | 404 | `NOT_FOUND` | The record id doesn't exist — or, on Project Create, `company_id` doesn't reference an existing Company, or on a payment schedule read, the Deal doesn't exist |
-| 409 | `CONFLICT` | A Company's website domain, or its `tax_id` + `branch_code` pair, already belongs to a different Company (§12b); or an `Idempotency-Key` was reused with a different body, or while its original request is still in flight (§12a) |
-| 422 | `VALIDATION_ERROR` | An unparseable `updated_since`, missing required field, invalid `website`/`email`/`phone` format, a Company `branch_code`/`postal_code` that isn't 5 digits, invalid `status`, or a `size`/`revenue_size`/`role_title`/`category`/`source`/`business_unit` that isn't a valid/active option |
+| 409 | `CONFLICT` | A Company's website domain, or its `tax_id` + `branch_code` pair, already belongs to a different Company (§12b); a new Contact/Prospect/Lead's email or phone matches an existing one (§12c, with `fields` and `duplicate_of`); or an `Idempotency-Key` was reused with a different body, or while its original request is still in flight (§12a) |
+| 422 | `VALIDATION_ERROR` | An unparseable `updated_since`, missing required field, invalid `website`/`email`/`phone` format, a Company `branch_code`/`postal_code` that isn't 5 digits, invalid `status`, a `size`/`revenue_size`/`role_title`/`category`/`source`/`business_unit` that isn't a valid/active option, a Contact `company_id` naming no Company, or an `assigned_to` that isn't an active sales-role user |
 | 429 | `TOO_MANY_REQUESTS` | Over 300 requests/minute on this key |
 | 500 | `INTERNAL_ERROR` | Unexpected server error — safe to retry (pair with an `Idempotency-Key`, §12a, on a Create so a retry after a `500` can't double-create) |
 

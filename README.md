@@ -97,17 +97,17 @@ In development (`APP_ENV=development`), a browsable Swagger UI is also served at
 
 ### Open API (external integrations)
 
-A separate `X-API-Key`-authenticated surface — `/open/companies` and `/open/contacts` (list/create/get/update only) — lets an external system create/read/update those two resources without a staff login, acting as an Admin-designated staff user. Keys are issued/revoked by an Admin either via the `sales-system` frontend's **Settings → API Keys** page (`/admin/api-keys`) or directly through `/admin/api-keys` on this API. See [`docs/OPEN_API_GUIDE.md`](docs/OPEN_API_GUIDE.md) for the integrator-facing walkthrough (creating a key both ways, request/response shapes, error codes, curl examples) and `biz_spec/api-system-spec.md` §8.9 for the full contract.
+A separate `X-API-Key`-authenticated surface — `/open/companies`, `/open/contacts`, `/open/projects`, `/open/products`, `/open/prospects` and `/open/leads` (list/create/get/update only), plus a read-only Deal payment schedule — lets an external system work with those resources without a staff login, acting as an Admin-designated staff user whose role gates it the same way (a Production owner gets `403` on Companies/Contacts/Prospects/Leads/Deals). Keys are issued/revoked by an Admin either via the `sales-system` frontend's **Settings → API Keys** page (`/admin/api-keys`) or directly through `/admin/api-keys` on this API. See [`docs/OPEN_API_GUIDE.md`](docs/OPEN_API_GUIDE.md) for the integrator-facing walkthrough (creating a key both ways, request/response shapes, error codes, curl examples) and `biz_spec/api-system-spec.md` §8.9 for the full contract.
 
 ### Roles (§1.7 of the spec)
 
 | Role | Access |
 |---|---|
 | **Admin** | Full access to every resource, including Users and Product Catalog |
-| **Sales Rep** | Full CRUD on records assigned to them or unassigned, including Prospects (added 2026-09-08); read access to teammates' records; read access to `/audit-log` restricted to Deal stage-change history only |
-| **Sales Manager** | Same as Sales Rep, plus read access to all reps' data, all `/reports/*`, and deal reassignment; its own `/audit-log` access also includes Deal `reassigned`/`bulk_reassigned` history, not just stage changes (widened 2026-09-09) |
-| **Production** | Write access to *only* `status` and `production_reference` on `Project` records |
-| **Marketing** | Full CRUD on Prospects (the pre-Lead marketing funnel — `/prospects`) they're assigned to or unassigned, same ownership model Sales Rep has for Leads. Since 2026-09-23 also the same Lead/Deal access as Sales Rep (the shared `salesPipelineRoles` gate, which also backs `GET /pipeline/overview`); no `/reports/*`, bulk actions, exports or Trash. |
+| **Sales Rep** | Full CRUD on records assigned to them or unassigned, including Prospects; may assign records only to themselves; read access to teammates' records; read access to `/audit-log` restricted to Deal stage-change history only |
+| **Sales Manager** | Same as Sales Rep, plus read access to all reps' data, all `/reports/*`, and deal reassignment; its own `/audit-log` access also includes Deal `reassigned`/`bulk_reassigned` history, not just stage changes. Admin and Sales Manager alone get bulk actions, Trash/Restore, exports, Company/Contact delete and merge (`managerRoles`) |
+| **Production** | Write access to *only* `status` and `production_reference` on `Project` records; `403` on Leads, Prospects, Companies, Contacts and Deals, and can't be an `assigned_to` |
+| **Marketing** | Full CRUD on Prospects (the pre-Lead marketing funnel — `/prospects`) they're assigned to or unassigned, same ownership model Sales Rep has for Leads. Also the same Lead/Company/Contact/Deal access as Sales Rep (the shared `salesPipelineRoles` gate, which also backs `GET /pipeline/overview`); no `/reports/*`, bulk actions, exports or Trash. |
 
 RBAC is enforced server-side on every route — never rely on the frontend hiding a button (NFR-001).
 
@@ -128,7 +128,7 @@ The repo builds via the included `Dockerfile` and `railway.toml` (health check a
 
 ## Notes for contributors
 
-- The frontend's `AdminUser.role` type was originally `Admin | Editor | Viewer`, which conflicted with the roles actually enforced here. This has been reconciled: both frontend and backend now use `Admin | Sales Rep | Sales Manager | Production`.
+- `AdminUser.role` is `Admin | Sales Rep | Sales Manager | Production | Marketing` in both frontend and backend (`models.ValidRoles`).
 - File uploads (Quote PDFs, signed Contracts, Attachments) go through the `utils.Storage` interface (`internal/utils/storage.go`) — `LocalStorage` (default, `STORAGE_BACKEND=local`) or `S3Storage` (`STORAGE_BACKEND=s3`, any S3-compatible provider). Handlers and the `/uploads/:key` route never talk to disk or S3 directly, only to this interface. See [`biz_spec/s3-migration-plan.md`](biz_spec/s3-migration-plan.md) for the design rationale — provisioning an actual bucket/credentials is still an account-setup decision outside this repo. Accepted extensions are allow-listed (`.pdf .png .jpg .jpeg .doc .docx .xls .xlsx .csv`) — deliberately excludes anything a browser would execute inline, since files are served from this API's own origin.
 - `AutoMigrate` runs on every boot; fine for dev, but consider gating it behind a flag or a separate migration step before running multiple replicas in production. It also backfills the `companies.domain` column (used for indexed import dedup) for any pre-existing row missing it — idempotent, only touches rows where `domain` is still empty, so it's a no-op after the first boot post-upgrade. A data migration that can't tell from the data whether it has already run (e.g. the Kanban card `position` backfill, since 0 is also a real position) goes through `database.runOnce` instead, which records it in the `data_migrations` table so it never runs again.
 - `GET /{resource}/export` streams its CSV response in batches rather than buffering the full result set in memory — safe for large tables, but note that once the first batch has been validated and streaming begins, a failure partway through can only be logged server-side and cut the response short (the `200` and any bytes already sent can't be un-sent); this is an inherent limitation of streamed HTTP responses.
