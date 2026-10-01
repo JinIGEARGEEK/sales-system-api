@@ -73,16 +73,18 @@ func TestPaymentInstallmentBulkCreate_ReceivableFromAcceptedQuote(t *testing.T) 
 }
 
 // TestQuoteUpdate_AcceptedQuotePricingIsLocked guards that an Accepted
-// Quote's items/pricing can't be edited (the Deal's receivable and revenue
-// come from it), while resending the same values, changing its status, and
-// editing non-money fields still work.
+// Quote's pricing can't be edited (the Deal's receivable and revenue come
+// from it): any content change is a 409 (quote lifecycle guard), resending
+// the stored values is fine, and the quote can still move to Rejected, after
+// which it stays read-only.
 func TestQuoteUpdate_AcceptedQuotePricingIsLocked(t *testing.T) {
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 	deal := seedDeal(t, db, nil)
 	quote := &models.Quote{
 		DealID: deal.ID, Status: models.QuoteStatusAccepted, PriceType: models.QuotePriceTypeExclTax, VatEnabled: true,
-		Items: models.JSONItems{{Description: "Build", Qty: 1, Price: 50000}},
+		ScopeOfWork: "Phase 1",
+		Items:       models.JSONItems{{Description: "Build", Qty: 1, Price: 50000}},
 	}
 	require.NoError(t, db.Create(quote).Error)
 
@@ -97,37 +99,24 @@ func TestQuoteUpdate_AcceptedQuotePricingIsLocked(t *testing.T) {
 		}
 		return b
 	}
-	put := func(b map[string]interface{}) (*http.Response, map[string][]string) {
-		var out fieldsErrorBody
+	put := func(b map[string]interface{}) *http.Response {
 		req := testutil.AuthRequest(t, http.MethodPut, "/api/v1/quotes/"+itoa(quote.ID), b, admin.ID, admin.Role)
-		resp := doJSON(t, app, req, &out)
-		return resp, out.Error.Fields
+		return doJSON(t, app, req, nil)
 	}
 	repriced := []map[string]interface{}{{"description": "Build", "qty": 1, "price": 60000}}
 
-	resp, fields := put(body(map[string]interface{}{"items": repriced}))
-	require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
-	assert.Equal(t, []string{"accepted_locked"}, fields["items"])
+	require.Equal(t, http.StatusConflict, put(body(map[string]interface{}{"items": repriced})).StatusCode)
+	require.Equal(t, http.StatusConflict, put(body(map[string]interface{}{"price_type": "incl_tax", "discount_total": 100})).StatusCode)
 
-	resp, fields = put(body(map[string]interface{}{"price_type": "incl_tax", "discount_total": 100}))
-	require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
-	assert.Contains(t, fields, "price_type")
-	assert.Contains(t, fields, "discount_total")
+	// Resending the stored values unchanged is fine.
+	require.Equal(t, http.StatusOK, put(body(nil)).StatusCode)
 
-	// Same pricing resent with a non-money edit: fine.
-	resp, _ = put(body(map[string]interface{}{"scope_of_work": "Phase 1 + 2"}))
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	// Status can still move (here to Rejected) — after which pricing is
-	// editable again.
-	resp, _ = put(body(map[string]interface{}{"status": "rejected"}))
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	resp, _ = put(body(map[string]interface{}{"status": "rejected", "items": repriced}))
-	require.Equal(t, http.StatusOK, resp.StatusCode)
+	// Accepted → Rejected is allowed; a Rejected quote stays read-only.
+	require.Equal(t, http.StatusOK, put(body(map[string]interface{}{"status": "rejected"})).StatusCode)
+	require.Equal(t, http.StatusConflict, put(body(map[string]interface{}{"status": "rejected", "items": repriced})).StatusCode)
 
 	var reloaded models.Quote
 	require.NoError(t, db.First(&reloaded, quote.ID).Error)
 	assert.Equal(t, models.QuoteStatusRejected, reloaded.Status)
-	assert.Equal(t, 60000.0, reloaded.Items[0].Price)
-	assert.Equal(t, "Phase 1", reloaded.ScopeOfWork)
+	assert.Equal(t, 50000.0, reloaded.Items[0].Price)
 }

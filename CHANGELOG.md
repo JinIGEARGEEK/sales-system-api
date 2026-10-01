@@ -4,6 +4,66 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## Unreleased — Review round 2
+
+**Access.**
+- Production is now `403` on every `/companies*` and `/contacts*` route (including `/companies/:companyId/products|projects` and `PATCH /customer-products/:id`) and on the top-level `/quotes/:id*`, `/payments/:id`, `/payment-installments/:id` and `/contracts/:id*` routes, including both `export-pdf` (spec §1.7). Its Projects page is unaffected: `GET /projects` already returns `company_name`. **Frontend:** hide the Projects page's "View company" action for Production.
+- Marketing keeps Sales Rep access to all of the above.
+- `DELETE /companies/:id` and `DELETE /contacts/:id` are Admin/Sales Manager only (`403` for Sales Rep/Marketing), like trash/restore. **Frontend:** hide the delete action for other roles.
+- `DELETE /companies/:id` returns `409` while the Company has an open or Won Deal that isn't deleted.
+- Single Company/Contact delete and restore write `company`/`contact` audit entries (`deleted`, `restored`).
+- The Open API `/open/companies`, `/open/contacts`, `/open/leads` and `/open/prospects` routes are `403` for a key owned by a Production user, like `/open/deals`. `/open/projects` and `/open/products` are unchanged.
+
+**Users and ownership.**
+- Deactivating a user (`PUT /users/:id` with `status: "inactive"`, `PATCH /users/bulk-deactivate`), deleting one (`DELETE /users/:id`), or moving one to a role that can't own pipeline records (Production) accepts an optional `reassign_to`: an active Admin/Sales Rep/Sales Manager/Marketing user, not one of the users being removed (`422` on field `reassign_to` otherwise). Their open Deals (status `open`), Leads and Prospects (not converted or disqualified) and pending Tasks move to that user in the same transaction, with one `records_reassigned` audit row per user giving the counts. Closed records keep their owner. On `DELETE`, `reassign_to` can be a query param or a JSON body.
+- Those responses now report `open_records` (`{deals, leads, prospects, tasks, total}` still owned), and `reassigned` (same counts plus `user_id`, `reassign_to`) when `reassign_to` was given, so the UI can offer a reassign. **`DELETE /users/:id` and `PATCH /users/bulk-deactivate` now return `200` with a body instead of `204`.** `PUT` adds the two fields to the user object. Bulk returns arrays: `open_records` per listed user (with `user_id`) and `reassigned` per user that had records moved. `bulk-activate` still returns `204`.
+- An Admin can't change their own role or deactivate or delete themselves (`422`, on field `role`/`status`/`id`/`ids`). Nobody can demote, deactivate or delete the last active Admin (`409`). The check locks the active Admin rows, so two Admins removing each other at the same time can't both succeed.
+- `PUT /users/:id` writes `role_changed` and `activated`/`deactivated` audit rows (bulk was already audited).
+- Deal `assigned_to` must be an active user in a sales-pipeline role (`422` on field `assigned_to`) on `POST /deals` (and Lead Convert, which shares the check), `PATCH /deals/:id/reassign`, and the deal/lead/prospect `bulk-reassign`. `PUT /deals/:id` checks it only when it changes, so a deal whose owner was deactivated can still be edited.
+- On `PUT /deals/:id` a Sales Rep or Marketing user can keep their deal or claim an unassigned one, but not unassign it or give it to someone else (`403`).
+- `PUT /deals/:id` audits `value`/`company_id` changes (`updated`) and `assigned_to` changes (`reassigned`, the same shape as `PATCH /deals/:id/reassign`, so Sales Managers see them), with before/after.
+
+**Quote and contract lifecycle.**
+- Supersedes the 2026-10-01 Accepted-quote pricing lock: an Accepted or Rejected quote is now fully read-only, so any change other than an allowed status move is `409` (it was a `422` with `fields` code `accepted_locked` for pricing fields only). Nothing in the frontend read `accepted_locked`.
+- Quote status moves follow a fixed table (`models.CanTransitionQuoteStatus`): draft → sent/accepted/rejected, sent → draft/accepted/rejected, accepted → rejected, rejected → nothing. A Sent quote past its validity date (shown as `expired`) can't be accepted; move it back to draft with a new `validity_date`, or duplicate it. Anything else is `409`.
+- An Accepted or Rejected quote is read-only: a `PUT` that would change any field other than `status` is `409`. Resending the stored values, or sending only `{"status": "rejected"}`, is fine.
+- One Accepted quote per Deal. Accepting (or creating as accepted) while another quote of the Deal is Accepted is `409` naming that quote's number; reject it first. The Deal row is locked, so two concurrent accepts can't both win. Every quote save also re-checks the stored status under a row lock, so a stale full-row `PUT` can't overwrite a concurrent status change (`409`, reload).
+- `DELETE /quotes/:id` only deletes drafts (`409` otherwise).
+- `POST /quotes/:id/duplicate` sets the new `revision_of_id` (the chain's root quote, FK, `ON DELETE SET NULL`) and `revision_no` (chain max + 1; `0` on an original). The original is not changed.
+- Quote Create/Update return `422` with `error.fields` for: item `qty` ≤ 0, `price` < 0, `discount_percent` outside 0–100 (keys `items[i].qty` etc.), `discount_total` above the items' subtotal, `wht_rate` outside 0–100, and an `issue_date`/`validity_date` that isn't a date.
+- A contract becomes `signed` through `POST /contracts/:id/upload`. Create with `status: "signed"` is `422`, and so is `PUT` unless the contract already has a signed file and `signed_date`.
+- A contract whose stored status is `signed` is locked: any `status`/`quote_id`/`end_date` change is `409`, and a second signed upload is `409`. Further files go on as Attachments. A signed contract past its `end_date` stays locked.
+- Quote and contract status changes write a `status_changed` audit entry (`entity_type` `quote`/`contract`, before/after `status`).
+
+Regression-guarded: `tests/quote_lifecycle_test.go`, `tests/contract_lock_test.go`.
+
+**Duplicates, convert and import.**
+- `POST /leads`, `POST /prospects` and `POST /contacts` return `409` when a non-deleted record of the same kind has the same email (case-insensitive) or phone (digits only, `+66` read as a leading `0`; `utils.NormalizePhone`). The body is the usual `CONFLICT` envelope plus `error.fields` (`{"email": ["duplicate"]}` and/or `{"phone": ["duplicate"]}`) and `error.duplicate_of` (matching ids, at most 10). **The frontend should show the match and offer to resend with `?allow_duplicate=true`**, which skips the check. Contacts are checked across all Companies. Updates are not checked.
+- Lead and Prospect Create/Update: `assigned_to` must be an active user in a sales-pipeline role (`422` on `assigned_to`, `validateAssignee`). Update only checks an owner that changed, so resending a since-deactivated owner still saves.
+- Both convert endpoints reuse a Contact already in the target Company with the same email (case-insensitive) instead of always creating one. A Company they create is never nameless: new optional body field `company_name`, else the source record's soft-deleted Company's name, else the Lead/Prospect's name. With none of those it's a `422` asking for `company_id` or `company_name`.
+- `POST /contacts/import` matches on lower(email) **within the row's Company** only, so a Contact is never moved to another Company (a same-email row for another Company creates a new Contact). An empty phone/role_title cell keeps the stored value. A `company_id` that names no Company is a `422` before anything is written.
+- Both imports save each row under a savepoint. A row Postgres rejected used to abort the transaction, so every later row failed and the import was a `500`. Now that row is reported in `errors` and skipped. A row with a NUL byte is skipped while parsing, since it failed the batched lookup query for the whole file.
+
+Regression-guarded: `tests/duplicate_detection_test.go`, new cases in `tests/import_test.go` and `tests/lead_company_test.go`, `internal/utils/contact_match_test.go`.
+
+**Won deals and payments.**
+- A Won Deal with money attached (a non-deleted Payment, any Payment Installment, or a Contract stored as `signed`) is protected. `DELETE /deals/:id` and any move out of Won (`PUT /deals/:id` or `PATCH /deals/:id/stage`, to an open stage or Lost) are `409` with `error.code` `WON_DEAL_PROTECTED` for anyone but Admin/Sales Manager. A manager must pass `?reason=` (query string, max 500 chars). Without it the answer is `409` `REASON_REQUIRED`, so the frontend can ask for a reason and retry.
+- **`PATCH /deals/bulk-archive` now returns `200 { archived: [...], skipped: [{ id, reason: "won_deal_with_money" }] }`** (was `204`). Protected Deals are skipped, not archived, and the rest of the batch still goes through. Lead/Prospect bulk archive is unchanged (`204`).
+- Audit log: a Deal `DELETE` writes `deleted` (with the manager's `reason` when forced) and Restore writes `restored`. A forced un-win writes `won_reversed` with the reason, on top of the usual `stage_changed`.
+- `PATCH /deals/:id/stage` into a Lost stage requires `lost_reason` (`422`, `fields.lost_reason`), like `PUT`. A Deal that is already Lost with a stored reason can still be repositioned without one.
+- Payments are soft-deleted now (`AuditedModel`; AutoMigrate adds `deleted_at`/`created_by`/`updated_by`/`deleted_by`). A deleted Payment drops out of the Payments list and totals, installment statuses, the outstanding-balance report and the payment-installment rule, all through GORM's default scope.
+- Payment Create/Update/Delete write `payment` audit entries (`created`/`updated`/`deleted`, before/after). Payment-installment Update/Delete write `payment_installment` entries.
+- New payment checks:
+  - Create on a Lost Deal is `422` (`fields.deal_id`).
+  - `paid_at` later than today (server-local) is `422` (`fields.paid_at`).
+  - A non-empty `document_number` already used by another non-deleted Payment, on any Deal, is `409`. Update only checks this when the number changes.
+  - If cash + WHT would pass the Deal's receivable (the Outstanding Balance rule: latest Accepted Quote incl. VAT when it has priced items, else Deal value) by more than `utils.MoneyEpsilon`, the request is `422` `fields.amount: ["exceeds_receivable"]` unless the body sends `allow_overpayment: true`. Update only checks this when the payment's own cash + WHT goes up.
+  - Saves lock the Deal row, so concurrent payments are checked one at a time.
+- Deleting an installment also unlinks deleted Payments that pointed at it.
+- `utils.ErrBulkSkip` lets a `BulkUpdate` apply leave one row alone without failing the batch.
+
+Regression-guarded: `tests/won_deal_protection_test.go`, `tests/payment_guards_test.go`. Swagger annotations updated; regenerate `docs/` after merging.
+
 ## 2026-10-01 — Quote money fixes: tax-inclusive VAT, satang rounding, Accepted lock, schedule cap
 
 - **Tax-inclusive quotes no longer charge VAT twice.** With `price_type: "incl_tax"` and VAT on, `ComputeQuoteTotals` backs VAT out of the prices (taxable = net × 100/107, VAT = net − taxable) instead of adding 7% on top. Affects the quote PDF, the Outstanding Balance receivable and expiring-soon `total_value`. `excl_tax` and VAT-off quotes are unchanged. WHT stays on the pre-VAT amount.

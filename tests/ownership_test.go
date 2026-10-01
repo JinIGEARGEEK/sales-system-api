@@ -38,7 +38,7 @@ func TestDealOwnership_SubResourceBypass(t *testing.T) {
 	calls := []call{
 		{"PUT deal", http.MethodPut, "", map[string]interface{}{
 			"company_id": deal.CompanyID, "contact_id": deal.ContactID, "title": "Updated Title",
-			"assigned_to": repA.ID,
+			"value": deal.Value, "assigned_to": repA.ID,
 		}},
 		{"POST quote", http.MethodPost, "/quotes", map[string]interface{}{"status": "draft"}},
 		{"POST payment", http.MethodPost, "/payments", map[string]interface{}{"amount": 100}},

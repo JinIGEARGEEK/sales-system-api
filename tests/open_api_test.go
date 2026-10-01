@@ -881,3 +881,28 @@ func TestOpenAPI_CompanyBranchPostalCodes(t *testing.T) {
 	require.Nil(t, cleared.BranchCode)
 	require.Nil(t, cleared.PostalCode)
 }
+
+// TestOpenAPI_PipelineGroupsRoleGated guards that a Production-owned key gets
+// the same 403s on Companies/Contacts/Leads/Prospects as the staff routes,
+// while Projects/Products (which Production works) stay open to it.
+func TestOpenAPI_PipelineGroupsRoleGated(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	production := testutil.CreateUser(t, db, models.RoleProduction)
+	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
+
+	productionKey := createAPIKey(t, app, admin.ID, production.ID)
+	marketingKey := createAPIKey(t, app, admin.ID, marketing.ID)
+
+	for _, path := range []string{"/companies", "/contacts", "/leads", "/prospects"} {
+		target := "/api/v1/open" + path
+		require.Equal(t, fiber.StatusForbidden,
+			doJSON(t, app, openRequest(t, http.MethodGet, target, nil, productionKey), nil).StatusCode, path)
+		require.Equal(t, fiber.StatusOK,
+			doJSON(t, app, openRequest(t, http.MethodGet, target, nil, marketingKey), nil).StatusCode, path)
+	}
+	for _, path := range []string{"/projects", "/products"} {
+		require.Equal(t, fiber.StatusOK,
+			doJSON(t, app, openRequest(t, http.MethodGet, "/api/v1/open"+path, nil, productionKey), nil).StatusCode, path)
+	}
+}

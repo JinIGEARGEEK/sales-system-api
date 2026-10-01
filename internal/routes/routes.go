@@ -213,13 +213,19 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// would).
 	idempotency := middleware.RequireIdempotency(db)
 
-	openCompanies := open.Group("/companies")
+	// Sales-pipeline roles — every role but Production (Marketing has Sales
+	// Rep parity, feature-spec.md FR-CRM-123). Declared ahead of the Open API
+	// so an API key owned by a Production user gets the same 403s on
+	// Companies/Contacts/Leads/Prospects/Deals as the staff routes.
+	salesPipelineRoles := middleware.RequireRoles(models.SalesPipelineRoles...)
+
+	openCompanies := open.Group("/companies", salesPipelineRoles)
 	openCompanies.Get("/", companyH.List)
 	openCompanies.Post("/", idempotency, companyH.Create)
 	openCompanies.Get("/:id", companyH.Get)
 	openCompanies.Put("/:id", companyH.Update)
 
-	openContacts := open.Group("/contacts")
+	openContacts := open.Group("/contacts", salesPipelineRoles)
 	openContacts.Get("/", contactH.List)
 	openContacts.Post("/", idempotency, contactH.Create)
 	openContacts.Get("/:id", contactH.Get)
@@ -248,24 +254,18 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// Prospects — full List/Create/Get/Update already exist top-level;
 	// reused as-is (same CanWrite ownership rule the staff /prospects routes
 	// enforce, evaluated against the API key's owner_user_id/role).
-	openProspects := open.Group("/prospects")
+	openProspects := open.Group("/prospects", salesPipelineRoles)
 	openProspects.Get("/", prospectH.List)
 	openProspects.Post("/", idempotency, prospectH.Create)
 	openProspects.Get("/:id", prospectH.Get)
 	openProspects.Put("/:id", prospectH.Update)
 
 	// Leads — same treatment as Prospects above.
-	openLeads := open.Group("/leads")
+	openLeads := open.Group("/leads", salesPipelineRoles)
 	openLeads.Get("/", leadH.List)
 	openLeads.Post("/", idempotency, leadH.Create)
 	openLeads.Get("/:id", leadH.Get)
 	openLeads.Put("/:id", leadH.Update)
-
-	// Sales-pipeline roles — the Lead/Deal gate: every role but Production
-	// (Marketing has Sales Rep parity here, feature-spec.md FR-CRM-123).
-	// Declared ahead of `authed` so the Open API's Deal route below shares
-	// it with the staff /deals group.
-	salesPipelineRoles := middleware.RequireRoles(models.SalesPipelineRoles...)
 
 	// Deal payment schedules — read-only, the one Deal sub-resource exposed
 	// here, so an integration can follow a Project's deal_id to its planned
@@ -352,8 +352,10 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	prospects.Post("/:id/convert", prospectH.Convert)
 	prospects.Post("/:id/restore", bulkRoles, prospectH.Restore)
 
-	// Companies
-	companies := authed.Group("/companies")
+	// Companies — salesPipelineRoles (Production has no access, spec §1.7;
+	// its Projects page reads company_name off GET /projects instead). Delete
+	// is Admin/Sales Manager, like trash/restore/export.
+	companies := authed.Group("/companies", salesPipelineRoles)
 	companies.Get("/", companyH.List)
 	companies.Post("/", companyH.Create)
 	companies.Post("/import", importH.ImportCompanies)
@@ -362,15 +364,15 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	companies.Get("/export", bulkRoles, exportH.Companies)
 	companies.Get("/:id", companyH.Get)
 	companies.Put("/:id", companyH.Update)
-	companies.Delete("/:id", companyH.Delete)
+	companies.Delete("/:id", bulkRoles, companyH.Delete)
 	companies.Post("/:id/restore", bulkRoles, companyH.Restore)
 	companies.Get("/:companyId/products", productH.ListForCompany)
 	companies.Post("/:companyId/products", productH.AddForCompany)
 	companies.Get("/:companyId/projects", projectH.ListForCompany)
-	companies.Post("/:companyId/projects", salesPipelineRoles, projectH.Create)
+	companies.Post("/:companyId/projects", projectH.Create)
 
-	// Contacts
-	contacts := authed.Group("/contacts")
+	// Contacts — same gates as Companies.
+	contacts := authed.Group("/contacts", salesPipelineRoles)
 	contacts.Get("/", contactH.List)
 	contacts.Post("/", contactH.Create)
 	contacts.Post("/import", importH.ImportContacts)
@@ -379,7 +381,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	contacts.Get("/export", bulkRoles, exportH.Contacts)
 	contacts.Get("/:id", contactH.Get)
 	contacts.Put("/:id", contactH.Update)
-	contacts.Delete("/:id", contactH.Delete)
+	contacts.Delete("/:id", bulkRoles, contactH.Delete)
 	contacts.Post("/:id/restore", bulkRoles, contactH.Restore)
 
 	// Deals — salesPipelineRoles only (Admin/Sales Rep/Sales Manager/Marketing
@@ -448,20 +450,19 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	quoteTemplates.Post("/", quoteTemplateH.Create)
 	quoteTemplates.Delete("/:id", quoteTemplateH.Delete)
 
-	// Quotes / Payments / Contracts (top-level, non-nested routes)
-	authed.Put("/quotes/:id", quoteH.Update)
-	authed.Delete("/quotes/:id", quoteH.Delete)
-	authed.Get("/quotes/:id/export-pdf", quoteH.ExportPDF)
-	// Duplicate goes through salesPipelineRoles like the nested Create it
-	// mirrors (POST /deals/:dealId/quotes), not just authed.
+	// Quotes / Payments / Contracts (top-level, non-nested routes) — the same
+	// salesPipelineRoles gate as the /deals sub-resources they belong to.
+	authed.Put("/quotes/:id", salesPipelineRoles, quoteH.Update)
+	authed.Delete("/quotes/:id", salesPipelineRoles, quoteH.Delete)
+	authed.Get("/quotes/:id/export-pdf", salesPipelineRoles, quoteH.ExportPDF)
 	authed.Post("/quotes/:id/duplicate", salesPipelineRoles, quoteH.Duplicate)
-	authed.Put("/payments/:id", paymentH.Update)
-	authed.Delete("/payments/:id", paymentH.Delete)
-	authed.Put("/payment-installments/:id", paymentInstallmentH.Update)
-	authed.Delete("/payment-installments/:id", paymentInstallmentH.Delete)
-	authed.Put("/contracts/:id", contractH.Update)
-	authed.Post("/contracts/:id/upload", contractH.Upload)
-	authed.Get("/contracts/:id/export-pdf", contractH.ExportPDF)
+	authed.Put("/payments/:id", salesPipelineRoles, paymentH.Update)
+	authed.Delete("/payments/:id", salesPipelineRoles, paymentH.Delete)
+	authed.Put("/payment-installments/:id", salesPipelineRoles, paymentInstallmentH.Update)
+	authed.Delete("/payment-installments/:id", salesPipelineRoles, paymentInstallmentH.Delete)
+	authed.Put("/contracts/:id", salesPipelineRoles, contractH.Update)
+	authed.Post("/contracts/:id/upload", salesPipelineRoles, contractH.Upload)
+	authed.Get("/contracts/:id/export-pdf", salesPipelineRoles, contractH.ExportPDF)
 
 	// Tasks
 	tasks := authed.Group("/tasks")
@@ -504,8 +505,8 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	products.Patch("/:id", adminOnly, productH.Update)
 	products.Patch("/:id/deactivate", adminOnly, productH.Deactivate)
 
-	// Customer-Product link — any authenticated (mirrors AddForCompany's access level).
-	authed.Patch("/customer-products/:id", productH.UpdateCustomerProduct)
+	// Customer-Product link — salesPipelineRoles, same as AddForCompany.
+	authed.Patch("/customer-products/:id", salesPipelineRoles, productH.UpdateCustomerProduct)
 
 	// Projects — field-level RBAC enforced inside the handler.
 	authed.Get("/projects", projectH.List)

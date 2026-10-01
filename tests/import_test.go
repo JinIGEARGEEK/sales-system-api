@@ -152,3 +152,128 @@ func TestImportCompanies_RejectsOversizedRowCount(t *testing.T) {
 	resp := doJSON(t, app, req, nil)
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
+
+// TestImportContacts_MatchesWithinCompanyAndKeepsBlankCells guards the
+// contact import's match key: lower(email) within the row's own Company. A
+// same-email Contact in another Company is left alone (a new one is
+// created, nothing moves), and an empty phone/role_title cell keeps the
+// stored value.
+func TestImportContacts_MatchesWithinCompanyAndKeepsBlankCells(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	token := testutil.Token(t, admin.ID, admin.Role)
+	companyA := seedCompany(t, db)
+	companyB := seedCompany(t, db)
+	inA := &models.Contact{CompanyID: companyA.ID, Name: "Jane", Email: "Jane@Example.com", Phone: "021111111", RoleTitle: "Manager", Status: models.StatusActive}
+	require.NoError(t, db.Create(inA).Error)
+
+	csvContent := "company_id,name,email,phone,role_title\n" +
+		itoa(companyA.ID) + ",Jane Doe,jane@example.com,,\n" +
+		itoa(companyB.ID) + ",Jane B,JANE@example.com,022222222,\n"
+	var body struct {
+		Data struct {
+			Created int `json:"created"`
+			Updated int `json:"updated"`
+		} `json:"data"`
+	}
+	resp := doJSON(t, app, csvImportRequest(t, "/api/v1/contacts/import", csvContent, token), &body)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, 1, body.Data.Updated)
+	assert.Equal(t, 1, body.Data.Created)
+
+	var reloaded models.Contact
+	require.NoError(t, db.First(&reloaded, inA.ID).Error)
+	assert.Equal(t, companyA.ID, reloaded.CompanyID, "never moved to another company")
+	assert.Equal(t, "Jane Doe", reloaded.Name)
+	assert.Equal(t, "021111111", reloaded.Phone, "empty cell keeps phone")
+	assert.Equal(t, "Manager", reloaded.RoleTitle, "empty cell keeps role_title")
+
+	var inB models.Contact
+	require.NoError(t, db.Where("company_id = ?", companyB.ID).First(&inB).Error)
+	assert.Equal(t, "Jane B", inB.Name)
+}
+
+// TestImportContacts_RejectsUnknownCompanyUpFront guards that a company_id
+// naming no Company is a 422 before any row is written.
+func TestImportContacts_RejectsUnknownCompanyUpFront(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	token := testutil.Token(t, admin.ID, admin.Role)
+	company := seedCompany(t, db)
+
+	csvContent := "company_id,name,email,phone,role_title\n" +
+		itoa(company.ID) + ",Good Row,good@example.com,,\n" +
+		"999999,Bad Row,bad@example.com,,\n"
+	resp := doJSON(t, app, csvImportRequest(t, "/api/v1/contacts/import", csvContent, token), nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+
+	var n int64
+	require.NoError(t, db.Model(&models.Contact{}).Count(&n).Error)
+	assert.Equal(t, int64(0), n, "nothing imported")
+}
+
+// TestImport_BadRowIsSkippedNotFatal guards the per-row savepoint: a row
+// Postgres rejects used to abort the transaction, failing every later row
+// and the whole import with a 500. Now it's reported and skipped, and the
+// rows around it are imported. The rejection comes from a CHECK constraint
+// added for the test; a NUL byte, which no text column accepts, is skipped
+// at parse time.
+func TestImport_BadRowIsSkippedNotFatal(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	token := testutil.Token(t, admin.ID, admin.Role)
+	company := seedCompany(t, db)
+
+	type result struct {
+		Data struct {
+			Created int `json:"created"`
+			Skipped int `json:"skipped"`
+			Errors  []struct {
+				Row     int    `json:"row"`
+				Message string `json:"message"`
+			} `json:"errors"`
+		} `json:"data"`
+	}
+	rejectName := func(table, name string) {
+		t.Helper()
+		constraint := "test_reject_" + table
+		require.NoError(t, db.Exec("ALTER TABLE "+table+" ADD CONSTRAINT "+constraint+" CHECK (name <> '"+name+"')").Error)
+		t.Cleanup(func() { db.Exec("ALTER TABLE " + table + " DROP CONSTRAINT IF EXISTS " + constraint) })
+	}
+
+	t.Run("contacts", func(t *testing.T) {
+		rejectName("contacts", "Rejected")
+		csvContent := "company_id,name,email,phone,role_title\n" +
+			itoa(company.ID) + ",First,first@example.com,,\n" +
+			itoa(company.ID) + ",Rejected,bad@example.com,,\n" +
+			itoa(company.ID) + ",Nul\x00Name,nul@example.com,,\n" +
+			itoa(company.ID) + ",Fourth,fourth@example.com,,\n"
+		var body result
+		resp := doJSON(t, app, csvImportRequest(t, "/api/v1/contacts/import", csvContent, token), &body)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, 2, body.Data.Created)
+		assert.Equal(t, 2, body.Data.Skipped)
+		require.Len(t, body.Data.Errors, 2)
+		assert.Equal(t, 4, body.Data.Errors[0].Row, "NUL row is skipped while parsing")
+		assert.Equal(t, 3, body.Data.Errors[1].Row)
+		assert.Equal(t, "failed to create", body.Data.Errors[1].Message)
+	})
+
+	t.Run("companies", func(t *testing.T) {
+		rejectName("companies", "Rejected Co")
+		csvContent := "name,industry,size,website\n" +
+			"First Co,Tech,Small,\n" +
+			"Rejected Co,Tech,Small,\n" +
+			"Nul\x00Co,Tech,Small,\n" +
+			"Fourth Co,Tech,Small,\n"
+		var body result
+		resp := doJSON(t, app, csvImportRequest(t, "/api/v1/companies/import", csvContent, token), &body)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, 2, body.Data.Created)
+		assert.Equal(t, 2, body.Data.Skipped)
+		require.Len(t, body.Data.Errors, 2)
+		assert.Equal(t, 4, body.Data.Errors[0].Row, "NUL row is skipped while parsing")
+		assert.Equal(t, 3, body.Data.Errors[1].Row)
+		assert.Equal(t, "failed to create", body.Data.Errors[1].Message)
+	})
+}

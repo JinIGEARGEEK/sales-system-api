@@ -272,6 +272,17 @@ definitions:
         type: string
       deal_id:
         type: integer
+      effective_status:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ContractStatus'
+        description: |-
+          EffectiveStatus is the read-derived status to display: "expired" once a
+          Signed contract's EndDate has passed, else Status. Never stored or
+          accepted on write — Status stays "signed", so the Won gate
+          (validateContractSignedBeforeWon, the frontend's useContractGate) keeps
+          counting it, and a client that saves Status back never turns a
+          lapsed-but-signed contract into a stored "expired" one. Filled by the
+          AfterFind/AfterSave hooks below; see EffectiveStatusAt.
       end_date:
         description: |-
           EndDate is when the signed contract's term ends (a calendar date).
@@ -444,6 +455,13 @@ definitions:
         type: integer
       value:
         type: number
+      won_at:
+        description: |-
+          WonAt is when the Deal became Won (status won), nil while it isn't —
+          what the dashboard and reports count "won this period" by, rather than
+          created_at. Kept in step with Status by the BeforeSave hook (won_at.go)
+          on every struct write; see database.BackfillDealWonAt for older rows.
+        type: string
     type: object
   github_com_igeargeek_sales-system-api_internal_models.DealStage:
     enum:
@@ -768,7 +786,13 @@ definitions:
         type: number
       created_at:
         type: string
+      created_by:
+        type: integer
       deal_id:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
         type: integer
       document_number:
         description: |-
@@ -793,6 +817,8 @@ definitions:
         type: string
       updated_at:
         type: string
+      updated_by:
+        type: integer
       wht_amount:
         description: |-
           WhtAmount is the withholding tax the customer deducted and remits to
@@ -842,6 +868,14 @@ definitions:
       created_at:
         type: string
       created_by:
+        type: integer
+      default_probability:
+        description: |-
+          DefaultProbability is the win probability a Deal entering this stage
+          gets when none is given (utils.DefaultProbabilityFor) — derived from
+          the flags and the stage's place in the funnel, never stored. Filled on
+          every /admin/pipeline-stages response so the frontend prefills the
+          server's number rather than keeping a table of its own.
         type: integer
       deleted_at:
         $ref: '#/definitions/gorm.DeletedAt'
@@ -1173,6 +1207,16 @@ definitions:
           ReferenceNumber is free-text, user-entered (e.g. the customer's own PO
           number) — unrelated to Number above, which this system generates.
         type: string
+      revision_no:
+        type: integer
+      revision_of_id:
+        description: |-
+          RevisionOfID/RevisionNo link a quote made by Duplicate back to the
+          first quote of its chain (the root, never an intermediate copy), so
+          every revision of one offer shares a RevisionOfID. The root itself has
+          nil and 0; each copy gets the chain's highest RevisionNo + 1. The FK
+          (ON DELETE SET NULL) is added by database.ensureQuoteRevisionFK.
+        type: integer
       scope_of_work:
         description: |-
           ScopeOfWork is a free-text narrative describing the overall engagement
@@ -1447,6 +1491,44 @@ definitions:
       owner_user_id:
         type: integer
     type: object
+  internal_handlers.bulkArchiveResult:
+    properties:
+      archived:
+        items:
+          type: integer
+        type: array
+      skipped:
+        items:
+          $ref: '#/definitions/internal_handlers.bulkArchiveSkip'
+        type: array
+    type: object
+  internal_handlers.bulkArchiveSkip:
+    properties:
+      id:
+        type: integer
+      reason:
+        type: string
+    type: object
+  internal_handlers.bulkDeactivateResponse:
+    properties:
+      open_records:
+        items:
+          $ref: '#/definitions/internal_handlers.userOpenRecords'
+        type: array
+      reassigned:
+        items:
+          $ref: '#/definitions/internal_handlers.reassignResult'
+        type: array
+    type: object
+  internal_handlers.bulkDeactivateUsersForm:
+    properties:
+      ids:
+        items:
+          type: integer
+        type: array
+      reassign_to:
+        type: integer
+    type: object
   internal_handlers.bulkIDsForm:
     properties:
       ids:
@@ -1552,6 +1634,12 @@ definitions:
     properties:
       company_id:
         type: integer
+      company_name:
+        description: |-
+          CompanyName names the Company when Convert has to create one (no
+          company_id, and the Lead has no live Company) — see
+          resolveOrCreateCompany.
+        type: string
       contact_id:
         type: integer
       deal:
@@ -1703,10 +1791,10 @@ definitions:
         allOf:
         - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason'
         description: |-
-          LostReason is optional here (the Kanban drag doesn't collect one), but
-          when sent on a move into a Lost stage it's validated and saved — the
-          Overview Pipeline's side panel asks for it (FR-CRM-123). Ignored on a
-          move into any other stage.
+          LostReason is required on a move into a Lost stage, as on PUT (a
+          Deal already Lost with a stored reason may omit it to reposition) —
+          the Kanban drag and the Overview Pipeline's side panel (FR-CRM-123)
+          both ask for it. Ignored on a move into any other stage.
       position:
         description: |-
           Position is the Kanban drag-drop's computed insertion point within the
@@ -1871,8 +1959,27 @@ definitions:
       target_end_date:
         type: string
     type: object
+  internal_handlers.openRecordCounts:
+    properties:
+      deals:
+        type: integer
+      leads:
+        type: integer
+      prospects:
+        type: integer
+      tasks:
+        type: integer
+      total:
+        type: integer
+    type: object
   internal_handlers.paymentForm:
     properties:
+      allow_overpayment:
+        description: |-
+          AllowOverpayment lets this save take the Deal's settled total (cash +
+          WHT) past its receivable; without it that's a 422. Not stored — the
+          audit entry records that it was used.
+        type: boolean
       amount:
         type: number
       document_number:
@@ -1960,6 +2067,9 @@ definitions:
     properties:
       company_id:
         type: integer
+      company_name:
+        description: CompanyName — see convertRequest.CompanyName.
+        type: string
       contact_id:
         type: integer
       lead:
@@ -2087,6 +2197,23 @@ definitions:
       wht_rate:
         type: number
     type: object
+  internal_handlers.reassignResult:
+    properties:
+      deals:
+        type: integer
+      leads:
+        type: integer
+      prospects:
+        type: integer
+      reassign_to:
+        type: integer
+      tasks:
+        type: integer
+      total:
+        type: integer
+      user_id:
+        type: integer
+    type: object
   internal_handlers.salesTargetForm:
     properties:
       quarter:
@@ -2164,6 +2291,20 @@ definitions:
       name:
         type: string
     type: object
+  internal_handlers.userDeleteForm:
+    properties:
+      reassign_to:
+        type: integer
+    type: object
+  internal_handlers.userDeleteResponse:
+    properties:
+      id:
+        type: integer
+      open_records:
+        $ref: '#/definitions/internal_handlers.openRecordCounts'
+      reassigned:
+        $ref: '#/definitions/internal_handlers.reassignResult'
+    type: object
   internal_handlers.userForm:
     properties:
       email:
@@ -2182,6 +2323,91 @@ definitions:
         type: string
       tel:
         type: string
+    type: object
+  internal_handlers.userOpenRecords:
+    properties:
+      deals:
+        type: integer
+      leads:
+        type: integer
+      prospects:
+        type: integer
+      tasks:
+        type: integer
+      total:
+        type: integer
+      user_id:
+        type: integer
+    type: object
+  internal_handlers.userUpdateForm:
+    properties:
+      email:
+        type: string
+      first_name:
+        type: string
+      last_name:
+        type: string
+      notes:
+        type: string
+      password:
+        type: string
+      reassign_to:
+        description: |-
+          ReassignTo receives the user's open records when this update takes
+          them away (deactivation, or a move to a role that can't own pipeline
+          records). Ignored otherwise.
+        type: integer
+      role:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Role'
+      status:
+        type: string
+      tel:
+        type: string
+    type: object
+  internal_handlers.userWriteResponse:
+    properties:
+      accepted_consent_id:
+        type: integer
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      email:
+        type: string
+      first_name:
+        type: string
+      id:
+        type: integer
+      is_active:
+        type: boolean
+      last_name:
+        type: string
+      latest_login:
+        type: string
+      must_change_password:
+        description: |-
+          MustChangePassword is set whenever an Admin assigns this account's password
+          (creation or reset) and cleared once the holder sets their own via
+          POST /auth/change-password — see middleware.RequirePasswordChanged.
+        type: boolean
+      notes:
+        type: string
+      open_records:
+        $ref: '#/definitions/internal_handlers.openRecordCounts'
+      reassigned:
+        $ref: '#/definitions/internal_handlers.reassignResult'
+      role:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Role'
+      tel:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
     type: object
 info:
   contact: {}
@@ -3814,7 +4040,9 @@ paths:
   /companies/{id}:
     delete:
       description: Soft-delete (AuditedModel) — recoverable via Restore/Trash below.
-        Never a hard delete, since Deals/Contacts/Payments reference company_id.
+        Never a hard delete, since Deals/Contacts/Payments reference company_id. Admin/Sales
+        Manager only; 409 while the Company has an open or Won Deal. Writes a company/deleted
+        audit entry.
       parameters:
       - description: Company ID
         in: path
@@ -3824,8 +4052,18 @@ paths:
       responses:
         "204":
           description: No Content
+        "403":
+          description: Not Admin/Sales Manager
+          schema:
+            additionalProperties: true
+            type: object
         "404":
           description: Company not found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Company has open or Won deals
           schema:
             additionalProperties: true
             type: object
@@ -3915,7 +4153,8 @@ paths:
       - companies
   /companies/{id}/restore:
     post:
-      description: Un-deletes a soft-deleted Company.
+      description: Un-deletes a soft-deleted Company. Writes a company/restored audit
+        entry.
       parameters:
       - description: Company ID
         in: path
@@ -3973,9 +4212,9 @@ paths:
         rows) with columns name,industry,size,website — name is required per row.
         Dedupes primarily by normalized website domain, falling back to a case-insensitive/whitespace-trimmed
         name match when either side has no website (FR-CRM-014): a match updates the
-        existing Company, otherwise a new one is created. Runs as one all-or-nothing
-        transaction; per-row failures are collected into the result rather than aborting
-        the whole import.'
+        existing Company, otherwise a new one is created. Runs in one transaction
+        with a savepoint per row, so a row that fails to save is rolled back, reported
+        in errors and skipped while the rest are imported.'
       parameters:
       - description: 'CSV file: name,industry,size,website'
         in: formData
@@ -4077,7 +4316,9 @@ paths:
       consumes:
       - application/json
       description: Creates a Contact. company_id and name are required; role_title
-        must match an active configured job title (see /admin/job-titles).
+        must match an active configured job title (see /admin/job-titles). A contact
+        whose email (case-insensitive) or phone (digits only, +66 read as 0) matches
+        an existing contact, in any company, is a 409 unless allow_duplicate=true.
       parameters:
       - description: Contact fields
         in: body
@@ -4085,6 +4326,11 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/internal_handlers.contactForm'
+      - description: true creates the contact even if another has the same email or
+          phone
+        in: query
+        name: allow_duplicate
+        type: boolean
       produces:
       - application/json
       responses:
@@ -4097,6 +4343,12 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "409":
+          description: Another contact has the same email or phone (error.fields,
+            error.duplicate_of)
+          schema:
+            additionalProperties: true
+            type: object
       security:
       - BearerAuth: []
       summary: Create a contact
@@ -4106,6 +4358,7 @@ paths:
     delete:
       description: Soft-delete (AuditedModel) — recoverable via Restore/Trash below.
         Never a hard delete, since Deal/Activity/Task records reference contact_id.
+        Admin/Sales Manager only. Writes a contact/deleted audit entry.
       parameters:
       - description: Contact ID
         in: path
@@ -4115,6 +4368,11 @@ paths:
       responses:
         "204":
           description: No Content
+        "403":
+          description: Not Admin/Sales Manager
+          schema:
+            additionalProperties: true
+            type: object
         "404":
           description: Contact not found
           schema:
@@ -4191,7 +4449,8 @@ paths:
       - contacts
   /contacts/{id}/restore:
     post:
-      description: Un-deletes a soft-deleted Contact.
+      description: Un-deletes a soft-deleted Contact. Writes a contact/restored audit
+        entry.
       parameters:
       - description: Contact ID
         in: path
@@ -4248,10 +4507,12 @@ paths:
       - multipart/form-data
       description: 'Uploads a CSV file (header row skipped, up to 10MB / 5000 data
         rows) with columns company_id,name,email,phone,role_title — company_id and
-        name are required per row. Dedupes by email per FR-CRM-014: an existing Contact
-        with the same email is updated, otherwise a new one is created. Same all-or-nothing
-        transaction treatment as ImportCompanies; per-row failures are collected into
-        the result rather than aborting the whole import.'
+        name are required per row, and every company_id must be an existing Company
+        (422 before anything is imported). Dedupes by email per FR-CRM-014, case-insensitively
+        and within the row''s own Company: a match there is updated (name always;
+        phone/role_title only when the CSV cell is non-empty), otherwise a new Contact
+        is created — a Contact is never moved to another Company. Same savepoint-per-row
+        treatment as ImportCompanies.'
       parameters:
       - description: 'CSV file: company_id,name,email,phone,role_title'
         in: formData
@@ -4266,8 +4527,13 @@ paths:
           schema:
             $ref: '#/definitions/internal_handlers.importResult'
         "400":
-          description: Missing/invalid file, unsupported format (non-.csv), row limit
-            exceeded, or invalid company_id
+          description: Missing/invalid file, unsupported format (non-.csv), or row
+            limit exceeded
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: A company_id that doesn't name an existing Company
           schema:
             additionalProperties: true
             type: object
@@ -4306,10 +4572,13 @@ paths:
     put:
       consumes:
       - application/json
-      description: Updates status, quote_id and/or end_date (YYYY-MM-DD; omitted keeps
-        it, null clears it — drives the contract_expiry notification rule). Only the
-        parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md
-        §8.1.
+      description: 'Updates status, quote_id and/or end_date (YYYY-MM-DD; omitted
+        keeps it, null clears it — drives the contract_expiry notification rule).
+        status signed needs an uploaded signed document and signed_date (422 otherwise).
+        A contract whose stored status is signed is locked: any change is a 409 (resending
+        the stored values is not). Status changes are audited. Only the parent Deal''s
+        assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md
+        §8.1.'
       parameters:
       - description: Contract ID
         in: path
@@ -4341,6 +4610,16 @@ paths:
             type: object
         "404":
           description: Contract not found, or deal not found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Contract is signed (locked)
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Invalid field, or status signed without a signed document
           schema:
             additionalProperties: true
             type: object
@@ -4384,8 +4663,10 @@ paths:
       consumes:
       - multipart/form-data
       description: Uploads the signed document, sets signed_file_url/signed_date,
-        and sets status to Signed. Only the parent Deal's assigned Sales Rep (or Admin/Sales
-        Manager) may upload. api-system-spec.md §8.1.
+        and sets status to Signed (audited). A contract already signed is a 409 —
+        its signed document isn't replaced; add further files as Attachments. Only
+        the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may upload.
+        api-system-spec.md §8.1.
       parameters:
       - description: Contract ID
         in: path
@@ -4416,6 +4697,11 @@ paths:
             type: object
         "404":
           description: Contract not found, or deal not found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Contract is already signed
           schema:
             additionalProperties: true
             type: object
@@ -4650,6 +4936,11 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "422":
+          description: assigned_to is not an active sales-role user
+          schema:
+            additionalProperties: true
+            type: object
       security:
       - BearerAuth: []
       summary: Create a deal (Admin/Sales Rep/Sales Manager)
@@ -4684,7 +4975,8 @@ paths:
       - application/json
       description: Creates a Contract on a Deal, optionally linked to a Quote (quote_id)
         for PDF line items, with an optional end_date (YYYY-MM-DD). status defaults
-        to draft. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may
+        to draft; signed is a 422 (a contract becomes signed by uploading the signed
+        document). Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may
         create. api-system-spec.md §8.1.
       parameters:
       - description: Deal ID
@@ -4717,6 +5009,11 @@ paths:
             type: object
         "404":
           description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Invalid status/quote_id/end_date, or status signed
           schema:
             additionalProperties: true
             type: object
@@ -4873,11 +5170,11 @@ paths:
       - payment-installments
   /deals/{dealId}/payments:
     get:
-      description: 'Returns a Deal''s recorded Payments (newest paid_at first) plus
-        totals: total_paid = Σ amount (cash received, unchanged meaning), total_wht
-        = Σ wht_amount, total_settled = total_paid + total_wht (what the receivable
-        is reduced by). Backs the Deal detail page''s Payments tab. api-system-spec.md
-        §7.5.'
+      description: 'Returns a Deal''s recorded Payments (newest paid_at first; deleted
+        ones excluded) plus totals: total_paid = Σ amount (cash received, unchanged
+        meaning), total_wht = Σ wht_amount, total_settled = total_paid + total_wht
+        (what the receivable is reduced by). Backs the Deal detail page''s Payments
+        tab. api-system-spec.md §7.5.'
       parameters:
       - description: Deal ID
         in: path
@@ -4907,8 +5204,14 @@ paths:
         deducted; counts as settled), wht_certificate_received (default false — the
         50 ทวิ certificate), document_number (FlowAccount receipt/tax-invoice number,
         max 64 chars, blank = null), installment_id (a PaymentInstallment of the same
-        Deal; that installment is settled first). Only the Deal''s assigned Sales
-        Rep (or Admin/Sales Manager) may create. api-system-spec.md §7.5.'
+        Deal; that installment is settled first). paid_at may not be after today (server-local,
+        422). A Lost Deal takes no payments (422). A non-empty document_number already
+        on another non-deleted Payment is 409. If the Deal''s cash + WHT would then
+        exceed its receivable (latest Accepted Quote''s taxable amount + VAT when
+        it has priced items, else the Deal value) by more than 0.005 it''s a 422 on
+        amount ("exceeds_receivable") unless allow_overpayment: true. Writes a payment
+        created audit entry. Only the Deal''s assigned Sales Rep (or Admin/Sales Manager)
+        may create. api-system-spec.md §7.5.'
       parameters:
       - description: Deal ID
         in: path
@@ -4943,8 +5246,14 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "409":
+          description: document_number already used by another payment
+          schema:
+            additionalProperties: true
+            type: object
         "422":
-          description: amount/method/wht_amount/document_number/installment_id invalid
+          description: amount/method/paid_at/wht_amount/document_number/installment_id
+            invalid, deal is Lost, or the payment exceeds the receivable
           schema:
             additionalProperties: true
             type: object
@@ -5020,6 +5329,18 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "409":
+          description: Created as accepted while the deal already has an Accepted
+            quote
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Invalid field (items[i].qty/price/discount_percent, discount_total,
+            wht_rate, issue_date, validity_date)
+          schema:
+            additionalProperties: true
+            type: object
       security:
       - BearerAuth: []
       summary: Create a quote (Admin/Sales Rep/Sales Manager)
@@ -5081,14 +5402,23 @@ paths:
       - quotes
   /deals/{id}:
     delete:
-      description: Soft-delete (AuditedModel) — recoverable via Restore/Trash below.
-        Only the assigned Sales Rep (or Admin/Sales Manager) may delete.
+      description: Soft-delete (AuditedModel) — recoverable via Restore/Trash below,
+        and written to the audit log (action deleted). Only the assigned Sales Rep
+        (or Admin/Sales Manager) may delete. A Won Deal with money attached (a non-deleted
+        Payment, any installment, or a signed Contract) is 409 WON_DEAL_PROTECTED
+        for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without
+        it), stored in the audit entry.
       parameters:
       - description: Deal ID
         in: path
         name: id
         required: true
         type: integer
+      - description: Required from a manager deleting a Won Deal with money (max 500
+          chars)
+        in: query
+        name: reason
+        type: string
       responses:
         "204":
           description: No Content
@@ -5099,6 +5429,12 @@ paths:
             type: object
         "404":
           description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: 'Won Deal with money: WON_DEAL_PROTECTED (not a manager) or
+            REASON_REQUIRED'
           schema:
             additionalProperties: true
             type: object
@@ -5137,9 +5473,15 @@ paths:
       - application/json
       description: Full update of a Deal — same validation as Create. An omitted stage/status
         keeps the stored value; moving from a Won/Lost stage to an open one sets status
-        open. Writes a stage_changed audit log entry when the submitted stage differs
-        from the deal's current one. Only the assigned Sales Rep (or Admin/Sales Manager)
-        may update; a Sales Rep cannot reassign to another rep. api-system-spec.md
+        open. Moving a Won Deal with money attached (a non-deleted Payment, any installment,
+        or a signed Contract) out of Won is 409 (WON_DEAL_PROTECTED) for non-managers;
+        a manager must pass ?reason= (409 REASON_REQUIRED without it), recorded in
+        a won_reversed audit entry. Writes a stage_changed audit log entry when the
+        submitted stage differs from the deal's current one. Only the assigned Sales
+        Rep (or Admin/Sales Manager) may update; a Sales Rep may keep or claim the
+        deal but not reassign it to another rep or unassign it (403). A changed assigned_to
+        must be an active sales-role user (422). value/company_id changes write an
+        updated audit entry and an assigned_to change a reassigned one. api-system-spec.md
         §7.1.
       parameters:
       - description: Deal ID
@@ -5153,6 +5495,11 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/internal_handlers.dealForm'
+      - description: Required from a manager moving a Won Deal with money out of Won
+          (max 500 chars)
+        in: query
+        name: reason
+        type: string
       produces:
       - application/json
       responses:
@@ -5168,12 +5515,23 @@ paths:
             type: object
         "403":
           description: Not authorized to update this deal, or cannot assign a deal
-            to another sales rep
+            to another sales rep or unassign it
           schema:
             additionalProperties: true
             type: object
         "404":
           description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: 'Won Deal with money: WON_DEAL_PROTECTED (not a manager) or
+            REASON_REQUIRED'
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: assigned_to is not an active sales-role user
           schema:
             additionalProperties: true
             type: object
@@ -5217,6 +5575,11 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "422":
+          description: assigned_to is not an active sales-role user
+          schema:
+            additionalProperties: true
+            type: object
       security:
       - BearerAuth: []
       summary: Reassign a deal (Admin/Sales Manager)
@@ -5224,7 +5587,7 @@ paths:
       - deals
   /deals/{id}/restore:
     post:
-      description: Restores a soft-deleted Deal.
+      description: Restores a soft-deleted Deal, writing a restored audit log entry.
       parameters:
       - description: Deal ID
         in: path
@@ -5258,8 +5621,12 @@ paths:
         writes a stage_changed audit log entry per §8.5's explicit minimum scope.
         Moving into a stage resolved as Won is blocked (422-style validation error)
         if AppSettings.RequireSignedContractBeforeWon is enabled and the deal has
-        no Contract with status Signed. Only the assigned Sales Rep (or Admin/Sales
-        Manager) may move it.
+        no Contract with status Signed. A move into a Lost stage requires lost_reason
+        (422), unless the Deal is already Lost with one stored. Moving a Won Deal
+        with money attached out of Won is 409 WON_DEAL_PROTECTED for non-managers;
+        a manager must pass ?reason= (409 REASON_REQUIRED without it), recorded in
+        a won_reversed audit entry. Only the assigned Sales Rep (or Admin/Sales Manager)
+        may move it.
       parameters:
       - description: Deal ID
         in: path
@@ -5272,6 +5639,11 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/internal_handlers.dealStageForm'
+      - description: Required from a manager moving a Won Deal with money out of Won
+          (max 500 chars)
+        in: query
+        name: reason
+        type: string
       produces:
       - application/json
       responses:
@@ -5301,8 +5673,15 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "409":
+          description: 'Won Deal with money: WON_DEAL_PROTECTED (not a manager) or
+            REASON_REQUIRED'
+          schema:
+            additionalProperties: true
+            type: object
         "422":
-          description: position out of range (±1e9)
+          description: position out of range (±1e9), or lost_reason missing/invalid
+            on a move into Lost
           schema:
             additionalProperties: true
             type: object
@@ -5315,8 +5694,11 @@ paths:
     patch:
       consumes:
       - application/json
-      description: Soft-deletes every listed Deal (same as Delete), in one transaction,
-        writing a bulk_archived audit entry per row.
+      description: 'Soft-deletes every listed Deal (same as Delete), in one transaction,
+        writing a bulk_archived audit entry per row. A Won Deal with money attached
+        (a non-deleted Payment, any installment, or a signed Contract) is skipped
+        and reported, not archived — delete it singly with a reason. Returns 200 {
+        archived: id[], skipped: [{ id, reason: "won_deal_with_money" }] }.'
       parameters:
       - description: Deal IDs
         in: body
@@ -5327,8 +5709,10 @@ paths:
       produces:
       - application/json
       responses:
-        "204":
-          description: No Content
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.bulkArchiveResult'
         "400":
           description: Invalid request body, or ids is required
           schema:
@@ -5500,8 +5884,11 @@ paths:
       consumes:
       - application/json
       description: Admin/Sales Rep/Sales Manager only. A Sales Rep cannot assign the
-        new lead to another rep. If assigned_to is omitted, the lead is auto-assigned
-        round-robin among active Sales Reps by current open-record load.
+        new lead to another rep; assigned_to must be an active user in a sales role.
+        If assigned_to is omitted, the lead is auto-assigned round-robin among active
+        Sales Reps by current open-record load. A lead whose email (case-insensitive)
+        or phone (digits only, +66 read as 0) matches an existing lead is a 409 unless
+        allow_duplicate=true.
       parameters:
       - description: Lead fields
         in: body
@@ -5509,6 +5896,10 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/internal_handlers.leadForm'
+      - description: true creates the lead even if another has the same email or phone
+        in: query
+        name: allow_duplicate
+        type: boolean
       produces:
       - application/json
       responses:
@@ -5526,8 +5917,14 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "409":
+          description: Another lead has the same email or phone (error.fields, error.duplicate_of)
+          schema:
+            additionalProperties: true
+            type: object
         "422":
-          description: status is not New/Contacted/Qualified/Disqualified
+          description: status is not New/Contacted/Qualified/Disqualified, or assigned_to
+            is not an active sales user
           schema:
             additionalProperties: true
             type: object
@@ -5633,7 +6030,8 @@ paths:
             additionalProperties: true
             type: object
         "422":
-          description: status is not New/Contacted/Qualified/Disqualified
+          description: status is not New/Contacted/Qualified/Disqualified, or a changed
+            assigned_to is not an active sales user
           schema:
             additionalProperties: true
             type: object
@@ -5654,14 +6052,18 @@ paths:
         the signed-contract gate on a Won stage, and status following the stage''s
         Won/Lost flags. A Sales Rep cannot assign the deal to another rep. An explicit
         company_id/contact_id must exist, and the contact must belong to that company.
-        Fails if the lead was already converted, including by a concurrent request.'
+        Without contact_id, a Contact in the company with the same email (case-insensitive)
+        is reused. A created Company is named company_name, else the Lead''s soft-deleted
+        Company''s name, else the Lead''s name. Fails if the lead was already converted,
+        including by a concurrent request.'
       parameters:
       - description: Lead ID
         in: path
         name: id
         required: true
         type: integer
-      - description: Optional company_id/contact_id overrides and the new deal's fields
+      - description: Optional company_id/company_name/contact_id overrides and the
+          new deal's fields
         in: body
         name: body
         required: true
@@ -6027,9 +6429,10 @@ paths:
       - projects
   /payment-installments/{id}:
     delete:
-      description: Hard delete. Payments linked to it (installment_id) are unlinked,
-        not deleted — their money rejoins the Deal's waterfall. Only the parent Deal's
-        assigned Sales Rep (or Admin/Sales Manager) may delete.
+      description: Hard delete, with a payment_installment deleted audit entry holding
+        the row as it was. Payments linked to it (installment_id, deleted ones included)
+        are unlinked, not deleted — their money rejoins the Deal's waterfall. Only
+        the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.
       parameters:
       - description: Payment Installment ID
         in: path
@@ -6057,8 +6460,9 @@ paths:
     put:
       consumes:
       - application/json
-      description: Same validation as Create. Only the parent Deal's assigned Sales
-        Rep (or Admin/Sales Manager) may edit.
+      description: Same validation as Create. Writes a payment_installment updated
+        audit entry (before/after) when something changed. Only the parent Deal's
+        assigned Sales Rep (or Admin/Sales Manager) may edit.
       parameters:
       - description: Payment Installment ID
         in: path
@@ -6095,8 +6499,10 @@ paths:
       - payment-installments
   /payments/{id}:
     delete:
-      description: Hard delete of a Payment. Only the parent Deal's assigned Sales
-        Rep (or Admin/Sales Manager) may delete.
+      description: Soft delete of a Payment (deleted_at/deleted_by set; it drops out
+        of every total, list and report) with a payment deleted audit entry holding
+        the row as it was. Only the parent Deal's assigned Sales Rep (or Admin/Sales
+        Manager) may delete.
       parameters:
       - description: Payment ID
         in: path
@@ -6127,7 +6533,10 @@ paths:
       description: 'Partial merge: only fields present in the body change (same validation
         as Create); installment_id: null unlinks. Typical use is ticking wht_certificate_received
         once the 50 ทวิ arrives, or adding the FlowAccount document_number later.
-        deal_id is immutable. Only the parent Deal''s assigned Sales Rep (or Admin/Sales
+        deal_id is immutable. A changed document_number must be unique among non-deleted
+        payments (409); raising amount/wht_amount past the receivable is a 422 unless
+        allow_overpayment: true. Writes a payment updated audit entry (before/after)
+        when something changed. Only the parent Deal''s assigned Sales Rep (or Admin/Sales
         Manager) may edit.'
       parameters:
       - description: Payment ID
@@ -6158,8 +6567,13 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "409":
+          description: document_number already used by another payment
+          schema:
+            additionalProperties: true
+            type: object
         "422":
-          description: Validation error
+          description: Validation error, or the payment exceeds the receivable
           schema:
             additionalProperties: true
             type: object
@@ -6544,7 +6958,9 @@ paths:
       description: Creates a new Prospect. status defaults to "New" if omitted; status
         "Converted" cannot be set directly (only via POST /prospects/:id/convert).
         source must be an active Prospect source and status an active Prospect stage.
-        A Sales Rep may only assign to themselves.
+        A Sales Rep may only assign to themselves; assigned_to must be an active user
+        in a sales role. A prospect whose email (case-insensitive) or phone (digits
+        only, +66 read as 0) matches an existing prospect is a 409 unless allow_duplicate=true.
       parameters:
       - description: Prospect fields
         in: body
@@ -6552,6 +6968,11 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/internal_handlers.prospectForm'
+      - description: true creates the prospect even if another has the same email
+          or phone
+        in: query
+        name: allow_duplicate
+        type: boolean
       produces:
       - application/json
       responses:
@@ -6566,6 +6987,17 @@ paths:
             type: object
         "403":
           description: Cannot assign a prospect to another team member
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Another prospect has the same email or phone (error.fields,
+            error.duplicate_of)
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: assigned_to is not an active sales user
           schema:
             additionalProperties: true
             type: object
@@ -6669,6 +7101,11 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "422":
+          description: A changed assigned_to is not an active sales user
+          schema:
+            additionalProperties: true
+            type: object
       security:
       - BearerAuth: []
       summary: Update a prospect (Admin/Marketing/Sales Manager/Sales Rep)
@@ -6684,15 +7121,18 @@ paths:
         Prospect, carry over Attachments, then mark the Prospect "Converted" and stamp
         its converted_lead_id. Fails with 409 if already converted, including by a
         concurrent request. An explicit company_id/contact_id must exist (404), and
-        the contact must belong to that company (422). Source/tags are carried over
-        as-is even if they aren''t among the Lead''s own configured options.'
+        the contact must belong to that company (422). Without contact_id, a Contact
+        in the company with the same email (case-insensitive) is reused. A created
+        Company is named company_name, else the Prospect''s soft-deleted Company''s
+        name, else the Prospect''s name. Source/tags are carried over as-is even if
+        they aren''t among the Lead''s own configured options.'
       parameters:
       - description: Prospect ID
         in: path
         name: id
         required: true
         type: integer
-      - description: Optional company_id/contact_id to link, and lead.assigned_to
+      - description: Optional company_id/company_name/contact_id, and lead.assigned_to
         in: body
         name: body
         required: true
@@ -6994,8 +7434,8 @@ paths:
       - quote-templates
   /quotes/{id}:
     delete:
-      description: Hard delete of a Quote. Only the parent Deal's assigned Sales Rep
-        (or Admin/Sales Manager) may delete.
+      description: Hard delete of a Draft Quote; any other status is a 409. Only the
+        parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.
       parameters:
       - description: Quote ID
         in: path
@@ -7015,6 +7455,11 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "409":
+          description: Quote is not a draft
+          schema:
+            additionalProperties: true
+            type: object
       security:
       - BearerAuth: []
       summary: Delete a quote
@@ -7024,12 +7469,13 @@ paths:
       consumes:
       - application/json
       description: 'Updates status/items and every other Quote field (number excepted
-        — immutable after Create). A Quote stored as Accepted keeps its pricing: changing
-        items, price_type, vat_enabled, wht_enabled, wht_rate or discount_total 422s
-        with fields code "accepted_locked" (resending the stored values is fine; status
-        and the other fields stay editable) — duplicate it to revise. Only the parent
-        Deal''s assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md
-        §7.4.'
+        — immutable after Create). Status moves follow models.CanTransitionQuoteStatus
+        (draft→sent/accepted/rejected, sent→draft/accepted/rejected, accepted→rejected;
+        an expired Sent quote can''t be accepted), else 409. An Accepted/Rejected
+        quote is read-only: changing any other field is a 409 (resending stored values
+        is not). One Accepted quote per Deal (409 naming the existing one). Status
+        changes are audited. Only the parent Deal''s assigned Sales Rep (or Admin/Sales
+        Manager) may update. api-system-spec.md §7.4.'
       parameters:
       - description: Quote ID
         in: path
@@ -7064,9 +7510,15 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "409":
+          description: Status transition not allowed, quote is read-only, or the deal
+            already has an Accepted quote
+          schema:
+            additionalProperties: true
+            type: object
         "422":
-          description: Validation error (status, price_type, credit_days, wht_rate,
-            discount_total), or a pricing edit on an Accepted quote (accepted_locked)
+          description: Invalid field (items[i].qty/price/discount_percent, discount_total,
+            wht_rate, issue_date, validity_date)
           schema:
             additionalProperties: true
             type: object
@@ -7083,7 +7535,9 @@ paths:
         a new server-generated number, issue_date = today, and validity_date = today
         + the original''s issue→validity gap (else + credit_days, else null). Never
         copied: status (always draft), uploaded file fields, extraction_status/warnings.
-        Same permission as creating a quote on that Deal.'
+        The copy gets revision_of_id = the original chain''s root quote and revision_no
+        = the chain''s highest + 1; the original is not changed. Same permission as
+        creating a quote on that Deal.'
       parameters:
       - description: Quote ID to copy
         in: path
@@ -7942,12 +8396,12 @@ paths:
         name: assigned_to
         type: string
       - description: ISO date lower bound (YYYY-MM-DD, from server-local midnight),
-          filters on deals.created_at
+          filters on when the Deal closed (won_at for won, stage_entered_at for lost)
         in: query
         name: date_from
         type: string
       - description: ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local
-          day), filters on deals.created_at
+          day), filters on when the Deal closed
         in: query
         name: date_to
         type: string
@@ -8242,19 +8696,49 @@ paths:
       - users
   /users/{id}:
     delete:
+      consumes:
+      - application/json
       description: Admin only. Soft-delete (deactivates and gorm soft-deletes the
         row), not a hard delete §1.6. Also invalidates the user's cached auth state.
+        The caller cannot delete themselves (422), nor the last active Admin (409).
+        Optional reassign_to (query ?reassign_to= or JSON body; an active sales-role
+        user) moves the user's open Deals/Leads/Prospects/pending Tasks to that user
+        in the same transaction. Returns 200 with open_records (open records the deleted
+        user still owns) and, with reassign_to, reassigned (what moved).
       parameters:
       - description: User ID
         in: path
         name: id
         required: true
         type: integer
+      - description: User to receive the deleted user's open records
+        in: query
+        name: reassign_to
+        type: integer
+      - description: Optional reassign_to
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/internal_handlers.userDeleteForm'
+      produces:
+      - application/json
       responses:
-        "204":
-          description: No Content
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.userDeleteResponse'
         "404":
           description: User not found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Would delete the last active Admin
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Deleting yourself, or an invalid reassign_to
           schema:
             additionalProperties: true
             type: object
@@ -8296,26 +8780,33 @@ paths:
         and role one of the known roles. Password is only changed if provided (forces
         must_change_password true). Changing role, resetting the password, or deactivating
         signs the user out of every existing session (their tokens stop working immediately).
-        The response never includes password_hash (excluded via json:"-").
+        The caller cannot change their own role or deactivate themselves (422), and
+        the last active Admin cannot be demoted or deactivated (409). Role and is_active
+        changes write role_changed/activated/deactivated audit entries. When the update
+        deactivates the user or moves them to a role that can't own pipeline records
+        (Production), the response adds open_records (their remaining open Deals/Leads/Prospects/pending
+        Tasks); an optional reassign_to (an active sales-role user) first moves those
+        records to that user in the same transaction, reported in reassigned. The
+        response never includes password_hash (excluded via json:"-").
       parameters:
       - description: User ID
         in: path
         name: id
         required: true
         type: integer
-      - description: User fields
+      - description: User fields, plus optional reassign_to
         in: body
         name: body
         required: true
         schema:
-          $ref: '#/definitions/internal_handlers.userForm'
+          $ref: '#/definitions/internal_handlers.userUpdateForm'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.User'
+            $ref: '#/definitions/internal_handlers.userWriteResponse'
         "400":
           description: Invalid body
           schema:
@@ -8326,9 +8817,15 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "409":
+          description: Would demote or deactivate the last active Admin
+          schema:
+            additionalProperties: true
+            type: object
         "422":
-          description: Missing email, email not on the company domain, or role not
-            one of Admin/Sales Rep/Sales Manager/Production/Marketing
+          description: Missing email, email not on the company domain, role not one
+            of Admin/Sales Rep/Sales Manager/Production/Marketing, changing your own
+            role or deactivating yourself, or an invalid reassign_to
           schema:
             additionalProperties: true
             type: object
@@ -8399,21 +8896,38 @@ paths:
       description: Sets is_active false for every listed user in one transaction (same
         effect as Delete's is_active flip, without the soft-delete), writing a bulk_deactivated
         audit entry per row. Revokes every deactivated user's existing sessions, so
-        re-activating them later does not revive old tokens.
+        re-activating them later does not revive old tokens. The caller cannot be
+        in ids (422) and the last active Admin cannot be deactivated (409). Optional
+        reassign_to (an active sales-role user, not in ids) moves every listed user's
+        open Deals/Leads/Prospects/pending Tasks to that user in the same transaction.
+        Returns open_records per listed user (what they still own) and reassigned
+        (what moved, per user).
       parameters:
-      - description: User IDs
+      - description: User IDs, plus optional reassign_to
         in: body
         name: body
         required: true
         schema:
-          $ref: '#/definitions/internal_handlers.bulkUserIDsForm'
+          $ref: '#/definitions/internal_handlers.bulkDeactivateUsersForm'
       produces:
       - application/json
       responses:
-        "204":
-          description: No Content
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.bulkDeactivateResponse'
         "400":
           description: Invalid request body, or ids is required
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Would deactivate the last active Admin
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: ids includes the caller, or an invalid reassign_to
           schema:
             additionalProperties: true
             type: object
