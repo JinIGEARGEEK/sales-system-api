@@ -41,6 +41,22 @@ func lockRow(tx *gorm.DB, model interface{}, id uint, cols ...string) error {
 	return tx.Unscoped().Clauses(clause.Locking{Strength: "UPDATE"}).Select(cols).First(model, id).Error
 }
 
+// lockStatusUnchanged locks row id of table inside tx and fails with a
+// lifecycleConflict when its stored status is no longer want — what the
+// caller's lifecycle guard checked — so a concurrent status change can't be
+// overwritten by a stale full-row Save. noun names the row in the message.
+func lockStatusUnchanged[S ~string](tx *gorm.DB, table string, id uint, want S, noun string) error {
+	var stored struct{ Status S }
+	if err := tx.Table(table).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("status").Where("id = ?", id).Take(&stored).Error; err != nil {
+		return err
+	}
+	if stored.Status != want {
+		return &lifecycleConflict{fmt.Sprintf("this %s was changed to %s meanwhile; reload it and try again", noun, stored.Status)}
+	}
+	return nil
+}
+
 // quoteLabel names a quote in a message: its number, else its id.
 func quoteLabel(q models.Quote) string {
 	if q.Number != nil && *q.Number != "" {
@@ -68,9 +84,7 @@ func ensureSoleAcceptedQuote(tx *gorm.DB, dealID, quoteID uint) error {
 }
 
 // saveQuote persists an Update. Every save locks the quote row and checks
-// its stored status is still oldStatus (what the lifecycle guard checked),
-// so a concurrent status change can't be overwritten by a stale full-row
-// Save. A status change also locks the Deal row first (always Deal, then
+// its stored status is still oldStatus (lockStatusUnchanged). A status change also locks the Deal row first (always Deal, then
 // quote), enforces one Accepted quote per Deal, syncs or unsyncs the Deal's
 // value (syncDealValueForQuote), and writes a quote status_changed audit
 // entry in the same transaction.
@@ -82,12 +96,8 @@ func (h *QuoteHandler) saveQuote(c *fiber.Ctx, quote *models.Quote, oldStatus mo
 				return err
 			}
 		}
-		var stored models.Quote
-		if err := lockRow(tx, &stored, quote.ID, "id", "status"); err != nil {
+		if err := lockStatusUnchanged(tx, models.Quote{}.TableName(), quote.ID, oldStatus, "quote"); err != nil {
 			return err
-		}
-		if stored.Status != oldStatus {
-			return &lifecycleConflict{fmt.Sprintf("this quote was changed to %s meanwhile; reload it and try again", stored.Status)}
 		}
 		if statusChanged && quote.Status == models.QuoteStatusAccepted {
 			if err := ensureSoleAcceptedQuote(tx, quote.DealID, quote.ID); err != nil {

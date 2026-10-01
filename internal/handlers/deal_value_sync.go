@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"fmt"
-	"math"
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -28,17 +27,6 @@ const (
 // while the Deal's value is synced from an Accepted quote.
 const errCodeSyncedFromQuote = "synced_from_quote"
 
-// dealValueFromQuote is the Deal value an Accepted quote syncs: its taxable
-// amount rounded to satang, and ok false when the quote has no priced items
-// (e.g. an uploaded PDF), which syncs nothing.
-func dealValueFromQuote(q *models.Quote) (value float64, ok bool) {
-	totals := utils.QuoteTotalsOf(q)
-	if totals.Subtotal <= 0 {
-		return 0, false
-	}
-	return utils.RoundSatang(totals.TaxableAmount), true
-}
-
 // syncDealValueForQuote runs inside a quote Create/Update transaction, after
 // the quote row is written, when its status moved from oldStatus ("" on
 // Create) to quote.Status:
@@ -61,7 +49,7 @@ func syncDealValueForQuote(tx *gorm.DB, quote *models.Quote, oldStatus models.Qu
 	}
 	before := models.JSONMap{"value": deal.Value, "value_quote_id": deal.ValueQuoteID}
 	if entering {
-		value, ok := dealValueFromQuote(quote)
+		value, ok := utils.DealValueFromQuote(quote)
 		if !ok {
 			return nil
 		}
@@ -96,14 +84,10 @@ func respondDealValueSynced(c *fiber.Ctx, e *dealValueSyncedErr) error {
 	return utils.ValidationError(c, e.Error(), map[string][]string{"value": {errCodeSyncedFromQuote}})
 }
 
-// sameMoney reports whether a and b are the same amount to within
-// utils.MoneyEpsilon.
-func sameMoney(a, b float64) bool { return math.Abs(a-b) <= utils.MoneyEpsilon }
-
 // checkSyncedDealValue returns a dealValueSyncedErr when deal is synced from
 // a quote and value isn't its stored value. db may be a transaction.
 func checkSyncedDealValue(db *gorm.DB, deal *models.Deal, value float64) error {
-	if deal.ValueQuoteID == nil || sameMoney(value, deal.Value) {
+	if deal.ValueQuoteID == nil || utils.SameMoney(value, deal.Value) {
 		return nil
 	}
 	return &dealValueSyncedErr{quoteNumber: valueQuoteNumber(db, deal.ValueQuoteID)}
@@ -114,11 +98,20 @@ func valueQuoteNumber(db *gorm.DB, id *uint) string {
 	if id == nil {
 		return ""
 	}
-	var q models.Quote
-	if err := db.Select("id", "number").First(&q, *id).Error; err != nil {
-		return fmt.Sprintf("#%d", *id)
+	if label, ok := quoteLabelByID(db, *id); ok {
+		return label
 	}
-	return quoteLabel(q)
+	return fmt.Sprintf("#%d", *id)
+}
+
+// quoteLabelByID loads quote id's label (quoteLabel); ok false when it
+// can't be read.
+func quoteLabelByID(db *gorm.DB, id uint) (string, bool) {
+	var q models.Quote
+	if err := db.Select("id", "number").First(&q, id).Error; err != nil {
+		return "", false
+	}
+	return quoteLabel(q), true
 }
 
 // dealDetail is a single-Deal response: the Deal plus the read-only
@@ -133,9 +126,7 @@ type dealDetail struct {
 func withValueQuoteNumber(db *gorm.DB, deal models.Deal) dealDetail {
 	out := dealDetail{Deal: deal}
 	if deal.ValueQuoteID != nil {
-		var q models.Quote
-		if err := db.Select("id", "number").First(&q, *deal.ValueQuoteID).Error; err == nil {
-			label := quoteLabel(q)
+		if label, ok := quoteLabelByID(db, *deal.ValueQuoteID); ok {
 			out.ValueQuoteNumber = &label
 		}
 	}

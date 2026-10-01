@@ -120,23 +120,6 @@ func (h *PaymentInstallmentHandler) Create(c *fiber.Ctx) error {
 // BulkCreate returns when the schedule would plan more than is owed.
 const ScheduleExceedsReceivableCode = "exceeds_receivable"
 
-// dealReceivable is what the customer owes on the Deal, by the Outstanding
-// Balance report's rule (utils.DealReceivable): its latest Accepted Quote's
-// taxable amount + VAT when priced, else the Deal value.
-func dealReceivable(db *gorm.DB, deal *models.Deal) (float64, error) {
-	var quotes []models.Quote
-	if err := db.Where("deal_id = ? AND status = ?", deal.ID, models.QuoteStatusAccepted).
-		Order("created_at DESC, id DESC").Limit(1).Find(&quotes).Error; err != nil {
-		return 0, err
-	}
-	var latest *models.Quote
-	if len(quotes) > 0 {
-		latest = &quotes[0]
-	}
-	amount, _ := utils.DealReceivable(deal.Value, latest)
-	return amount, nil
-}
-
 // scheduleExceedsReceivable writes a 422 and returns true when the Deal's
 // existing installments plus `rows` would total more than its receivable
 // (to the satang). Paid installments count too — the schedule as a whole is

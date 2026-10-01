@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -83,10 +84,43 @@ func guardProtectedWonDeal(c *fiber.Ctx, db *gorm.DB, deal *models.Deal, verb st
 	return reason, true, nil
 }
 
+// guardLeavingWon is guardProtectedWonDeal for a move that may take deal
+// out of Won: staysWon true (or a Deal that isn't Won) passes untouched.
+func guardLeavingWon(c *fiber.Ctx, db *gorm.DB, deal *models.Deal, staysWon bool) (reason string, forced bool, err error) {
+	if deal.Status != models.DealStatusWon || staysWon {
+		return "", false, nil
+	}
+	return guardProtectedWonDeal(c, db, deal, "move out of Won")
+}
+
+// logDealStageActivity records a stage move as company Activity (it counts
+// as customer contact), next to the move's stage_changed audit entry.
+func logDealStageActivity(tx *gorm.DB, deal *models.Deal, oldStage models.DealStage, actorID uint) error {
+	subject := fmt.Sprintf("Deal stage changed: %s → %s", oldStage, deal.Stage)
+	return utils.LogCompanyActivity(tx, deal.CompanyID, subject, actorID)
+}
+
 // writeWonReversedAudit records a manager moving a protected Won Deal out of
 // Won, with the reason they gave. Written alongside (not instead of) the
 // move's own stage_changed entry.
 func writeWonReversedAudit(tx *gorm.DB, deal *models.Deal, before models.JSONMap, reason string, actorID uint) error {
 	after := models.JSONMap{"stage": deal.Stage, "status": deal.Status, "reason": reason}
 	return utils.WriteAuditLog(tx, "deal", deal.ID, "won_reversed", before, after, actorID)
+}
+
+// dealReceivable is what the customer owes on the Deal, by the Outstanding
+// Balance report's rule (utils.DealReceivable): its latest Accepted Quote's
+// taxable amount + VAT when priced, else the Deal value.
+func dealReceivable(db *gorm.DB, deal *models.Deal) (float64, error) {
+	var quotes []models.Quote
+	if err := db.Where("deal_id = ? AND status = ?", deal.ID, models.QuoteStatusAccepted).
+		Order("created_at DESC, id DESC").Limit(1).Find(&quotes).Error; err != nil {
+		return 0, err
+	}
+	var latest *models.Quote
+	if len(quotes) > 0 {
+		latest = &quotes[0]
+	}
+	amount, _ := utils.DealReceivable(deal.Value, latest)
+	return amount, nil
 }
