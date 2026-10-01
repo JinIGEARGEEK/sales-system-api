@@ -2,6 +2,7 @@ package apitests
 
 import (
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,6 +52,44 @@ func TestPaymentInstallmentBulkCreate_RejectsScheduleOverReceivable(t *testing.T
 	// Exactly the remaining 400 fits.
 	resp = doJSON(t, app, bulkInstallmentsRequest(t, deal.ID, admin, 200, 200), nil)
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+}
+
+// TestPaymentInstallmentBulkCreate_ConcurrentBatchesStayWithinReceivable
+// guards that the receivable cap is checked under the Deal row lock: several
+// batches that each fit alone, but not together, sent at once can't all pass
+// on the same "already scheduled" total.
+func TestPaymentInstallmentBulkCreate_ConcurrentBatchesStayWithinReceivable(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	deal := seedDeal(t, db, nil) // value 1,000, no Accepted Quote
+
+	const n = 5
+	codes := make([]int, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			resp, err := app.Test(bulkInstallmentsRequest(t, deal.ID, admin, 300, 300), -1)
+			if err == nil {
+				codes[i] = resp.StatusCode
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	created := 0
+	for _, code := range codes {
+		if code == http.StatusCreated {
+			created++
+		} else {
+			assert.Equal(t, http.StatusUnprocessableEntity, code)
+		}
+	}
+	assert.Equal(t, 1, created, "only one 600 batch fits a 1,000 receivable")
+	var total float64
+	db.Model(&models.PaymentInstallment{}).Where("deal_id = ?", deal.ID).Select("COALESCE(SUM(amount), 0)").Scan(&total)
+	assert.InDelta(t, 600, total, 0.001)
 }
 
 // The receivable is the Outstanding Balance one: an Accepted Quote's
