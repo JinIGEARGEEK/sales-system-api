@@ -4,6 +4,27 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## Unreleased — Review follow-ups
+
+**Deal value follows the Accepted quote**
+- New nullable `deals.value_quote_id` (FK `quotes`, `ON DELETE SET NULL`), JSON `value_quote_id`. Single-Deal responses (`GET`/`PUT /deals/:id`, also `PATCH /deals/:id/stage`, `PATCH /deals/:id/reassign`, `POST /deals/:id/restore`) add read-only `value_quote_number` (string or null). Lists don't include it.
+- When a quote with priced items (subtotal > 0) becomes Accepted (created as `accepted`, or `PUT /quotes/:id` to `accepted`), the same transaction sets the Deal's `value` to the quote's pre-VAT taxable amount rounded to satang (revenue is the taxable amount, spec §7.4) and `value_quote_id` to the quote. It writes a `deal` audit row `value_synced`: before `{value, value_quote_id}`, after `{value, value_quote_id, quote_number}`. An Accepted quote with no priced items (an uploaded PDF) changes nothing.
+- When that quote is rejected, `value_quote_id` is cleared and `value` stays as it is. Audit: `value_unsynced`, before `{value, value_quote_id, quote_number}`, after `{value, value_quote_id: null}`. Only drafts can be deleted, so a synced quote can't be deleted through the API. If the row is ever removed, the FK clears the link.
+- While `value_quote_id` is set, `PUT /deals/:id` with a `value` that differs from the stored one (by more than `utils.MoneyEpsilon`) is `422` with `fields.value: ["synced_from_quote"]`, and the message names the quote number. Resending the stored value is fine. The check is repeated under the Deal row lock, so a quote accepted at the same moment can't be overwritten. A full-row Deal save never writes `value_quote_id` (GORM create-only field). Lead/Prospect convert is unchanged.
+- Boot backfill (runs once, `deal_value_quotes_backfill`): each non-deleted Deal whose latest Accepted quote has priced items is linked **only when its value already equals that quote's rounded taxable amount** (within `utils.MoneyEpsilon`). A Deal whose value differs is left unlinked and unchanged, and is only counted in the boot log, so the boot never rewrites revenue. No audit rows are written.
+
+**Payments export**
+- New `GET /payments/export`, Admin/Sales Manager only, the same gate as the other CSV exports. It uses the same CSV helpers: formula-injection guard and no BOM. Filename `payments-YYYYMMDD.csv`. Rows run oldest `paid_at` first.
+- Columns: Paid At (YYYY-MM-DD, server-local), Document Number, Deal ID, Deal, Company, Amount, WHT Amount, Total (amount + WHT), Method, Installment ID, Installment Due Date, Note, Created By.
+- Filters: `date_from`/`date_to` on `paid_at` (inclusive server-local days, `422` on a bad or reversed range), `deal_id`, `company_id`, `method` (`422` when invalid).
+- Leaves out soft-deleted Payments and Payments on soft-deleted Deals.
+
+**Frontend:**
+- Show the Deal value as synced (read-only, "from quote QT…" via `value_quote_number`) while `value_quote_id` is set, and handle the `synced_from_quote` 422 on `fields.value`. Refetch the Deal after accepting or rejecting a quote, since its `value` may have changed.
+- Add a payments CSV download for Admin/Sales Manager that passes the filters above.
+
+Regression-guarded: `tests/deal_value_sync_test.go`, `tests/payments_export_test.go`. Swagger regenerated.
+
 ## Unreleased — Pipeline coverage and forecast
 
 `GET /dashboard/summary` (spec §9) now counts coverage and the forecast trend by when open Deals are expected to close. Days are server-local (`calendar.ParseLocalDay`, `calendar.Today`, new `calendar.QuarterStart`).
