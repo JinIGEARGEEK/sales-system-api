@@ -4,6 +4,21 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## Unreleased — Pipeline coverage and forecast
+
+`GET /dashboard/summary` (spec §9) now counts coverage and the forecast trend by when open Deals are expected to close. Days are server-local (`calendar.ParseLocalDay`, `calendar.Today`, new `calendar.QuarterStart`).
+
+- **`pipeline_coverage_ratio` is this quarter's pipeline over this quarter's target.** The numerator is open Deals with `expected_close_date` in the current calendar quarter (new field `quarter_pipeline_value`), including ones earlier in the quarter that are now overdue. It used to be all open pipeline, including Deals past their close date and Deals due in later quarters. Deals with no `expected_close_date` are left out.
+- **New `overdue_pipeline_value` / `overdue_pipeline_count`**: open Deals whose `expected_close_date` is before today.
+- **New `undated_pipeline_value` / `undated_pipeline_count`**: open Deals with no `expected_close_date` (or one that isn't a readable date), so the pipeline coverage leaves out is still shown.
+- **`forecast_trend` keeps overdue Deals.** An open Deal past its close date goes into the current month's point instead of being dropped. Each point gains `overdue`: the part of its `value` from overdue Deals (`0` on every point but the first).
+- **`forecast_trend` applies the dashboard filters** (`business_unit`, `business_unit_item`, `channel`, `assigned_to`, `company_tag`). It used to ignore them all.
+- The new figures and `forecast_trend` don't apply the date window (`date_from`/`date_to`/`period`, which counts by `created_at`). They're defined by close date, and the window would drop an older Deal still due this quarter. Existing fields keep their names. `open_pipeline_value` is unchanged.
+
+**Frontend:** new fields on `GET /dashboard/summary`: `quarter_pipeline_value` (coverage numerator), `overdue_pipeline_value`, `overdue_pipeline_count`, `undated_pipeline_value`, `undated_pipeline_count`, and `overdue` on each `forecast_trend` point. Coverage numbers will usually drop. Show the overdue and undated amounts next to the coverage card, and the current month's `overdue` on the forecast chart (it's part of that month's `value`, not extra).
+
+Regression-guarded: `tests/dashboard_coverage_forecast_test.go`, `TestQuarterStart`. Swagger regenerated.
+
 ## Unreleased — Review round 2
 
 **Access.**
