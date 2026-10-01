@@ -6,6 +6,9 @@ Entries before this file existed are reconstructed from git/PR history — going
 
 ## Unreleased — Review follow-ups
 
+**CSV exports past 500 rows.**
+- **Fixed:** the companies, contacts, deals, products and projects exports skipped and repeated rows once they had more than one 500-row page. The later pages used `FindInBatches`, which pages by id and kept the first page's offset, while the export sorts by `created_at`. Exports now page with LIMIT/OFFSET in their own order, with an `id` tie-breaker. Regression-guarded: `TestExport_PagesNeitherSkipNorRepeatRows`.
+
 **Task owners, reassign audit, contract gate.**
 - Task `assigned_to` must be an active user in a sales-pipeline role (Admin/Sales Rep/Sales Manager/Marketing), else `422` on field `assigned_to`. This applies to `POST /tasks`, `PATCH /tasks/bulk-reassign` and `POST /campaigns/:id/tasks`, and to `PATCH /tasks/:id` only when `assigned_to` changes (so a task whose owner was deactivated can still be edited). `null` is still allowed. Production can't own Tasks: the spec limits it to Projects, and moving a user to Production already hands their pending Tasks to someone else.
 - Reassigning a deactivated, deleted or Production-bound user's records (`reassign_to` on `PUT /users/:id`, `DELETE /users/:id`, `PATCH /users/bulk-deactivate`) now also writes a `deal`/`reassigned` audit row for each moved Deal (before/after `assigned_to`, same as `PATCH /deals/:id/reassign`), in the same transaction and in one batched insert. The `user`/`records_reassigned` summary row is unchanged. Leads, Prospects and Tasks get no per-record row, since they have no single-record reassign audit anywhere else.
