@@ -34,12 +34,10 @@ func csvImportRequest(t *testing.T, path, csvContent, token string) *http.Reques
 	return req
 }
 
-// TestImportCompanies_DedupesWithinSameFile proves the batched rewrite still
-// dedupes two rows in the *same* file that resolve to the same company (here,
-// by domain) — the second row must update the company the first row just
-// created, not create a duplicate. This is the case an in-memory-map
-// preloaded-once-per-import approach could easily get wrong if it only
-// checked the DB state from before the request started.
+// TestImportCompanies_DedupesWithinSameFile guards that two rows in the
+// same file resolving to one company (here, by domain) produce one Company:
+// the second row updates the one the first created. The import's index is
+// loaded once up front, so it must also see rows written during the import.
 func TestImportCompanies_DedupesWithinSameFile(t *testing.T) {
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
@@ -79,10 +77,8 @@ func TestImportCompanies_UpdatesExistingRow(t *testing.T) {
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 	token := testutil.Token(t, admin.ID, admin.Role)
 
-	// Domain is set explicitly, matching how CompanyHandler.Create/Update
-	// always populate it (utils.ExtractDomain) — the column is what the
-	// import's domain lookup actually matches against, same as it was before
-	// this batching rewrite.
+	// Domain is set explicitly, as CompanyHandler.Create/Update populate it
+	// (utils.ExtractDomain); it's the column the import's lookup matches.
 	existing := &models.Company{Name: "Beta Inc", Website: "https://beta.com", Domain: "beta.com", Status: models.StatusActive}
 	require.NoError(t, db.Create(existing).Error)
 
@@ -213,9 +209,8 @@ func TestImportContacts_RejectsUnknownCompanyUpFront(t *testing.T) {
 }
 
 // TestImport_BadRowIsSkippedNotFatal guards the per-row savepoint: a row
-// Postgres rejects used to abort the transaction, failing every later row
-// and the whole import with a 500. Now it's reported and skipped, and the
-// rows around it are imported. The rejection comes from a CHECK constraint
+// Postgres rejects is reported and skipped, and the rows around it are
+// still imported rather than the whole import failing with a 500. The rejection comes from a CHECK constraint
 // added for the test; a NUL byte, which no text column accepts, is skipped
 // at parse time.
 func TestImport_BadRowIsSkippedNotFatal(t *testing.T) {
@@ -276,4 +271,92 @@ func TestImport_BadRowIsSkippedNotFatal(t *testing.T) {
 		assert.Equal(t, 3, body.Data.Errors[1].Row)
 		assert.Equal(t, "failed to create", body.Data.Errors[1].Message)
 	})
+}
+
+// TestImportCompanies_BlankCellsKeepStoredValues guards that a row matched
+// by name with empty industry/size/website cells updates the Company without
+// wiping those fields (its website and derived domain in particular).
+func TestImportCompanies_BlankCellsKeepStoredValues(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	token := testutil.Token(t, admin.ID, admin.Role)
+	existing := &models.Company{Name: "Gamma Ltd", Industry: "Retail", Size: "Small", Website: "https://gamma.co", Domain: "gamma.co", Status: models.StatusActive}
+	require.NoError(t, db.Create(existing).Error)
+
+	csvContent := "name,industry,size,website\n gamma ltd ,,Medium,\n"
+	var body struct {
+		Data struct {
+			Created int `json:"created"`
+			Updated int `json:"updated"`
+		} `json:"data"`
+	}
+	resp := doJSON(t, app, csvImportRequest(t, "/api/v1/companies/import", csvContent, token), &body)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, 1, body.Data.Updated)
+	assert.Equal(t, 0, body.Data.Created)
+
+	var reloaded models.Company
+	require.NoError(t, db.First(&reloaded, existing.ID).Error)
+	assert.Equal(t, "Medium", reloaded.Size, "a non-empty cell still updates")
+	assert.Equal(t, "Retail", reloaded.Industry, "empty cell keeps industry")
+	assert.Equal(t, "https://gamma.co", reloaded.Website, "empty cell keeps website")
+	assert.Equal(t, "gamma.co", reloaded.Domain, "empty cell keeps the derived domain")
+}
+
+// TestImportCompanies_SameNameOtherDomainIsNewCompany guards the name
+// fallback: it only applies when the row or the stored Company has no
+// website, so a same-named row on a different domain creates a new Company
+// instead of re-pointing the existing one's website.
+func TestImportCompanies_SameNameOtherDomainIsNewCompany(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	token := testutil.Token(t, admin.ID, admin.Role)
+	existing := &models.Company{Name: "Delta", Website: "https://delta.com", Domain: "delta.com", Status: models.StatusActive}
+	require.NoError(t, db.Create(existing).Error)
+
+	csvContent := "name,industry,size,website\nDelta,,,https://delta.io\n"
+	var body struct {
+		Data struct {
+			Created int `json:"created"`
+			Updated int `json:"updated"`
+		} `json:"data"`
+	}
+	resp := doJSON(t, app, csvImportRequest(t, "/api/v1/companies/import", csvContent, token), &body)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, 1, body.Data.Created)
+	assert.Equal(t, 0, body.Data.Updated)
+
+	var reloaded models.Company
+	require.NoError(t, db.First(&reloaded, existing.ID).Error)
+	assert.Equal(t, "delta.com", reloaded.Domain, "the existing Company keeps its own website")
+}
+
+// TestImportContacts_RejectsNonNumericCompanyID guards that a company_id
+// cell with trailing junk ("12abc") is a skipped row, not read as 12.
+func TestImportContacts_RejectsNonNumericCompanyID(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	token := testutil.Token(t, admin.ID, admin.Role)
+	company := seedCompany(t, db)
+
+	csvContent := "company_id,name,email,phone,role_title\n" +
+		itoa(company.ID) + "abc,Junk Id,junk@example.com,,\n" +
+		itoa(company.ID) + ",Good,good@example.com,,\n"
+	var body struct {
+		Data struct {
+			Created int `json:"created"`
+			Skipped int `json:"skipped"`
+			Errors  []struct {
+				Row     int    `json:"row"`
+				Message string `json:"message"`
+			} `json:"errors"`
+		} `json:"data"`
+	}
+	resp := doJSON(t, app, csvImportRequest(t, "/api/v1/contacts/import", csvContent, token), &body)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, 1, body.Data.Created)
+	assert.Equal(t, 1, body.Data.Skipped)
+	require.Len(t, body.Data.Errors, 1)
+	assert.Equal(t, 2, body.Data.Errors[0].Row)
+	assert.Equal(t, "invalid company_id", body.Data.Errors[0].Message)
 }
