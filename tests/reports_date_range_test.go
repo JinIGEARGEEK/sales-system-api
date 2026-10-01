@@ -31,6 +31,16 @@ func setCreatedAt(t *testing.T, db *gorm.DB, model interface{}, id uint, at time
 	require.NoError(t, db.Model(model).Where("id = ?", id).UpdateColumn("created_at", at).Error)
 }
 
+// setWonAt backdates when a Deal became Won (and, like a real move into the
+// Won lane, its stage_entered_at) — what every "won this period" figure
+// counts by. A map/column update doesn't run Deal's BeforeSave hook, so a
+// test that wins a Deal that way must stamp won_at itself.
+func setWonAt(t *testing.T, db *gorm.DB, id uint, at time.Time) {
+	t.Helper()
+	require.NoError(t, db.Model(&models.Deal{}).Where("id = ?", id).
+		UpdateColumns(map[string]interface{}{"won_at": at, "stage_entered_at": at}).Error)
+}
+
 // TestDateRangeFilters_InclusiveServerLocalDays guards every report,
 // dashboard and the audit log reading date_from/date_to as whole
 // server-local (Bangkok) days: from local midnight, through the end of
@@ -56,6 +66,7 @@ func TestDateRangeFilters_InclusiveServerLocalDays(t *testing.T) {
 		deal := seedDeal(t, db, nil)
 		require.NoError(t, db.Model(deal).Updates(map[string]interface{}{"status": models.DealStatusWon, "stage": "Won"}).Error)
 		setCreatedAt(t, db, &models.Deal{}, deal.ID, at)
+		setWonAt(t, db, deal.ID, at)
 
 		require.NoError(t, db.Create(&models.AuditLogEntry{
 			EntityType: "deal", EntityID: deal.ID, Action: "stage_changed", ActorID: admin.ID, CreatedAt: at,
