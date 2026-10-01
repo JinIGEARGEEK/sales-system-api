@@ -33,6 +33,12 @@ func Today(now time.Time) time.Time {
 	return LocalDay(now)
 }
 
+// QuarterStart is the first day of day's calendar quarter (1 January,
+// April, July or October), as a Day. The next quarter starts 3 months on.
+func QuarterStart(day time.Time) time.Time {
+	return time.Date(day.Year(), (day.Month()-1)/3*3+1, 1, 0, 0, 0, 0, time.UTC)
+}
+
 // DaysUntil counts whole calendar days from `from` to `to`, each read as the
 // Y-M-D in its own location — for date values (date columns, parsed
 // YYYY-MM-DD strings). Negative when `to` is earlier.

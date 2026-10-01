@@ -36,3 +36,19 @@ func TestLocalDaysBetween(t *testing.T) {
 	assert.Equal(t, -3, LocalDaysBetween(time.Date(2026, 9, 30, 0, 0, 0, 0, time.Local), now))
 	assert.Equal(t, 1, LocalDaysBetween(time.Date(2026, 9, 27, 16, 59, 0, 0, time.UTC), time.Date(2026, 9, 27, 17, 0, 0, 0, time.UTC)), "local midnight")
 }
+
+func TestQuarterStart(t *testing.T) {
+	cases := map[string]string{
+		"2026-01-01": "2026-01-01",
+		"2026-03-31": "2026-01-01",
+		"2026-04-01": "2026-04-01",
+		"2026-09-30": "2026-07-01",
+		"2026-10-01": "2026-10-01",
+		"2026-12-31": "2026-10-01",
+	}
+	for in, want := range cases {
+		day, err := Parse(in)
+		assert.NoError(t, err)
+		assert.Equal(t, want, QuarterStart(day).Format(dateLayout), in)
+	}
+}

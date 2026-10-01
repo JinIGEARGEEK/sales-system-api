@@ -192,8 +192,8 @@ type annualGoalTrendPoint struct {
 // frontend chart whether the company is ahead of or behind pace over the
 // year, not just infer it from today's single ratio. A fixed company-wide
 // figure, deliberately ignoring Summary's base filter (business_unit/
-// channel/assigned_to/company_tag/date range) the same way revenueTrend/
-// forecastTrend do, since the annual goal (FR-CRM-091) tracks the whole
+// channel/assigned_to/company_tag/date range) the same way revenueTrend
+// does, since the annual goal (FR-CRM-091) tracks the whole
 // company against one company-wide target, not a filtered slice. The last
 // point's Actual also doubles as annual_revenue_actual in Summary's response
 // — one grouped query instead of a duplicate SUM.
@@ -358,6 +358,10 @@ func ResetDashboardCacheForTests() {
 // Summary godoc
 // @Summary Dashboard summary
 // @Description Aggregate sales metrics (pipeline value, win rate, trends, breakdowns, upsell opportunities). api-system-spec.md §9.
+// @Description pipeline_coverage_ratio = quarter_pipeline_value (open Deals expected to close in the current server-local quarter) / quarterly_sales_target.
+// @Description overdue_pipeline_value/overdue_pipeline_count: open Deals whose expected_close_date is before today. undated_pipeline_value/undated_pipeline_count: open Deals with no readable expected_close_date (not in coverage or forecast_trend).
+// @Description forecast_trend points are {label, value, overdue}: overdue open Deals are counted in the current month's value and also reported in its overdue (0 on later months).
+// @Description The close-date figures (coverage, overdue, undated, forecast_trend) apply business_unit/business_unit_item/channel/assigned_to/company_tag but not the date window.
 // @Tags dashboard
 // @Security BearerAuth
 // @Produce json
@@ -433,7 +437,9 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	// captured above — see the comment on that.
 	var openPipelineValue, wonValue, avgDealSize, forecastedRevenue float64
 	var openDealsCount, wonCount, lostCount, dealsCount, totalDealsCount int64
-	var revenueTrend, forecastTrend []revenueTrendPoint
+	var revenueTrend []revenueTrendPoint
+	var forecastTrendPoints []forecastTrendPoint
+	var closeDates closeDatePipelineTotals
 	var stageBreakdown []stageBreakdownItem
 	var forecastByCategory forecastByCategoryItem
 	var industryBreakdown []industryBreakdownItem
@@ -511,7 +517,11 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 		windows.lost.apply(dims.Session(&gorm.Session{})).Count(&lostCount)
 	})
 	run("revenue_trend", func() { revenueTrend = h.revenueTrend() })
-	run("forecast_trend", func() { forecastTrend = h.forecastTrend() })
+	// Both count open Deals by expected close day against today
+	// (server-local), over dims — see closeDatePipeline.
+	now := time.Now()
+	run("forecast_trend", func() { forecastTrendPoints = forecastTrend(dims, now) })
+	run("pipeline_coverage_ratio", func() { closeDates = closeDatePipeline(dims, now) })
 	run("stage_breakdown", func() { stageBreakdown = h.stageBreakdown(dims, windows) })
 	run("forecast_by_category", func() { forecastByCategory = h.forecastByCategory(base) })
 	run("industry_breakdown", func() { industryBreakdown = h.industryBreakdown(dims, windows, companyTagSet) })
@@ -538,9 +548,12 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	})
 	wg.Wait()
 
+	// Coverage is this quarter's pipeline (open Deals expected to close in the
+	// current quarter) over this quarter's target — not all open pipeline,
+	// which counted Deals already past their close date or due next year.
 	pipelineCoverageRatio := 0.0
 	if quarterlySalesTarget > 0 {
-		pipelineCoverageRatio = openPipelineValue / quarterlySalesTarget
+		pipelineCoverageRatio = closeDates.QuarterValue / quarterlySalesTarget
 	}
 
 	// annualRevenueActual is the trend's last cumulative point (Jan through
@@ -577,13 +590,18 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 		"avg_deal_size":                 avgDealSize,
 		"avg_sales_cycle_days":          avgSalesCycleDays,
 		"pipeline_coverage_ratio":       pipelineCoverageRatio,
+		"quarter_pipeline_value":        closeDates.QuarterValue,
+		"overdue_pipeline_value":        closeDates.OverdueValue,
+		"overdue_pipeline_count":        closeDates.OverdueCount,
+		"undated_pipeline_value":        closeDates.UndatedValue,
+		"undated_pipeline_count":        closeDates.UndatedCount,
 		"quarterly_sales_target":        quarterlySalesTarget,
 		"annual_revenue_goal":           float64(annualRevenueGoal),
 		"annual_revenue_actual":         annualRevenueActual,
 		"annual_revenue_progress_ratio": annualRevenueProgressRatio,
 		"annual_revenue_trend":          annualRevenueTrend,
 		"revenue_trend":                 revenueTrend,
-		"forecast_trend":                forecastTrend,
+		"forecast_trend":                forecastTrendPoints,
 		"stage_breakdown":               stageBreakdown,
 		"industry_breakdown":            industryBreakdown,
 		"team_performance":              teamPerformance,
@@ -617,7 +635,8 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 // month — the original shape issued 6 round-trips here on every dashboard
 // load. Deliberately ignores Summary's base filter (business_unit/channel/
 // assigned_to/company_tag/date range) — it's a fixed trailing-6-month view
-// independent of those, same as forecastTrend below.
+// independent of those (unlike forecastTrend below, which applies the
+// non-date filters).
 func (h *DashboardHandler) revenueTrend() []revenueTrendPoint {
 	bounds := monthBounds(thisMonthStart(time.Now()).AddDate(0, -5, 0), 6)
 	byMonth := sumByLocalMonth(h.DB.Model(&models.Deal{}).Where("status = ?", models.DealStatusWon),
@@ -636,55 +655,141 @@ func thisMonthStart(now time.Time) time.Time {
 	return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
 }
 
-// forecastTrend is the forward-looking counterpart to revenueTrend: instead of
-// bucketing past Won revenue by created_at month, it buckets open deals'
-// probability-weighted value by ExpectedCloseDate month for the next 6 months
-// (this month + 5 forward), mirroring revenueTrend's exact date-window shape,
-// collapsed the same way into one grouped query instead of one per month.
-//
-// ExpectedCloseDate is a nullable *string (not required at Create), so deals
-// without one cannot be placed in a month bucket here and are excluded from
-// every point below. They are NOT excluded from the headline forecasted_revenue
-// stat card above, which sums all open deals regardless of date — so this
-// trend's points may sum to less than that headline total. The frontend must
-// not present this breakdown as the complete forecast.
-//
-// expected_close_date is free-form text (no explicit gorm type on the
-// nullable *string field), holding either a plain "2006-01-02" date or a
-// full ISO datetime (the frontend submits Date objects, which
-// JSON-serialize to e.g. "2026-08-31T17:00:00.000Z" — 1 September in
-// Bangkok). Taking its first 7 characters put that in August, so each
-// Deal's month is read in Go instead (calendar.ParseLocalDay: a bare
-// date as written, a timestamp by its server-local date). SQL only
-// narrows by a string range padded a day each side (a timestamp's UTC date
-// can be a day before its local one); a malformed row is skipped rather
-// than aborting a cast.
-func (h *DashboardHandler) forecastTrend() []revenueTrendPoint {
-	start := thisMonthStart(time.Now())
-	bounds := monthBounds(start, 6)
+// openDealCloseDate is one open Deal's expected close day, for the figures
+// that count by when a Deal is expected to close (closeDatePipeline,
+// forecastTrend). Dated is false when expected_close_date is empty or can't
+// be read as a date.
+type openDealCloseDate struct {
+	Day      time.Time
+	Dated    bool
+	Value    float64
+	Weighted float64 // Value × probability/100
+}
 
+// openDealCloseDates loads every open Deal matching dims (Summary's
+// non-date filters) with its expected close day. expected_close_date is
+// free-form text (no explicit gorm type on the nullable *string field),
+// holding either a plain "2006-01-02" date or a full ISO datetime (the
+// frontend submits Date objects, which JSON-serialize to e.g.
+// "2026-08-31T17:00:00.000Z" — 1 September in Bangkok), so each Deal's day
+// is read in Go (calendar.ParseLocalDay: a bare date as written, a timestamp
+// by its server-local date) rather than cast in SQL, where one malformed row
+// would abort the whole query. Overdue Deals have no lower date bound, so
+// every open Deal is loaded; it's three columns per row.
+func openDealCloseDates(dims *gorm.DB) []openDealCloseDate {
 	var rows []struct {
-		ExpectedCloseDate string
+		ExpectedCloseDate *string
 		Value             float64
+		Weighted          float64
 	}
-	h.DB.Model(&models.Deal{}).
-		Where("status = ? AND expected_close_date >= ? AND expected_close_date < ?",
-			models.DealStatusOpen, start.AddDate(0, 0, -1).Format("2006-01-02"), bounds[6].AddDate(0, 0, 1).Format("2006-01-02")).
-		Select("expected_close_date, value * COALESCE(probability, 0) / 100.0 as value").
+	dims.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusOpen).
+		Select("deals.expected_close_date, deals.value, " +
+			"deals.value * COALESCE(deals.probability, 0) / 100.0 as weighted").
 		Scan(&rows)
 
-	points := make([]revenueTrendPoint, 6)
+	deals := make([]openDealCloseDate, len(rows))
+	for i, r := range rows {
+		deals[i] = openDealCloseDate{Value: r.Value, Weighted: r.Weighted}
+		if r.ExpectedCloseDate != nil {
+			deals[i].Day, deals[i].Dated = calendar.ParseLocalDay(*r.ExpectedCloseDate)
+		}
+	}
+	return deals
+}
+
+// closeDatePipelineTotals splits open pipeline value (unweighted, like
+// open_pipeline_value) by expected close day, against today's server-local
+// date:
+//   - quarter: expected to close inside the current calendar quarter — the
+//     numerator of pipeline_coverage_ratio. Includes Deals earlier in the
+//     quarter that are now overdue (they're still this quarter's pipeline).
+//   - overdue: expected close day before today, in any quarter.
+//   - undated: no (readable) expected_close_date. Not in coverage, reported
+//     so the frontend can show the pipeline that coverage leaves out.
+//
+// Deals expected to close in a later quarter are in none of them.
+type closeDatePipelineTotals struct {
+	QuarterValue float64
+	OverdueValue float64
+	OverdueCount int64
+	UndatedValue float64
+	UndatedCount int64
+}
+
+// closeDatePipeline totals open Deals matching dims by expected close day
+// (closeDatePipelineTotals). Only the non-date filters apply: the figures
+// are defined by expected_close_date and today, so the created_at window
+// the other open-pipeline cards use would drop older Deals that are still
+// due this quarter.
+func closeDatePipeline(dims *gorm.DB, now time.Time) closeDatePipelineTotals {
+	today := calendar.Today(now)
+	quarterStart := calendar.QuarterStart(today)
+	nextQuarter := quarterStart.AddDate(0, 3, 0)
+
+	var t closeDatePipelineTotals
+	for _, d := range openDealCloseDates(dims) {
+		if !d.Dated {
+			t.UndatedValue += d.Value
+			t.UndatedCount++
+			continue
+		}
+		if !d.Day.Before(quarterStart) && d.Day.Before(nextQuarter) {
+			t.QuarterValue += d.Value
+		}
+		if d.Day.Before(today) {
+			t.OverdueValue += d.Value
+			t.OverdueCount++
+		}
+	}
+	return t
+}
+
+// forecastTrendPoint is one month of forecast_trend. Overdue is the part of
+// Value from open Deals whose expected close day is already past (before
+// today); it's only ever non-zero on the first (current-month) point.
+type forecastTrendPoint struct {
+	Label   string  `json:"label"`
+	Value   float64 `json:"value"`
+	Overdue float64 `json:"overdue"`
+}
+
+// forecastTrend is the forward-looking counterpart to revenueTrend: open
+// Deals' probability-weighted value by expected close month for the next 6
+// months (this month + 5 forward), over the Deals matching dims (Summary's
+// non-date filters, as closeDatePipeline — the created_at window doesn't
+// apply to a by-close-date view).
+//
+// An open Deal whose expected close day has passed is still expected to
+// close, so it goes into the current month's point, and its weighted value
+// is also reported in that point's Overdue — including one expected
+// earlier this month, which was already in this month's bucket.
+//
+// Deals without a (readable) expected_close_date can't be placed in a month
+// and are left out of every point. They are NOT left out of the headline
+// forecasted_revenue stat card, which sums open Deals regardless of date —
+// so this trend's points may sum to less than that total (see
+// undated_pipeline_value for the unweighted amount).
+func forecastTrend(dims *gorm.DB, now time.Time) []forecastTrendPoint {
+	start := thisMonthStart(now)
+	bounds := monthBounds(start, 6)
+	today := calendar.Today(now)
+
+	points := make([]forecastTrendPoint, 6)
 	for i := range points {
 		points[i].Label = bounds[i].Format("Jan")
 	}
-	for _, r := range rows {
-		day, ok := calendar.ParseLocalDay(r.ExpectedCloseDate)
-		if !ok {
+	for _, d := range openDealCloseDates(dims) {
+		if !d.Dated {
 			continue
 		}
-		i := (day.Year()-start.Year())*12 + int(day.Month()) - int(start.Month())
+		if d.Day.Before(today) {
+			points[0].Value += d.Weighted
+			points[0].Overdue += d.Weighted
+			continue
+		}
+		i := (d.Day.Year()-start.Year())*12 + int(d.Day.Month()) - int(start.Month())
 		if i >= 0 && i < len(points) {
-			points[i].Value += r.Value
+			points[i].Value += d.Weighted
 		}
 	}
 	return points
@@ -848,8 +953,8 @@ type upsellCompany struct {
 //
 // Deliberately independent of Summary's dealFilter (business_unit/channel/
 // assigned_to/company_tag/date range) — this is Company-centric, not
-// Deal-scoped, same reasoning as annualRevenueTrend/revenueTrend/forecastTrend
-// ignoring those filters.
+// Deal-scoped, same reasoning as annualRevenueTrend/revenueTrend ignoring
+// those filters.
 func (h *DashboardHandler) upsellOpportunities(minStaleDays int) []upsellCompany {
 	cutoff := time.Now().AddDate(0, 0, -minStaleDays)
 

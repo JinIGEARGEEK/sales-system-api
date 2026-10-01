@@ -3476,7 +3476,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Aggregate sales metrics (pipeline value, win rate, trends, breakdowns, upsell opportunities). api-system-spec.md §9.",
+                "description": "Aggregate sales metrics (pipeline value, win rate, trends, breakdowns, upsell opportunities). api-system-spec.md §9.\npipeline_coverage_ratio = quarter_pipeline_value (open Deals expected to close in the current server-local quarter) / quarterly_sales_target.\noverdue_pipeline_value/overdue_pipeline_count: open Deals whose expected_close_date is before today. undated_pipeline_value/undated_pipeline_count: open Deals with no readable expected_close_date (not in coverage or forecast_trend).\nforecast_trend points are {label, value, overdue}: overdue open Deals are counted in the current month's value and also reported in its overdue (0 on later months).\nThe close-date figures (coverage, overdue, undated, forecast_trend) apply business_unit/business_unit_item/channel/assigned_to/company_tag but not the date window.",
                 "produces": [
                     "application/json"
                 ],
