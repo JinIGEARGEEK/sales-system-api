@@ -6,6 +6,12 @@ Entries before this file existed are reconstructed from git/PR history — going
 
 ## Unreleased — Review follow-ups
 
+**Payment schedule cap under concurrency.**
+- **Fixed:** `POST /deals/:dealId/payment-installments/bulk` checked the receivable cap outside its transaction, without a lock, so batches sent at the same moment that each fit alone could together schedule more than the Deal's receivable. The check now runs in the insert transaction under the Deal row lock (the lock payment saves already take). Regression-guarded: `TestPaymentInstallmentBulkCreate_ConcurrentBatchesStayWithinReceivable`.
+- `GET /quotes/:id` now shares `GET /quotes`' single joined query (quote + live Deal title). Responses are unchanged, and it now answers `500`, not `404`, on a real database error.
+
+**Go 1.26.** `go.mod` is `go 1.26.8` (Dependabot's `golang.org/x/crypto` v0.57.0 needs Go 1.26). CI's `setup-go` and the Dockerfile's build stage (`golang:1.26-alpine`) moved to 1.26, and `govulncheck` to v1.8.0. Go 1.25 is out of support. Install golangci-lint with Go 1.26 too, since a binary built with an older Go refuses the module.
+
 **Quotes priced before the tax-inclusive VAT fix keep their totals.**
 - The 2026-10-01 fix (#77) stopped `incl_tax` quotes from adding VAT on top of their prices, but it also recalculated quotes made before it, so a quote a customer had already received showed a lower total and receivable. A one-time boot migration (`KeepLegacyInclTaxQuoteTotals`, `data_migrations` row `legacy_incl_tax_quote_totals`) switches every sent/accepted/rejected `incl_tax` quote with VAT on, created before the fix merged (2026-10-01 04:43 UTC), to `excl_tax`. That is exactly the old calculation (prices + 7% VAT), so the total, PDF and receivable return to what the customer saw. Drafts and quotes created after the fix keep the corrected tax-inclusive calculation.
 - A Deal whose value was linked to one of those quotes is unlinked with its value unchanged (the boot never rewrites revenue); it links again the next time one of its quotes is accepted. No audit rows. Regression-guarded: `TestKeepLegacyInclTaxQuoteTotals`.
@@ -143,13 +149,15 @@ Regression-guarded: `tests/won_deal_protection_test.go`, `tests/payment_guards_t
 
 - **Tax-inclusive quotes no longer charge VAT twice.** With `price_type: "incl_tax"` and VAT on, `ComputeQuoteTotals` backs VAT out of the prices (taxable = net × 100/107, VAT = net − taxable) instead of adding 7% on top. Affects the quote PDF, the Outstanding Balance receivable and expiring-soon `total_value`. `excl_tax` and VAT-off quotes are unchanged. WHT stays on the pre-VAT amount.
 - **Totals round to satang at every step** (line, subtotal, net, taxable, VAT, WHT; grand total from the rounded parts), half up like the frontend, so the PDF's printed lines add up exactly. A receivable can move by a satang.
-- **Accepted quotes' pricing is locked.** `PUT /quotes/:id` on a stored-Accepted quote returns `422` (`accepted_locked`) for a change to items, price type, VAT/WHT or discount. Same values resent, status changes and text fields still work.
+- **Accepted quotes' pricing is locked.** Superseded the same day by Review round 2 above: an Accepted or Rejected quote is now fully read-only, and any change other than an allowed status move is `409`. (As first merged, this was a `422` with `fields` code `accepted_locked` for pricing fields only.)
 - **Generated payment schedules can't exceed the receivable.** `POST /deals/:dealId/payment-installments/bulk` returns `422` (`exceeds_receivable`) when existing + new installments would total more than the Deal's receivable (skipped when it's 0).
 - **`Deal.won_at`** (new nullable, indexed column): when the Deal became Won. A `BeforeSave` hook on `Deal` sets it on the way into status `won` (Kanban stage move, `PUT`, create, Lead convert), keeps it on later re-saves, and clears it when the Deal reopens or is lost. On boot, `database.BackfillDealWonAt` fills it for won Deals that don't have one (from `stage_entered_at`, else `updated_at`) and clears it on Deals that aren't won. It only touches rows that are out of step, so it runs again on every boot.
 - **`GET /dashboard/summary`**: `won_value`, `win_rate`, the Won/Lost bars in `stage_breakdown`, and the won/lost numbers in `industry_breakdown` and `team_performance` now count Deals **won or lost inside the window**: won by `won_at`, lost by `stage_entered_at`. Before, they counted Deals created in the window. `revenue_trend` and `annual_revenue_trend` now bucket by `won_at`. Open-pipeline figures still go by `created_at`. `avg_deal_size` is now the average of Deals won in the window (FR-CRM-057), not of every Deal. New fields: `deals_count` (Deals matching the filters) and `total_deals_count`.
 - **`GET /reports/win-loss-reasons`** (and its CSV export): the date range now filters on when the Deal closed, not on `created_at`.
 - **`PipelineStage.default_probability`** (read-only, on every `/admin/pipeline-stages` response): the probability a Deal gets in that stage when none is sent (`utils.DefaultProbabilityFor`). The frontend uses this in place of its own table.
 - **`Contract.effective_status`** (read-only, on every contract response): `expired` once a `signed` contract's `end_date` has passed, using the server-local day. `status` stays `signed`, so the signed-contract Won gate still counts the contract.
+
+Regression-guarded: `tests/quote_money_test.go`, `tests/dashboard_won_metrics_test.go`, `tests/contract_effective_status_test.go`, `internal/utils/quote_totals_test.go`, `internal/models/contract_test.go`.
 
 ## 2026-09-28 — Review pass: sessions, access, deal states, report dates, deploy hardening
 

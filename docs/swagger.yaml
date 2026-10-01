@@ -2563,6 +2563,12 @@ definitions:
         type: integer
       name:
         type: string
+      role:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Role'
+        description: |-
+          Role lets pickers offer only users who may own the record (e.g. no
+          Production on Deals/Tasks — validateAssignee).
     type: object
   internal_handlers.userDeleteForm:
     properties:
