@@ -172,6 +172,44 @@ func TestUserDeactivate_ReassignTo(t *testing.T) {
 	assert.EqualValues(t, 1, entry.After["deals"])
 	assert.EqualValues(t, 1, entry.After["tasks"])
 	assert.Equal(t, admin.ID, entry.ActorID)
+
+	// Each moved Deal also gets the per-Deal "reassigned" row PATCH
+	// /deals/:id/reassign writes; the Won one stayed, so it has none.
+	var dealEntry models.AuditLogEntry
+	require.NoError(t, db.Where("entity_type = ? AND entity_id = ? AND action = ?", "deal", r.openDeal.ID, "reassigned").Take(&dealEntry).Error)
+	assert.EqualValues(t, rep.ID, dealEntry.Before["assigned_to"])
+	assert.EqualValues(t, heir.ID, dealEntry.After["assigned_to"])
+	assert.Equal(t, admin.ID, dealEntry.ActorID)
+	assert.Empty(t, auditActions(t, db, "deal", r.wonDeal.ID))
+	assert.Empty(t, auditActions(t, db, "lead", r.openLead.ID), "leads have no per-record reassign audit")
+}
+
+// TestUserBulkDeactivate_ReassignAuditsEveryDeal — every moved Deal of every
+// user gets its own "reassigned" row, written in one batch.
+func TestUserBulkDeactivate_ReassignAuditsEveryDeal(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	repA := testutil.CreateUser(t, db, models.RoleSalesRep)
+	repB := testutil.CreateUser(t, db, models.RoleSalesRep)
+	heir := testutil.CreateUser(t, db, models.RoleSalesRep)
+	var dealIDs []uint
+	for _, owner := range []uint{repA.ID, repA.ID, repA.ID, repB.ID} {
+		dealIDs = append(dealIDs, seedDeal(t, db, &owner).ID)
+	}
+
+	req := testutil.AuthRequest(t, http.MethodPatch, "/api/v1/users/bulk-deactivate",
+		map[string]interface{}{"ids": []uint{repA.ID, repB.ID}, "reassign_to": heir.ID}, admin.ID, admin.Role)
+	require.Equal(t, http.StatusOK, doJSON(t, app, req, nil).StatusCode)
+
+	var entries []models.AuditLogEntry
+	require.NoError(t, db.Where("entity_type = ? AND action = ? AND entity_id IN ?", "deal", "reassigned", dealIDs).
+		Order("entity_id").Find(&entries).Error)
+	require.Len(t, entries, len(dealIDs))
+	for i, e := range entries {
+		assert.Equal(t, dealIDs[i], e.EntityID)
+		assert.EqualValues(t, heir.ID, e.After["assigned_to"])
+	}
+	assert.EqualValues(t, repB.ID, entries[3].Before["assigned_to"])
 }
 
 // TestUserRoleChangeToProduction_ReassignTo — a move to a role that can't

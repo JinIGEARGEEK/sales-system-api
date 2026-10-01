@@ -190,11 +190,11 @@ interface AdminUser extends User {
 | `GET` | `/users` | Admin | 🟢 | List staff accounts. Filters: `role`, `status` (`active`/`inactive` derived from `is_active`), `search` (name/email). Backs `pages/admin/users/index.vue`. |
 | `POST` | `/users` | Admin | 🟢 | Create a staff account. Body per `AdminUserForm` fields: `first_name, last_name, email, tel, role, status, notes` (and optionally `password` — a random one is generated if omitted). `email` doubles as the login identifier and must be a valid address on the company domain (`@igeargeek.com`) — enforced server-side, not just a frontend hint. `must_change_password` is always set `true` on the created row — not a client-settable field — so every new account is forced through `POST /auth/change-password` on first use. `role` must be one of the known roles (`422` otherwise); `status: "inactive"` creates an inactive account. |
 | `GET` | `/users/:id` | Admin | 🟢 | Single staff record — `pages/admin/users/[id].vue`. |
-| `PUT` | `/users/:id` | Admin | 🟢 | Full update. `email` is required and re-validated against the same `@igeargeek.com` rule as create. Supplying a non-empty `password` resets it and re-sets `must_change_password: true`, same as a fresh create. `role` is validated as on create. Since 2026-09-28 a role change, password reset or deactivation (also bulk) and a delete revoke the user's existing tokens (`token_version` bump); the server reads the caller's role from the DB on every request, never from the token. **Review round 2:** the caller can't change their own role or deactivate themselves (`422`), and the last active Admin can't be demoted or deactivated (`409`). Deactivating, or moving to Production, accepts optional `reassign_to` (an active sales-role user). It moves the user's open Deals/Leads/Prospects/pending Tasks in the same transaction, and the response adds `open_records` and `reassigned` counts. Role and `is_active` changes are audited. `PATCH /users/bulk-deactivate` follows the same rules and returns `200 { open_records: [...], reassigned: [...] }`. |
+| `PUT` | `/users/:id` | Admin | 🟢 | Full update. `email` is required and re-validated against the same `@igeargeek.com` rule as create. Supplying a non-empty `password` resets it and re-sets `must_change_password: true`, same as a fresh create. `role` is validated as on create. Since 2026-09-28 a role change, password reset or deactivation (also bulk) and a delete revoke the user's existing tokens (`token_version` bump); the server reads the caller's role from the DB on every request, never from the token. **Review round 2:** the caller can't change their own role or deactivate themselves (`422`), and the last active Admin can't be demoted or deactivated (`409`). Deactivating, or moving to Production, accepts optional `reassign_to` (an active sales-role user). It moves the user's open Deals/Leads/Prospects/pending Tasks in the same transaction, and the response adds `open_records` and `reassigned` counts. The move writes one `user`/`records_reassigned` audit row with the counts, plus (since review follow-ups) a `deal`/`reassigned` row per moved Deal (before/after `assigned_to`, the same shape as `PATCH /deals/:id/reassign`, batched into one insert). Leads, Prospects and Tasks get no per-record row, since they have no single-record reassign audit elsewhere. Role and `is_active` changes are audited. `PATCH /users/bulk-deactivate` follows the same rules and returns `200 { open_records: [...], reassigned: [...] }`. |
 | `DELETE` | `/users/:id` | Admin | 🟢 | Soft-delete (`deleted_at` + `is_active: false`), not a hard delete — see §1.6. Recoverable via Trash/Restore below, same as Company/Contact/Deal/Lead. **Review round 2:** returns `200 { id, open_records, reassigned? }` (was `204`). Takes optional `reassign_to` (query or body), with the same self (`422`) and last-Admin (`409`) guards as `PUT`. |
 | `GET` | `/users/trash` | Admin | 🟢 | List soft-deleted accounts, paginated like `GET /users`. |
 | `POST` | `/users/:id/restore` | Admin | 🟢 | Clears `deleted_at`/`deleted_by`. Does not re-set `is_active: true` — an Admin reactivates separately via `PUT /users/:id`, same as the account's other fields aren't re-derived on restore. |
-| `GET` | `/team-members` | any authenticated | 🟢 | Lightweight `{ id, name, email }[]` list (`TeamMember` in `interfaces/crm.d.ts`) for assignee dropdowns (`CrmTeamMemberSelect`) — do not require Admin role for this one, every Sales role needs it to assign Leads/Deals/Tasks. |
+| `GET` | `/team-members` | any authenticated | 🟢 | Lightweight `{ id, name, email, role }[]` list (active users only) (`TeamMember` in `interfaces/crm.d.ts`) for assignee dropdowns (`CrmTeamMemberSelect`) — do not require Admin role for this one, every Sales role needs it to assign Leads/Deals/Tasks. |
 
 ---
 
@@ -343,6 +343,40 @@ interface Company {
 | `PUT` | `/companies/:id` | 🟢 | Update (full replace). Exception: `branch_code`/`postal_code` keep their saved value when the key is absent from the body (explicit `null`/`""` clears), since they're newer than existing clients such as the staff Company form. Same rule as `stale_days` on the stage config resources. The tax ID + branch `409` only runs when the pair changes, so a legacy duplicate can still be edited. |
 | `DELETE` | `/companies/:id` | 🟢 | Sets `status: 'archived'` (soft delete, §1.6) — never a hard delete, since Deals/Contacts/Payments reference `company_id`. **Admin/Sales Manager only** (`403` otherwise). `409` while the Company has an open or Won (non-deleted) Deal. Delete and `POST /companies/:id/restore` write `company`/`deleted` and `company`/`restored` audit entries (§8.5). |
 | `POST` | `/companies/import` | 🟢 | Bulk import — see §6.2. `FR-CRM-014`. |
+| `POST` | `/companies/:id/merge` | 🟢 | Merge duplicate Companies into `:id`. **Admin/Sales Manager only.** See "Merging duplicates" below. |
+
+
+### Merging duplicates (`POST /companies/:id/merge`, `POST /contacts/:id/merge`)
+
+Added with the review follow-ups. `:id` is the target, which survives. Body `{ "source_ids": [n, ...] }`, 1–20 ids. Admin/Sales Manager only (`403` otherwise).
+
+- `422` with `error.fields.source_ids` when `source_ids` is missing or empty, has more than 20 ids, contains the target, or repeats an id.
+- `404` when the target or any source doesn't exist or is soft-deleted. The message lists the missing ids.
+- Everything runs in one transaction. The target and sources are locked `FOR UPDATE` in id order, so concurrent merges over the same records wait for each other instead of deadlocking. The loser of two opposite merges gets `404` because its source is already gone.
+- **References moved to the target** (soft-deleted rows too, with `updated_at` bumped):
+  - Company: `contacts`, `deals`, `leads.company_id`, `prospects`, `projects`, `customer_products`, company `activities`, `attachments` and `tasks` (incl. Campaign tasks), `leads.referred_by` (`lead_referrals`), and dormant-company `notification_logs`. A log for a tier the target already has stays on the source.
+  - Contact: `deals.contact_id`, contact `activities` and `tasks`, `leads.referred_by` (`lead_referrals`). A moved Deal keeps its own `company_id`.
+  - Not moved: audit log rows (a source's history stays on it), Open API request logs and idempotency keys. Quotes, contracts and payments follow their Deal.
+- **Fields.** The target keeps every non-empty field. An empty one takes the first non-empty value from the sources, in `source_ids` order. Tags are the union, lowercased and deduped (`normalizeTags`). `name` and `status` are always the target's.
+  - Company: `website` (with its derived domain), `tax_id` and `branch_code` identify the Company. `tax_id` is filled together with that source's `branch_code`. A source whose website domain, `tax_id`, or `branch_code` (same `tax_id`) differs from the target's is not copied and is listed in `conflicts`. Contacts that move keep at most one Primary: the target's own, else the first source's.
+  - Contact: `email` (case-insensitive) and `phone` (`utils.NormalizePhone`) are conflict-checked the same way. `is_primary` is filled only from a source in the target's own Company.
+- **Sources are soft-deleted** (`deleted_by` set), so they appear in Trash and drop out of duplicate detection (the 409 `duplicate_of` check skips deleted rows). A Company source's derived domain is cleared, so restoring it can't hit the unique domain index. **Restoring a merged source gives back an empty record**: its fields are still there but all its Deals, Contacts, Activities etc. stay on the target.
+- **Audit:** one `merged` row on the target (`before`: target snapshot, `after`: `{source_ids, moved, filled, conflicts}`) and one `merged_into` row per source (`before`: source snapshot, `after`: `{target_id}`). `entity_type` is `company`/`contact`.
+
+Response `200`:
+
+```ts
+{ data: {
+  target: Company | Contact          // Company includes last_activity_at, as on GET /companies/:id
+  moved: Record<string, number>      // per-table counts (every key present, 0 if none) + total
+  filled: string[]                   // target fields filled from a source, plus 'tags' if any were added
+  conflicts: { field: string, source_id: number, value: string }[]
+} }
+```
+
+Company `moved` keys: `contacts`, `deals`, `leads`, `prospects`, `projects`, `customer_products`, `activities`, `attachments`, `tasks`, `lead_referrals`, `notification_logs`, `total`. Contact `moved` keys: `deals`, `activities`, `tasks`, `lead_referrals`, `total`.
+
+The dormant-company rule (§8.8) now skips soft-deleted Companies, so a merged source doesn't get alerts.
 
 ---
 
@@ -372,6 +406,7 @@ interface Contact {
 | `PUT` | `/contacts/:id` | 🟢 | Update. |
 | `DELETE` | `/contacts/:id` | 🟢 | Soft-delete (`status: 'archived'`). **Admin/Sales Manager only** (`403` otherwise). Delete and `POST /contacts/:id/restore` write `contact`/`deleted` and `contact`/`restored` audit entries (§8.5). |
 | `POST` | `/contacts/import` | 🟢 | Bulk import — see §6.2, same FlowAccount-export path as Companies. |
+| `POST` | `/contacts/:id/merge` | 🟢 | Merge duplicate Contacts into `:id`. **Admin/Sales Manager only.** Sources may belong to other Companies; the target keeps its `company_id`. See "Merging duplicates" in §4. |
 
 > `FR-CRM-012` ("one Contact marked Primary per Company") is 🔜 **Planned** — no `is_primary` field exists in the frontend interface today. If added, it should live here as a boolean with a uniqueness constraint per `company_id`.
 
@@ -434,9 +469,19 @@ interface Deal {
   // Existing won Deals were backfilled from stage_entered_at. The dashboard and
   // win/loss report count "won this period" by it.
   won_at: string | null
+  // Review follow-ups: the Accepted Quote this Deal's value is synced from
+  // (FK quotes, ON DELETE SET NULL), null when value is the rep's own figure.
+  // Server-managed; see "Deal value follows the Accepted quote" below.
+  value_quote_id: number | null
+  // Read-only, single-Deal responses only (GET/PUT /deals/:id, PATCH
+  // /deals/:id/stage|reassign, POST /deals/:id/restore): that quote's
+  // number. Lists omit it.
+  value_quote_number?: string | null
   created_at: string
 }
 ```
+
+> **Deal value follows the Accepted quote (review follow-ups).** When a Quote with priced items (subtotal > 0) becomes Accepted — created as `accepted`, or moved there by `PUT /quotes/:id` — the Deal's `value` is set, in the same transaction, to that quote's pre-VAT taxable amount rounded to satang (`utils.RoundSatang(totals.taxable_amount)`; revenue is the taxable amount, §7.4 "Quote totals"), and `value_quote_id` to the quote. A `deal` audit row `value_synced` records before `{value, value_quote_id}` / after `{value, value_quote_id, quote_number}`. An Accepted quote with no priced items (an uploaded PDF) changes nothing. When that quote leaves Accepted (→ rejected), `value_quote_id` is cleared, `value` is kept, and `value_unsynced` is audited (before `{value, value_quote_id, quote_number}`, after `{value, value_quote_id: null}`). Only drafts can be deleted, so a synced quote is never deleted through the API; the FK unlinks the Deal if the row is ever removed. While `value_quote_id` is set, `PUT /deals/:id` with a `value` that differs from the stored one by more than 0.005 is `422` `fields.value: ["synced_from_quote"]` (the message names the quote number); resending the stored value is fine. Lead/Prospect convert is unaffected. **Backfill (once, at boot):** each non-deleted Deal whose latest Accepted quote (by `created_at`, then `id`) has priced items is linked only when its `value` already equals that quote's rounded taxable amount (to within 0.005); a Deal whose value differs is left unlinked and unchanged, and only counted in the boot log, so the boot never rewrites revenue.
 
 **Route gate fixed 2026-09-10.** Every route below (including the nested Quote/Payment/Contract sub-resources further down this section) was previously open to any authenticated role — including Marketing/Production, despite §1.7 stating those two roles have "no access to Leads/Deals/any other resource." All are now Admin/Sales Rep/Sales Manager only (`PATCH /deals/:id/reassign`, further down, keeps its own stricter Admin/Sales-Manager-only gate). **Updated 2026-09-23 (FR-CRM-123):** Marketing joined that set (`salesPipelineRoles`), so today it is Admin/Sales Rep/Sales Manager/Marketing, with only Production kept out. The same applies to the Lead routes in §3.
 
@@ -558,7 +603,7 @@ interface Quote {
 }
 ```
 
-> **Lifecycle (review round 2).** Status moves: draft → sent/accepted/rejected, sent → draft/accepted/rejected, accepted → rejected, rejected → none (`409` otherwise). A Sent quote shown as `expired` can't be accepted. An Accepted/Rejected quote is read-only apart from that status move (`409`). At most one Accepted quote per Deal (`409` naming the existing one). Only drafts can be deleted. Invalid items (`qty` ≤ 0, `price` < 0, `discount_percent` outside 0–100), `discount_total` above the subtotal, `wht_rate` outside 0–100 or an unparseable `issue_date`/`validity_date` are `422` with `error.fields`. Status changes are audited (`quote`/`status_changed`).
+> **Lifecycle (review round 2).** Status moves: draft → sent/accepted/rejected, sent → draft/accepted/rejected, accepted → rejected, rejected → none (`409` otherwise). A Sent quote shown as `expired` can't be accepted. An Accepted/Rejected quote is read-only apart from that status move (`409`). At most one Accepted quote per Deal (`409` naming the existing one). Only drafts can be deleted. Invalid items (`qty` ≤ 0, `price` < 0, `discount_percent` outside 0–100), `discount_total` above the subtotal, `wht_rate` outside 0–100 or an unparseable `issue_date`/`validity_date` are `422` with `error.fields`. Status changes are audited (`quote`/`status_changed`). Accepting a priced quote syncs the Deal's `value` to its taxable amount and sets `deals.value_quote_id`; rejecting it clears the link (§7.1, "Deal value follows the Accepted quote").
 
 > **FlowAccount PDF extraction.** `POST /deals/:dealId/quotes/upload` attempts best-effort field extraction from an uploaded FlowAccount quotation PDF, pre-filling `number`/`scope_of_work`/`items`/dates/totals instead of leaving the Quote fully blank. `extraction_status`/`extraction_warnings` are `nil`/empty for every Quote created the normal line-item way (extraction never runs for those) — they're only set on the upload path:
 > - `"ok"` — every field extraction looked for was found and self-consistent.
@@ -597,6 +642,7 @@ interface Payment {
 |---|---|---|---|
 | `GET` | `/deals/:dealId/payments` | 🟢 | List installments for a Deal, plus a computed `total_paid`. Backs the Deal detail page's Payments tab (`stores/payments.ts`'s `forDeal`/`totalForDeal` getters — move that sum server-side once real). |
 | `POST` | `/deals/:dealId/payments` | 🟢 | Create — backs `components/Crm/AddPaymentModal.vue`. **Review round 2:** `422` on a Lost Deal (`fields.deal_id`); `422` when `paid_at` is after today, server-local (`fields.paid_at`); `409` when a non-empty `document_number` is already on another non-deleted Payment (any Deal); `422` `fields.amount: ['exceeds_receivable']` when the Deal's cash + WHT would pass its receivable (latest Accepted Quote's taxable amount + VAT when it has priced items, else the Deal value) by more than 0.005, unless the body has `allow_overpayment: true`. |
+| `GET` | `/payments/export?date_from=&date_to=&deal_id=&company_id=&method=` | 🟢 | **Review follow-ups.** Admin/Sales Manager only (same gate as the other CSV exports; `403` otherwise). CSV (`text/csv`, `Content-Disposition: attachment; filename="payments-YYYYMMDD.csv"`, today server-local; no BOM, like the other exports; formula-injection guarded). Every non-deleted Payment on a non-deleted Deal, oldest `paid_at` first (then `id`). Columns: `Paid At` (YYYY-MM-DD, server-local), `Document Number`, `Deal ID`, `Deal`, `Company`, `Amount` (cash), `WHT Amount`, `Total` (amount + WHT), `Method`, `Installment ID`, `Installment Due Date`, `Note`, `Created By` (first + last name). Filters: `date_from`/`date_to` on `paid_at`, inclusive server-local days (`utils.ParseDateRange`; `422` for a bad or reversed range), `deal_id`, `company_id` (the Deal's Company), `method` (`422` when not a positive integer / not a `PaymentMethod`). |
 | `PUT` | `/payments/:id` | 🟢 | Partial merge. Same `paid_at`, `document_number` (only when changed) and overpayment (only when the payment's cash + WHT goes up) checks as Create. |
 | `DELETE` | `/payments/:id` | 🟢 | Soft delete (`deleted_at`/`deleted_by`, review round 2 — was a hard delete). A deleted Payment drops out of every list, total, report and installment status. |
 
@@ -657,12 +703,15 @@ interface Task {
 | Method | Path | Status | Description |
 |---|---|---|---|
 | `GET` | `/tasks` | 🟢 | Filters: `related_type`+`related_id`, `status`, `assigned_to`. `status=pending` powers the dashboard's "Upcoming Follow-ups" widget across all related records — support that query without requiring `related_type`/`related_id`. **2026-09-25 (server-side paging for `/crm/tasks`):** also accepts `related_type` alone (every task on that kind of record); `assigned_to=unassigned`; `search` (case-insensitive literal substring — `%`/`_` are not wildcards — on title/description **or** the linked record's display name — Deal title, Contact/Company/Prospect/Lead name); `business_unit` (tasks whose linked Deal/Prospect/Lead has that business unit — Contact/Company-linked tasks never match); `due_from` (inclusive) / `due_before` (exclusive) bounds on `due_date`, each an RFC 3339 timestamp (the Tasks page sends the viewer's local midnight with offset, so "today" is the viewer's today) or a bare `YYYY-MM-DD` (server-local midnight, Asia/Bangkok — UTC midnight before 2026-09-27) — an unparseable value is a 422. `sort` allows `created_at` (default `-created_at`), `due_date`, `title`. The Tasks page issues one query per due-date group (Overdue: `status=pending&due_before=<today>`; Today: `due_from=<today>&due_before=<tomorrow>`; Upcoming: `due_from=<tomorrow>`; Done: `status=done`), each paged independently. |
-| `POST` | `/tasks` | 🟢 | Create. |
+| `POST` | `/tasks` | 🟢 | Create. **Review follow-ups:** `assigned_to` must be an active user in a sales-pipeline role (Admin/Sales Rep/Sales Manager/Marketing), else `422` on field `assigned_to` (`validateAssignee`, same as Deals/Leads/Prospects). `null` (unassigned) is fine. |
+| `PATCH` | `/tasks/:id` | 🟢 | Partial update of `title`/`description`/`due_date`/`priority`/`assigned_to`. `assigned_to` is checked like Create, but only when it changes, so a task whose owner was since deactivated can still be edited. |
 | `PATCH` | `/tasks/:id/toggle` | 🟢 | Flips `pending`⇄`done` — mirrors `stores/tasks.ts`'s `toggleDone`. |
 | `PATCH` | `/tasks/bulk-mark-done` | 🟢 | Body: `{ ids: number[] }`. `FR-CRM-032`'s bulk mark-done on the all-tasks page. Unlike Deal/Lead bulk endpoints (Admin/Sales-Manager only), this is open to every authenticated role — ownership is enforced per row (the same `assigned_to`-or-unassigned rule `PATCH /tasks/:id/toggle` uses), since a Sales Rep bulk-clearing their own backlog is the primary use case. A forbidden row rolls back the whole call — no partial apply. |
-| `PATCH` | `/tasks/bulk-reassign` | 🟢 | Body: `{ ids: number[], assigned_to: number \| null }`. Same per-row ownership rule as above, checked against both the new assignee (once, up front) and each task's current assignee (per row) — a Sales Rep may bulk-reassign their own tasks to themselves/unassigned, not to a different rep. |
+| `PATCH` | `/tasks/bulk-reassign` | 🟢 | Body: `{ ids: number[], assigned_to: number \| null }`. Same per-row ownership rule as above, checked against both the new assignee (once, up front) and each task's current assignee (per row) — a Sales Rep may bulk-reassign their own tasks to themselves/unassigned, not to a different rep. A non-null `assigned_to` must pass the same active sales-role check as Create (`422` on `assigned_to`). |
 | `DELETE` | `/tasks/:id` | 🟢 | Delete. |
 | — | *(reminder notifications)* | 🔜 | `FR-CRM-032`'s "notification on due" — no delivery mechanism (email/push) exists in the frontend; needs a scheduled job + `/6` integrations, out of scope for this v1 endpoint list. |
+
+**Task owners are sales-role users (review follow-ups).** Production can't be given a Task: §1.7 limits it to Project `status`/`production_reference`, the frontend shows Production no Task lists, and moving a user to Production already hands their pending Tasks to a `reassign_to` user (§2 `PUT /users/:id`). So task `assigned_to` uses the same `validateAssignee` rule as Deals/Leads/Prospects rather than a looser "any active user" check. `FOCUSABLE_ROLES` in the frontend is the Admin's view-as switcher, not a list of task owners. Existing Tasks already owned by a Production or inactive user are left alone; they can still be edited and toggled.
 
 ### 7.7 Campaigns
 
@@ -691,7 +740,7 @@ interface CampaignProgress {
 |---|---|---|---|
 | `GET` | `/campaigns` | 🟢 | List, newest first. |
 | `POST` | `/campaigns` | 🟢 | Body: `{name, type}`. `created_by` set from the authenticated user. |
-| `POST` | `/campaigns/:id/tasks` | 🟢 | Body: `{targets: {related_type: 'company' \| 'lead' \| 'contact', related_id: number}[], title, description, due_date, priority, assigned_to}` — updated from an earlier `company_ids`-only shape to let a campaign target Leads/Contacts too, not just Companies. Dedupes `targets` by the `(related_type, related_id)` pair (mirrors `utils.DedupeUints`'s rule, keyed on the composite instead of a bare id), checks `CanWrite` against `assigned_to` once up front, then creates one Task per target via a single batch insert inside one transaction, plus one summary audit-log entry (`bulk_created_campaign_tasks`). Not routed through `utils.BulkUpdate` — that helper loads/mutates existing rows, this creates new ones. |
+| `POST` | `/campaigns/:id/tasks` | 🟢 | Body: `{targets: {related_type: 'company' \| 'lead' \| 'contact', related_id: number}[], title, description, due_date, priority, assigned_to}` — updated from an earlier `company_ids`-only shape to let a campaign target Leads/Contacts too, not just Companies. Dedupes `targets` by the `(related_type, related_id)` pair (mirrors `utils.DedupeUints`'s rule, keyed on the composite instead of a bare id), checks `CanWrite` against `assigned_to` once up front (and, since review follow-ups, that a non-null `assigned_to` is an active sales-role user, `422` otherwise, as on `POST /tasks`), then creates one Task per target via a single batch insert inside one transaction, plus one summary audit-log entry (`bulk_created_campaign_tasks`). Not routed through `utils.BulkUpdate` — that helper loads/mutates existing rows, this creates new ones. |
 | `GET` | `/campaigns/:id/progress` | 🟢 | Returns `CampaignProgress`. `converted` reuses the same `has_won_deal` EXISTS-subquery shape `GET /companies`'s `has_won_deal` filter uses (`applyCompanyFilters`, see the Companies section above), scoped to `deals.created_at >= campaign.created_at` — one EXISTS clause per `related_type` (Company Tasks match `deals.company_id` directly; Lead/Contact Tasks match through their own `company_id`), counted as one `DISTINCT` over `related_type || ':' || related_id` since Postgres has no native multi-column `COUNT(DISTINCT a, b)`. |
 
 Not role-gated (`/campaigns` group), same as `/tasks` above and for the same reason — ownership is enforced per-assignee inside `BulkCreateTasks` rather than restricting who may launch a campaign, since this is meant to be self-serve for both Sales and Marketing.
@@ -717,6 +766,11 @@ interface Contract {
   // end_date has passed (server-local day), else `status`. Never stored or
   // accepted on write — `status` stays 'signed', so the FR-CRM-045 Won gate
   // still counts it. Display this; send back `status`, never this.
+  // The Won gate (AppSettings.require_signed_contract_before_won) counts a
+  // contract only if status is 'signed' AND signed_file_url AND signed_date
+  // are set (review follow-ups), i.e. it went through POST
+  // /contracts/:id/upload. A legacy hand-marked 'signed' row with no file
+  // no longer satisfies it.
   effective_status: ContractStatus
   signed_file_url: string | null
   signed_date: string | null

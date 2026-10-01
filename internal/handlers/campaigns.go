@@ -134,6 +134,9 @@ func (h *CampaignHandler) BulkCreateTasks(c *fiber.Ctx) error {
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a task to another sales rep")
 	}
+	if err := validateAssignee(h.DB, form.AssignedTo); err != nil {
+		return respondAssigneeErr(c, err)
+	}
 
 	priority := form.Priority
 	if priority == "" {

@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/igeargeek/sales-system-api/internal/calendar"
+	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
@@ -251,7 +252,7 @@ func snapshotQuoteItems(db *gorm.DB, items []models.QuoteItem) []models.QuoteIte
 
 // Create godoc
 // @Summary Create a quote (Admin/Sales Rep/Sales Manager)
-// @Description Creates a line-item Quote on a Deal. number is always server-generated, not client-settable. Line items carrying a product_id have their description/price snapshotted from the current Product. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §7.4.
+// @Description Creates a line-item Quote on a Deal. number is always server-generated, not client-settable. Line items carrying a product_id have their description/price snapshotted from the current Product. Created as accepted with priced items, the Deal's value becomes the quote's pre-VAT taxable amount (rounded to satang) and value_quote_id points at it (deal audit value_synced). Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §7.4.
 // @Tags quotes
 // @Security BearerAuth
 // @Accept json
@@ -325,7 +326,10 @@ func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 				return err
 			}
 		}
-		return createQuoteNumbered(tx, &quote, time.Now())
+		if err := createQuoteNumbered(tx, &quote, time.Now()); err != nil {
+			return err
+		}
+		return syncDealValueForQuote(tx, &quote, "", middleware.CurrentUserID(c))
 	})
 	if err != nil {
 		return respondLifecycleErr(c, err, "Deal not found", "Failed to create quote")
@@ -446,7 +450,7 @@ func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Update a quote
-// @Description Updates status/items and every other Quote field (number excepted — immutable after Create). Status moves follow models.CanTransitionQuoteStatus (draft→sent/accepted/rejected, sent→draft/accepted/rejected, accepted→rejected; an expired Sent quote can't be accepted), else 409. An Accepted/Rejected quote is read-only: changing any other field is a 409 (resending stored values is not). One Accepted quote per Deal (409 naming the existing one). Status changes are audited. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §7.4.
+// @Description Updates status/items and every other Quote field (number excepted — immutable after Create). Status moves follow models.CanTransitionQuoteStatus (draft→sent/accepted/rejected, sent→draft/accepted/rejected, accepted→rejected; an expired Sent quote can't be accepted), else 409. An Accepted/Rejected quote is read-only: changing any other field is a 409 (resending stored values is not). One Accepted quote per Deal (409 naming the existing one). Accepting a quote with priced items sets the Deal's value to its pre-VAT taxable amount (rounded to satang) and the Deal's value_quote_id to it (deal audit value_synced); moving that quote to rejected clears value_quote_id, keeping the value (value_unsynced). Status changes are audited. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §7.4.
 // @Tags quotes
 // @Security BearerAuth
 // @Accept json

@@ -455,6 +455,16 @@ definitions:
         type: integer
       value:
         type: number
+      value_quote_id:
+        description: |-
+          ValueQuoteID is the Accepted Quote whose pre-VAT taxable amount the
+          Deal's Value was last synced from (handlers.syncDealValue), nil when
+          Value is the rep's own figure. While set, PUT /deals/:id can't change
+          Value. FK to quotes(id), ON DELETE SET NULL (database.
+          ensureDealValueQuoteFK). Create-only for GORM writes ("<-:create"): a
+          full-row Save of a stale Deal must never overwrite it, so only the sync
+          code's own UPDATE statements change it.
+        type: integer
       won_at:
         description: |-
           WonAt is when the Deal became Won (status won), nil while it isn't —
@@ -1724,6 +1734,110 @@ definitions:
       status:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.CustomerProductStatus'
     type: object
+  internal_handlers.dealDetail:
+    properties:
+      assigned_to:
+        type: integer
+      business_unit:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.BusinessUnit'
+      business_unit_item:
+        type: string
+      channel:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource'
+      company_id:
+        type: integer
+      contact_id:
+        type: integer
+      created_at:
+        type: string
+      created_by:
+        type: integer
+      deleted_at:
+        $ref: '#/definitions/gorm.DeletedAt'
+      deleted_by:
+        type: integer
+      expected_close_date:
+        type: string
+      forecast_category:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ForecastCategory'
+        description: |-
+          ForecastCategory is the Commit/Best Case/Pipeline forecast bucket,
+          defaulted per-stage (StageDefaultForecastCategory) but always manually
+          overridable, mirroring Probability's own default/override pattern.
+      id:
+        type: integer
+      lead_id:
+        description: LeadID traces this Deal back to the Lead it was converted from,
+          if any.
+        type: integer
+      lost_reason:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason'
+        description: |-
+          LostReason is required only when Stage/Status is set to Lost (validated
+          at the handler layer, see DealHandler.Update).
+      position:
+        description: |-
+          Position orders this Deal's Kanban card within its own Stage lane only —
+          never compared across stages. Set to MAX(position)+1 in its lane on
+          Create (including Lead conversion) and on any lane change that carries
+          no position (the edit form, a dropdown-move), and to the client's
+          midpoint of its new neighbors on a drag-move (DealHandler.UpdateStage),
+          so siblings normally never need rewriting. When a drop lands within
+          1e-6 of a neighbor the lane is renumbered 1..n instead
+          (handlers/card_position.go). See database.BackfillCardPositions for
+          pre-existing rows.
+        type: number
+      previous_stage:
+        description: |-
+          The lane this record was in before its last move (see
+          MarkStageEntered); nil if it has never moved.
+        type: string
+      probability:
+        description: |-
+          Probability is the 0-100 win-probability, defaulted per-stage
+          (StageDefaultProbability) but always manually overridable.
+        type: integer
+      stage:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage'
+      stage_entered_at:
+        description: When this record entered its current lane; see stage_entered.go.
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStatus'
+      tags:
+        items:
+          type: string
+        type: array
+      title:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: integer
+      value:
+        type: number
+      value_quote_id:
+        description: |-
+          ValueQuoteID is the Accepted Quote whose pre-VAT taxable amount the
+          Deal's Value was last synced from (handlers.syncDealValue), nil when
+          Value is the rep's own figure. While set, PUT /deals/:id can't change
+          Value. FK to quotes(id), ON DELETE SET NULL (database.
+          ensureDealValueQuoteFK). Create-only for GORM writes ("<-:create"): a
+          full-row Save of a stale Deal must never overwrite it, so only the sync
+          code's own UPDATE statements change it.
+        type: integer
+      value_quote_number:
+        type: string
+      won_at:
+        description: |-
+          WonAt is when the Deal became Won (status won), nil while it isn't —
+          what the dashboard and reports count "won this period" by, rather than
+          created_at. Kept in step with Status by the BeforeSave hook (won_at.go)
+          on every struct write; see database.BackfillDealWonAt for older rows.
+        type: string
+    type: object
   internal_handlers.dealFields:
     properties:
       assigned_to:
@@ -1898,6 +2012,39 @@ definitions:
         type: number
       status:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadStatus'
+    type: object
+  internal_handlers.mergeConflict:
+    properties:
+      field:
+        type: string
+      source_id:
+        type: integer
+      value:
+        type: string
+    type: object
+  internal_handlers.mergeForm:
+    properties:
+      source_ids:
+        items:
+          type: integer
+        type: array
+    type: object
+  internal_handlers.mergeResponse:
+    properties:
+      conflicts:
+        items:
+          $ref: '#/definitions/internal_handlers.mergeConflict'
+        type: array
+      filled:
+        items:
+          type: string
+        type: array
+      moved:
+        additionalProperties:
+          format: int64
+          type: integer
+        type: object
+      target: {}
     type: object
   internal_handlers.notificationRuleForm:
     properties:
@@ -4277,6 +4424,62 @@ paths:
       summary: Update a company
       tags:
       - companies
+  /companies/{id}/merge:
+    post:
+      consumes:
+      - application/json
+      description: Moves everything that references each source Company (contacts,
+        deals, leads, prospects, projects, customer products, company activities/attachments/tasks,
+        lead referrals, dormant-company notification logs) to the target :id, fills
+        the target's empty fields from the sources (in source_ids order), unions tags,
+        then soft-deletes the sources. A source website/tax_id/branch_code that differs
+        from the target's is not copied and is listed in conflicts. Writes a company/merged
+        audit row on the target and company/merged_into on each source. One transaction.
+      parameters:
+      - description: Target Company ID (survives)
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 1-20 source Company ids
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.mergeForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.mergeResponse'
+        "400":
+          description: Invalid body
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not Admin/Sales Manager
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Target or a source doesn't exist or is deleted (message lists
+            the ids)
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: source_ids empty, over 20, contains the target, or has duplicates
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Merge duplicate companies into this one (Admin/Sales Manager only)
+      tags:
+      - companies
   /companies/{id}/restore:
     post:
       description: Un-deletes a soft-deleted Company. Writes a company/restored audit
@@ -4571,6 +4774,62 @@ paths:
       security:
       - BearerAuth: []
       summary: Update a contact
+      tags:
+      - contacts
+  /contacts/{id}/merge:
+    post:
+      consumes:
+      - application/json
+      description: Moves everything that references each source Contact (deals, contact
+        activities/tasks, lead referrals) to the target :id, fills the target's empty
+        fields from the sources (in source_ids order), unions tags, then soft-deletes
+        the sources. Sources may belong to other Companies; the target keeps its company_id.
+        A source email/phone that differs from the target's is not copied and is listed
+        in conflicts. Writes a contact/merged audit row on the target and contact/merged_into
+        on each source. One transaction.
+      parameters:
+      - description: Target Contact ID (survives)
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 1-20 source Contact ids
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.mergeForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.mergeResponse'
+        "400":
+          description: Invalid body
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not Admin/Sales Manager
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Target or a source doesn't exist or is deleted (message lists
+            the ids)
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: source_ids empty, over 20, contains the target, or has duplicates
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Merge duplicate contacts into this one (Admin/Sales Manager only)
       tags:
       - contacts
   /contacts/{id}/restore:
@@ -5422,8 +5681,11 @@ paths:
       - application/json
       description: Creates a line-item Quote on a Deal. number is always server-generated,
         not client-settable. Line items carrying a product_id have their description/price
-        snapshotted from the current Product. Only the Deal's assigned Sales Rep (or
-        Admin/Sales Manager) may create. api-system-spec.md §7.4.
+        snapshotted from the current Product. Created as accepted with priced items,
+        the Deal's value becomes the quote's pre-VAT taxable amount (rounded to satang)
+        and value_quote_id points at it (deal audit value_synced). Only the Deal's
+        assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md
+        §7.4.
       parameters:
       - description: Deal ID
         in: path
@@ -5574,7 +5836,9 @@ paths:
       tags:
       - deals
     get:
-      description: Returns a single Deal by ID.
+      description: Returns a single Deal by ID, plus the read-only value_quote_number
+        (number of the Accepted quote its value is synced from — value_quote_id —
+        else null).
       parameters:
       - description: Deal ID
         in: path
@@ -5587,7 +5851,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal'
+            $ref: '#/definitions/internal_handlers.dealDetail'
         "404":
           description: Deal not found
           schema:
@@ -5611,8 +5875,10 @@ paths:
         Rep (or Admin/Sales Manager) may update; a Sales Rep may keep or claim the
         deal but not reassign it to another rep or unassign it (403). A changed assigned_to
         must be an active sales-role user (422). value/company_id changes write an
-        updated audit entry and an assigned_to change a reassigned one. api-system-spec.md
-        §7.1.
+        updated audit entry and an assigned_to change a reassigned one. While value_quote_id
+        is set (value synced from an Accepted quote), a value different from the stored
+        one is 422 fields.value ["synced_from_quote"]; resending the same value is
+        fine. The response adds value_quote_number. api-system-spec.md §7.1.
       parameters:
       - description: Deal ID
         in: path
@@ -5636,7 +5902,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal'
+            $ref: '#/definitions/internal_handlers.dealDetail'
         "400":
           description: Invalid request body, or validation error (required fields,
             value, expected_close_date, probability, lost_reason, stage/channel/business_unit)
@@ -5661,7 +5927,8 @@ paths:
             additionalProperties: true
             type: object
         "422":
-          description: assigned_to is not an active sales-role user
+          description: assigned_to is not an active sales-role user, or value changed
+            while synced from an Accepted quote (fields.value synced_from_quote)
           schema:
             additionalProperties: true
             type: object
@@ -5694,7 +5961,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal'
+            $ref: '#/definitions/internal_handlers.dealDetail'
         "400":
           description: Invalid request body
           schema:
@@ -5730,7 +5997,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal'
+            $ref: '#/definitions/internal_handlers.dealDetail'
         "404":
           description: Deleted deal not found
           schema:
@@ -5785,7 +6052,7 @@ paths:
                 — refetch the lane, its other cards' positions changed
               type: string
           schema:
-            $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal'
+            $ref: '#/definitions/internal_handlers.dealDetail'
         "400":
           description: Invalid request body, stage is required, stage is not a valid
             active pipeline stage, or a signed contract is required before marking
@@ -6712,6 +6979,63 @@ paths:
       summary: Edit a payment (Admin/Sales Rep/Sales Manager)
       tags:
       - payments
+  /payments/export:
+    get:
+      description: 'CSV download of every non-deleted Payment on a non-deleted Deal,
+        oldest paid_at first, for reconciling against FlowAccount. Columns: Paid At
+        (YYYY-MM-DD, server-local), Document Number, Deal ID, Deal, Company, Amount
+        (cash), WHT Amount, Total (amount + WHT), Method, Installment ID, Installment
+        Due Date, Note, Created By. Filename payments-YYYYMMDD.csv (today, server-local).
+        Admin/Sales Manager only. api-system-spec.md §7.5.'
+      parameters:
+      - description: paid_at on or after this day (YYYY-MM-DD, server-local)
+        in: query
+        name: date_from
+        type: string
+      - description: paid_at on or before this day (YYYY-MM-DD, server-local, inclusive)
+        in: query
+        name: date_to
+        type: string
+      - description: Only this Deal's payments
+        in: query
+        name: deal_id
+        type: integer
+      - description: Only payments on this Company's Deals
+        in: query
+        name: company_id
+        type: integer
+      - description: cash, transfer, card or other
+        in: query
+        name: method
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV export
+          schema:
+            type: file
+        "403":
+          description: Not Admin/Sales Manager
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Invalid date_from/date_to (or date_to before date_from), deal_id,
+            company_id or method
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to export data
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Export payments as CSV (Admin/Sales Manager only)
+      tags:
+      - export
   /products:
     get:
       description: Paginated Product catalog, open to any authenticated role (Deal/Quote
@@ -7675,9 +7999,12 @@ paths:
         (draft→sent/accepted/rejected, sent→draft/accepted/rejected, accepted→rejected;
         an expired Sent quote can''t be accepted), else 409. An Accepted/Rejected
         quote is read-only: changing any other field is a 409 (resending stored values
-        is not). One Accepted quote per Deal (409 naming the existing one). Status
-        changes are audited. Only the parent Deal''s assigned Sales Rep (or Admin/Sales
-        Manager) may update. api-system-spec.md §7.4.'
+        is not). One Accepted quote per Deal (409 naming the existing one). Accepting
+        a quote with priced items sets the Deal''s value to its pre-VAT taxable amount
+        (rounded to satang) and the Deal''s value_quote_id to it (deal audit value_synced);
+        moving that quote to rejected clears value_quote_id, keeping the value (value_unsynced).
+        Status changes are audited. Only the parent Deal''s assigned Sales Rep (or
+        Admin/Sales Manager) may update. api-system-spec.md §7.4.'
       parameters:
       - description: Quote ID
         in: path

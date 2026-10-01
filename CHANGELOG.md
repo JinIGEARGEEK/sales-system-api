@@ -4,7 +4,56 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
-## Unreleased — Pipeline coverage and forecast
+## Unreleased — Review follow-ups
+
+**CSV exports past 500 rows.**
+- **Fixed:** the companies, contacts, deals, products and projects exports skipped and repeated rows once they had more than one 500-row page. The later pages used `FindInBatches`, which pages by id and kept the first page's offset, while the export sorts by `created_at`. Exports now page with LIMIT/OFFSET in their own order, with an `id` tie-breaker. Regression-guarded: `TestExport_PagesNeitherSkipNorRepeatRows`.
+
+**Task owners, reassign audit, contract gate.**
+- `GET /team-members` rows now include `role`, so assignee pickers can leave out Production users.
+- Task `assigned_to` must be an active user in a sales-pipeline role (Admin/Sales Rep/Sales Manager/Marketing), else `422` on field `assigned_to`. This applies to `POST /tasks`, `PATCH /tasks/bulk-reassign` and `POST /campaigns/:id/tasks`, and to `PATCH /tasks/:id` only when `assigned_to` changes (so a task whose owner was deactivated can still be edited). `null` is still allowed. Production can't own Tasks: the spec limits it to Projects, and moving a user to Production already hands their pending Tasks to someone else.
+- Reassigning a deactivated, deleted or Production-bound user's records (`reassign_to` on `PUT /users/:id`, `DELETE /users/:id`, `PATCH /users/bulk-deactivate`) now also writes a `deal`/`reassigned` audit row for each moved Deal (before/after `assigned_to`, same as `PATCH /deals/:id/reassign`), in the same transaction and in one batched insert. The `user`/`records_reassigned` summary row is unchanged. Leads, Prospects and Tasks get no per-record row, since they have no single-record reassign audit anywhere else.
+- When "require a signed contract before Won" is on, a contract now counts only if it is stored as `signed` **and** has a `signed_file_url` and `signed_date` (set by `POST /contracts/:id/upload`). Older contracts marked `signed` by hand with no file no longer count (accepted by the product owner).
+- No change needed to `computeOutstandingRow`: it already uses `utils.DealReceivable`, and no duplicate receivable code is left.
+
+**Frontend:** task assignee pickers shouldn't offer Production or inactive users, and should show the `assigned_to` `422`. Deals whose only "signed" contract has no uploaded file now get `422` `fields.stage: ["requires_signed_contract"]` when moved to Won with the gate on. Upload the signed file to fix this.
+
+Regression-guarded: `tests/task_assignee_test.go`, `TestUserBulkDeactivate_ReassignAuditsEveryDeal` and new checks in `TestUserDeactivate_ReassignTo`, `TestUpdateStage_LegacySignedContractWithoutFileDoesNotSatisfyGate`.
+
+**Deal value follows the Accepted quote**
+- New nullable `deals.value_quote_id` (FK `quotes`, `ON DELETE SET NULL`), JSON `value_quote_id`. Single-Deal responses (`GET`/`PUT /deals/:id`, also `PATCH /deals/:id/stage`, `PATCH /deals/:id/reassign`, `POST /deals/:id/restore`) add read-only `value_quote_number` (string or null). Lists don't include it.
+- When a quote with priced items (subtotal > 0) becomes Accepted (created as `accepted`, or `PUT /quotes/:id` to `accepted`), the same transaction sets the Deal's `value` to the quote's pre-VAT taxable amount rounded to satang (revenue is the taxable amount, spec §7.4) and `value_quote_id` to the quote. It writes a `deal` audit row `value_synced`: before `{value, value_quote_id}`, after `{value, value_quote_id, quote_number}`. An Accepted quote with no priced items (an uploaded PDF) changes nothing.
+- When that quote is rejected, `value_quote_id` is cleared and `value` stays as it is. Audit: `value_unsynced`, before `{value, value_quote_id, quote_number}`, after `{value, value_quote_id: null}`. Only drafts can be deleted, so a synced quote can't be deleted through the API. If the row is ever removed, the FK clears the link.
+- While `value_quote_id` is set, `PUT /deals/:id` with a `value` that differs from the stored one (by more than `utils.MoneyEpsilon`) is `422` with `fields.value: ["synced_from_quote"]`, and the message names the quote number. Resending the stored value is fine. The check is repeated under the Deal row lock, so a quote accepted at the same moment can't be overwritten. A full-row Deal save never writes `value_quote_id` (GORM create-only field). Lead/Prospect convert is unchanged.
+- Boot backfill (runs once, `deal_value_quotes_backfill`): each non-deleted Deal whose latest Accepted quote has priced items is linked **only when its value already equals that quote's rounded taxable amount** (within `utils.MoneyEpsilon`). A Deal whose value differs is left unlinked and unchanged, and is only counted in the boot log, so the boot never rewrites revenue. No audit rows are written.
+
+**Payments export**
+- New `GET /payments/export`, Admin/Sales Manager only, the same gate as the other CSV exports. It uses the same CSV helpers: formula-injection guard and no BOM. Filename `payments-YYYYMMDD.csv`. Rows run oldest `paid_at` first.
+- Columns: Paid At (YYYY-MM-DD, server-local), Document Number, Deal ID, Deal, Company, Amount, WHT Amount, Total (amount + WHT), Method, Installment ID, Installment Due Date, Note, Created By.
+- Filters: `date_from`/`date_to` on `paid_at` (inclusive server-local days, `422` on a bad or reversed range), `deal_id`, `company_id`, `method` (`422` when invalid).
+- Leaves out soft-deleted Payments and Payments on soft-deleted Deals.
+
+**Frontend:**
+- Show the Deal value as synced (read-only, "from quote QT…" via `value_quote_number`) while `value_quote_id` is set, and handle the `synced_from_quote` 422 on `fields.value`. Refetch the Deal after accepting or rejecting a quote, since its `value` may have changed.
+- Add a payments CSV download for Admin/Sales Manager that passes the filters above.
+
+Regression-guarded: `tests/deal_value_sync_test.go`, `tests/payments_export_test.go`. Swagger regenerated.
+
+**Merge duplicate companies and contacts.**
+- New `POST /companies/:id/merge` and `POST /contacts/:id/merge`, body `{ "source_ids": [...] }` (1–20 ids). `:id` is the record that survives. Admin/Sales Manager only (`403` otherwise). `422` on `fields.source_ids` when the list is empty, over 20, contains the target, or repeats an id. `404` when the target or a source doesn't exist or is deleted, with the missing ids in the message.
+- One transaction. Target and sources are locked in id order, so concurrent merges wait for each other instead of deadlocking.
+- Every reference to a source moves to the target, soft-deleted rows included. For a Company: Contacts, Deals, Leads (`company_id` and `referred_by`), Prospects, Projects, Customer Products, company Activities/Attachments/Tasks, and dormant-company notification logs. For a Contact: Deals, contact Activities/Tasks, and Lead `referred_by`. Contacts can be merged across Companies; the target keeps its `company_id` and a moved Deal keeps its own Company.
+- The target keeps its non-empty fields. Empty ones take the first non-empty value from the sources, in `source_ids` order, and tags are unioned (lowercased, deduped). A source value for a field that identifies the record isn't copied if it differs from the target's; it's reported in `conflicts` instead. Those fields are Company `website` (by domain), `tax_id` and `branch_code`, and Contact `email` and `phone`. A Company merge keeps at most one Primary Contact.
+- Sources are soft-deleted, so they're in Trash and no longer count as duplicates for the `409 duplicate_of` check. Restoring one gives back a record with nothing attached. A Company source's derived domain is cleared, so restoring it can't hit the unique domain index.
+- Audit: `merged` on the target (`before` snapshot; `after` has `source_ids`, `moved`, `filled`, `conflicts`) and `merged_into` on each source (`after.target_id`).
+- Response `200 { data: { target, moved: { <table>: n, ..., total }, filled: [field], conflicts: [{ field, source_id, value }] } }`.
+- The dormant-company rule now skips soft-deleted Companies. It read `companies` without the soft-delete filter, so a deleted or merged Company could still raise "Company gone quiet".
+
+**Frontend:** the natural entry point is the `409` duplicate envelope (`error.duplicate_of`) on Contact create, plus a "Merge into…" action on the Company/Contact detail page, shown to Admin/Sales Manager only. Show a confirmation with the list of sources. Afterwards, show `conflicts` (values that were not kept) and `moved.total`, then navigate to the target. Merged sources appear in Trash. Warn that restoring one brings back an empty record.
+
+Regression-guarded: `tests/merge_test.go`, `TestCompanyDormantRule_SkipsDeletedCompany`. Swagger regenerated.
+
+## 2026-10-01 — Pipeline coverage and forecast
 
 `GET /dashboard/summary` (spec §9) now counts coverage and the forecast trend by when open Deals are expected to close. Days are server-local (`calendar.ParseLocalDay`, `calendar.Today`, new `calendar.QuarterStart`).
 
@@ -19,7 +68,14 @@ Entries before this file existed are reconstructed from git/PR history — going
 
 Regression-guarded: `tests/dashboard_coverage_forecast_test.go`, `TestQuarterStart`. Swagger regenerated.
 
-## Unreleased — Review round 2
+## 2026-10-01 — Quote search; `GET /quotes/:id` registered
+
+- **New `GET /quotes`** (`search`, `page`, `per_page`) for the frontend's global search: matches quote `number`, `reference_number` or the Deal title (case-insensitive), newest first, in the `GET /deals` envelope. Rows are the Quote plus `deal_title`; quotes on soft-deleted Deals are left out. Sales-pipeline roles only (Production `403`), no per-rep scoping (same as `GET /deals`).
+- **Fixed: `GET /quotes/:id` was never registered.** The spec listed it and the frontend's full-page Quote editor calls it, but every request was a `404`. It now returns the Quote (effective status) plus `deal_title`. Sales-pipeline roles only; `404` for a missing Quote or a soft-deleted Deal.
+
+Regression-guarded: `tests/quote_search_test.go`. Swagger regenerated.
+
+## 2026-10-01 — Review round 2
 
 **Access.**
 - Production is now `403` on every `/companies*` and `/contacts*` route (including `/companies/:companyId/products|projects` and `PATCH /customer-products/:id`) and on the top-level `/quotes/:id*`, `/payments/:id`, `/payment-installments/:id` and `/contracts/:id*` routes, including both `export-pdf` (spec §1.7). Its Projects page is unaffected: `GET /projects` already returns `company_name`. **Frontend:** hide the Projects page's "View company" action for Production.
@@ -78,13 +134,6 @@ Regression-guarded: `tests/duplicate_detection_test.go`, new cases in `tests/imp
 - `utils.ErrBulkSkip` lets a `BulkUpdate` apply leave one row alone without failing the batch.
 
 Regression-guarded: `tests/won_deal_protection_test.go`, `tests/payment_guards_test.go`. Swagger annotations updated; regenerate `docs/` after merging.
-
-## 2026-10-01 — Quote search; `GET /quotes/:id` registered
-
-- **New `GET /quotes`** (`search`, `page`, `per_page`) for the frontend's global search: matches quote `number`, `reference_number` or the Deal title (case-insensitive), newest first, in the `GET /deals` envelope. Rows are the Quote plus `deal_title`; quotes on soft-deleted Deals are left out. Sales-pipeline roles only (Production `403`), no per-rep scoping (same as `GET /deals`).
-- **Fixed: `GET /quotes/:id` was never registered.** The spec listed it and the frontend's full-page Quote editor calls it, but every request was a `404`. It now returns the Quote (effective status) plus `deal_title`. Sales-pipeline roles only; `404` for a missing Quote or a soft-deleted Deal.
-
-Regression-guarded: `tests/quote_search_test.go`. Swagger regenerated.
 
 ## 2026-10-01 — Quote money fixes: tax-inclusive VAT, satang rounding, Accepted lock, schedule cap
 
