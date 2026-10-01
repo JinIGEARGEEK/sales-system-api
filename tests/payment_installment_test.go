@@ -143,6 +143,7 @@ func TestPaymentInstallmentBulkCreate_CreatesAllInOneCall(t *testing.T) {
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 	deal := seedDeal(t, db, nil)
+	require.NoError(t, db.Model(deal).Update("value", 30000).Error)
 
 	var out struct {
 		Data []models.PaymentInstallment `json:"data"`

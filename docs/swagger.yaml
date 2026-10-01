@@ -4931,12 +4931,15 @@ paths:
     post:
       consumes:
       - application/json
-      description: Creates every installment in one batch insert + one summary audit-log
-        entry, instead of the caller looping N calls to Create — mirrors CampaignHandler.BulkCreateTasks's
+      description: 'Creates every installment in one batch insert + one summary audit-log
+        entry, instead of the caller looping N calls to Create — mirrors CampaignHandler.BulkCreateTasks''s
         shape. The frontend computes the actual split (equal amounts, spaced dates);
-        this endpoint only validates and inserts, same permissive per-row rules as
-        the single-row Create. Only the Deal's assigned Sales Rep (or Admin/Sales
-        Manager) may create.
+        this endpoint only validates and inserts, same per-row rules as the single-row
+        Create. The whole batch is rejected (422, fields.installments ["exceeds_receivable"])
+        when the Deal''s existing installments plus this batch would total more than
+        its receivable — the Outstanding Balance rule: latest Accepted Quote''s taxable
+        amount + VAT when priced, else the Deal value; skipped when that receivable
+        is 0. Only the Deal''s assigned Sales Rep (or Admin/Sales Manager) may create.'
       parameters:
       - description: Deal ID
         in: path
@@ -4970,6 +4973,12 @@ paths:
             type: object
         "404":
           description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Empty or invalid installments, or the schedule would exceed
+            the receivable (exceeds_receivable)
           schema:
             additionalProperties: true
             type: object
@@ -7202,9 +7211,13 @@ paths:
     put:
       consumes:
       - application/json
-      description: Updates status/items and every other Quote field (number excepted
-        — immutable after Create). Only the parent Deal's assigned Sales Rep (or Admin/Sales
-        Manager) may update. api-system-spec.md §7.4.
+      description: 'Updates status/items and every other Quote field (number excepted
+        — immutable after Create). A Quote stored as Accepted keeps its pricing: changing
+        items, price_type, vat_enabled, wht_enabled, wht_rate or discount_total 422s
+        with fields code "accepted_locked" (resending the stored values is fine; status
+        and the other fields stay editable) — duplicate it to revise. Only the parent
+        Deal''s assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md
+        §7.4.'
       parameters:
       - description: Quote ID
         in: path
@@ -7225,8 +7238,7 @@ paths:
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Quote'
         "400":
-          description: Invalid request body, or validation error (status, price_type,
-            credit_days, wht_rate, discount_total)
+          description: Invalid request body
           schema:
             additionalProperties: true
             type: object
@@ -7237,6 +7249,12 @@ paths:
             type: object
         "404":
           description: Quote not found, or deal not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Validation error (status, price_type, credit_days, wht_rate,
+            discount_total), or a pricing edit on an Accepted quote (accepted_locked)
           schema:
             additionalProperties: true
             type: object

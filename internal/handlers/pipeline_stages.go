@@ -36,6 +36,7 @@ func (h *PipelineStageHandler) List(c *fiber.Ctx) error {
 	if err := h.DB.Order("sort_order ASC, id ASC").Find(&stages).Error; err != nil {
 		return utils.Internal(c, "Failed to list pipeline stages")
 	}
+	utils.FillDefaultProbabilities(h.DB, stages)
 	return utils.OK(c, stages)
 }
 
@@ -128,7 +129,7 @@ func (h *PipelineStageHandler) Create(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.ValidationError(c, "Stage name already in use", map[string][]string{"name": {"Name is already in use"}})
 	}
-	return utils.Created(c, stage)
+	return utils.Created(c, withDefaultProbability(h.DB, stage))
 }
 
 // Update godoc
@@ -192,7 +193,17 @@ func (h *PipelineStageHandler) Update(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.Internal(c, "Failed to update pipeline stage")
 	}
-	return utils.OK(c, stage)
+	return utils.OK(c, withDefaultProbability(h.DB, stage))
+}
+
+// withDefaultProbability fills stage.DefaultProbability for a Create/Update
+// response. Adding, moving or (de)activating one open stage shifts every
+// other open stage's default too (they interpolate across the funnel), so
+// callers holding the whole list should refetch it after a write.
+func withDefaultProbability(db *gorm.DB, stage models.PipelineStage) models.PipelineStage {
+	stages := []models.PipelineStage{stage}
+	utils.FillDefaultProbabilities(db, stages)
+	return stages[0]
 }
 
 // Delete godoc

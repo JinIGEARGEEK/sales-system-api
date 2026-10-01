@@ -27,11 +27,11 @@ func TestDashboardSummary_TrendsBucketByLocalMonth(t *testing.T) {
 	// Won 00:30 Bangkok on this month's 1st: the previous month in UTC.
 	won := seedDeal(t, db, nil)
 	require.NoError(t, db.Model(won).Updates(map[string]interface{}{"status": models.DealStatusWon, "value": 700}).Error)
-	setCreatedAt(t, db, &models.Deal{}, won.ID, monthStart.Add(30*time.Minute))
+	setWonAt(t, db, won.ID, monthStart.Add(30*time.Minute))
 	// Won 23:30 Bangkok on the last day of the previous month.
 	prevWon := seedDeal(t, db, nil)
 	require.NoError(t, db.Model(prevWon).Updates(map[string]interface{}{"status": models.DealStatusWon, "value": 300}).Error)
-	setCreatedAt(t, db, &models.Deal{}, prevWon.ID, monthStart.Add(-30*time.Minute))
+	setWonAt(t, db, prevWon.ID, monthStart.Add(-30*time.Minute))
 
 	// Closes on next month's 1st, stored as the JS Date for local midnight.
 	closeDate := nextMonth.UTC().Format("2006-01-02T15:04:05.000Z")
