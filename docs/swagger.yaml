@@ -458,7 +458,7 @@ definitions:
       value_quote_id:
         description: |-
           ValueQuoteID is the Accepted Quote whose pre-VAT taxable amount the
-          Deal's Value was last synced from (handlers.syncDealValue), nil when
+          Deal's Value was last synced from (handlers.syncDealValueForQuote), nil when
           Value is the rep's own figure. While set, PUT /deals/:id can't change
           Value. FK to quotes(id), ON DELETE SET NULL (database.
           ensureDealValueQuoteFK). Create-only for GORM writes ("<-:create"): a
@@ -1821,7 +1821,7 @@ definitions:
       value_quote_id:
         description: |-
           ValueQuoteID is the Accepted Quote whose pre-VAT taxable amount the
-          Deal's Value was last synced from (handlers.syncDealValue), nil when
+          Deal's Value was last synced from (handlers.syncDealValueForQuote), nil when
           Value is the rep's own figure. While set, PUT /deals/:id can't change
           Value. FK to quotes(id), ON DELETE SET NULL (database.
           ensureDealValueQuoteFK). Create-only for GORM writes ("<-:create"): a
@@ -2563,6 +2563,12 @@ definitions:
         type: integer
       name:
         type: string
+      role:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Role'
+        description: |-
+          Role lets pickers offer only users who may own the record (e.g. no
+          Production on Deals/Tasks — validateAssignee).
     type: object
   internal_handlers.userDeleteForm:
     properties:
@@ -4999,7 +5005,7 @@ paths:
             additionalProperties: true
             type: object
         "409":
-          description: Contract is signed (locked)
+          description: Contract is signed (locked), or its status changed meanwhile
           schema:
             additionalProperties: true
             type: object
@@ -5086,7 +5092,7 @@ paths:
             additionalProperties: true
             type: object
         "409":
-          description: Contract is already signed
+          description: Contract is already signed, or its status changed meanwhile
           schema:
             additionalProperties: true
             type: object
@@ -5315,8 +5321,7 @@ paths:
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal'
         "400":
-          description: Invalid request body, or validation error (required fields,
-            value, expected_close_date, probability, lost_reason, stage/channel/business_unit)
+          description: Invalid request body
           schema:
             additionalProperties: true
             type: object
@@ -5326,7 +5331,10 @@ paths:
             additionalProperties: true
             type: object
         "422":
-          description: assigned_to is not an active sales-role user
+          description: Validation error (required fields, value, expected_close_date,
+            probability, forecast_category, lost_reason, stage/channel/business_unit,
+            signed contract required for Won), or assigned_to is not an active sales-role
+            user
           schema:
             additionalProperties: true
             type: object
@@ -5706,8 +5714,7 @@ paths:
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Quote'
         "400":
-          description: Invalid request body, or validation error (status, price_type,
-            credit_days, wht_rate, discount_total)
+          description: Invalid request body
           schema:
             additionalProperties: true
             type: object
@@ -5728,8 +5735,8 @@ paths:
             additionalProperties: true
             type: object
         "422":
-          description: Invalid field (items[i].qty/price/discount_percent, discount_total,
-            wht_rate, issue_date, validity_date)
+          description: Invalid field (status, price_type, credit_days, wht_rate, discount_total,
+            items[i].qty/price/discount_percent, issue_date, validity_date)
           schema:
             additionalProperties: true
             type: object
@@ -5904,8 +5911,7 @@ paths:
           schema:
             $ref: '#/definitions/internal_handlers.dealDetail'
         "400":
-          description: Invalid request body, or validation error (required fields,
-            value, expected_close_date, probability, lost_reason, stage/channel/business_unit)
+          description: Invalid request body
           schema:
             additionalProperties: true
             type: object
@@ -5927,8 +5933,9 @@ paths:
             additionalProperties: true
             type: object
         "422":
-          description: assigned_to is not an active sales-role user, or value changed
-            while synced from an Accepted quote (fields.value synced_from_quote)
+          description: Validation error (as Create), assigned_to is not an active
+            sales-role user, or value changed while synced from an Accepted quote
+            (fields.value synced_from_quote)
           schema:
             additionalProperties: true
             type: object
@@ -6016,14 +6023,13 @@ paths:
         status to won/lost alongside stage — or open (clearing lost_reason) on a move
         into any other stage — and re-derives probability in the same transaction;
         writes a stage_changed audit log entry per §8.5's explicit minimum scope.
-        Moving into a stage resolved as Won is blocked (422-style validation error)
-        if AppSettings.RequireSignedContractBeforeWon is enabled and the deal has
-        no Contract with status Signed. A move into a Lost stage requires lost_reason
-        (422), unless the Deal is already Lost with one stored. Moving a Won Deal
-        with money attached out of Won is 409 WON_DEAL_PROTECTED for non-managers;
-        a manager must pass ?reason= (409 REASON_REQUIRED without it), recorded in
-        a won_reversed audit entry. Only the assigned Sales Rep (or Admin/Sales Manager)
-        may move it.
+        Moving into a stage resolved as Won is blocked (422) if AppSettings.RequireSignedContractBeforeWon
+        is enabled and the deal has no Contract with status Signed. A move into a
+        Lost stage requires lost_reason (422), unless the Deal is already Lost with
+        one stored. Moving a Won Deal with money attached out of Won is 409 WON_DEAL_PROTECTED
+        for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without
+        it), recorded in a won_reversed audit entry. Only the assigned Sales Rep (or
+        Admin/Sales Manager) may move it.
       parameters:
       - description: Deal ID
         in: path
@@ -6054,9 +6060,7 @@ paths:
           schema:
             $ref: '#/definitions/internal_handlers.dealDetail'
         "400":
-          description: Invalid request body, stage is required, stage is not a valid
-            active pipeline stage, or a signed contract is required before marking
-            this deal Won
+          description: Invalid request body
           schema:
             additionalProperties: true
             type: object
@@ -6077,8 +6081,9 @@ paths:
             additionalProperties: true
             type: object
         "422":
-          description: position out of range (±1e9), or lost_reason missing/invalid
-            on a move into Lost
+          description: stage missing or not an active pipeline stage, a signed contract
+            is required before marking this deal Won, position out of range (±1e9),
+            or lost_reason missing/invalid on a move into Lost
           schema:
             additionalProperties: true
             type: object
@@ -8040,14 +8045,14 @@ paths:
             additionalProperties: true
             type: object
         "409":
-          description: Status transition not allowed, quote is read-only, or the deal
-            already has an Accepted quote
+          description: Status transition not allowed, quote is read-only, the deal
+            already has an Accepted quote, or the quote's status changed meanwhile
           schema:
             additionalProperties: true
             type: object
         "422":
-          description: Invalid field (items[i].qty/price/discount_percent, discount_total,
-            wht_rate, issue_date, validity_date)
+          description: Invalid field (status, price_type, credit_days, wht_rate, discount_total,
+            items[i].qty/price/discount_percent, issue_date, validity_date)
           schema:
             additionalProperties: true
             type: object

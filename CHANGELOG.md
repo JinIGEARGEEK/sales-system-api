@@ -4,6 +4,18 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## Unreleased — Refactor and docs pass
+
+**Money and lifecycle.**
+- Fix: a quote's `discount_total` cap is now the subtotal the quote prints (`utils.ComputeQuoteTotals`, each line rounded to satang). It used to be the unrounded sum, so a discount equal to the printed subtotal could be refused with a `422` (e.g. three lines of 100 at 33.333% off: 200.01 printed, 200.001 unrounded). Regression-guarded by `TestQuoteLifecycle_DiscountCapUsesRoundedSubtotal`.
+- The quote and contract "changed meanwhile" re-check is one helper (`lockStatusUnchanged`). The moves that take a Deal out of Won share `guardLeavingWon`, and the stage-change company Activity shares `logDealStageActivity`. `dealReceivable` moved to `deal_money.go`.
+- The Deal value an Accepted quote syncs is `utils.DealValueFromQuote`, used by both the quote handlers and the boot backfill (`database.BackfillDealValueQuotes`), along with `utils.SameMoney`.
+- `GET /payments/export` pages through the shared `exportStream` and no longer has its own loop. New test: an export longer than one page holds every payment exactly once, in order.
+- `GET /dashboard/summary` loads open Deals' close dates once for both `forecast_trend` and the coverage/overdue/undated figures, not twice.
+- Swagger: the Deal, Quote and stage-move endpoints now document their validation errors as `422`, which is what they return (several said `400`). The `409` notes include the "changed meanwhile" conflict. Quote `PUT` no longer lists `422` twice. Regenerating also picked up the `/team-members` `role` field from #81. Response bodies are unchanged.
+- Spec: §7.1 Deals, §7.4 quote lifecycle (adds `POST /quotes/:id/duplicate`), §7.5 Payments (adds the full `Payment` shape and the list totals), §8.1 Contracts and the §9 coverage/forecast notes now describe current behaviour, with the history notes removed. New §6.3 covers how CSV exports page and stream.
+- Trimmed history-narrating comments in the quote, contract and dashboard code.
+
 ## Unreleased — Review follow-ups
 
 **Quotes priced before the tax-inclusive VAT fix keep their totals.**
@@ -137,7 +149,7 @@ Regression-guarded: `tests/duplicate_detection_test.go`, new cases in `tests/imp
 - Deleting an installment also unlinks deleted Payments that pointed at it.
 - `utils.ErrBulkSkip` lets a `BulkUpdate` apply leave one row alone without failing the batch.
 
-Regression-guarded: `tests/won_deal_protection_test.go`, `tests/payment_guards_test.go`. Swagger annotations updated; regenerate `docs/` after merging.
+Regression-guarded: `tests/won_deal_protection_test.go`, `tests/payment_guards_test.go`. Swagger regenerated.
 
 ## 2026-10-01 — Quote money fixes: tax-inclusive VAT, satang rounding, Accepted lock, schedule cap
 
