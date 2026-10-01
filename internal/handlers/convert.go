@@ -19,8 +19,7 @@ var errAlreadyConverted = errors.New("already converted")
 
 // convertInputError is a caller mistake in a Convert request's explicit
 // company_id/contact_id, found inside the transaction: a missing record (404)
-// or a contact under a different company (422). Previously both surfaced as
-// a generic 500.
+// or a contact under a different company (422).
 type convertInputError struct {
 	notFound bool
 	field    string
@@ -56,26 +55,19 @@ func lockForConvert(tx *gorm.DB, row interface{}, id uint) error {
 	return tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(row, id).Error
 }
 
-// resolveOrCreateCompany implements the Company-resolution half of both
-// LeadHandler.Convert and ProspectHandler.Convert — previously duplicated
-// almost line-for-line between the two:
+// resolveOrCreateCompany is the Company half of Lead and Prospect Convert:
 //
-//   - explicitID (the caller's own req.CompanyID override, when given) always
-//     wins, even if it differs from whatever Company the source record was
-//     already linked to — a caller mistake here is worth failing loudly on
-//     (a not-found explicitID returns an error rather than falling back).
-//   - Otherwise, fallbackID (the source Lead/Prospect's own CompanyID, if
-//     it has one) is reused as-is. Unlike explicitID, this id was never
-//     caller-supplied on this particular request — if the Company it points
-//     to has since been soft-deleted, fall back to creating a fresh one
-//     rather than failing the whole conversion over a Company the caller
-//     never chose here in the first place.
+//   - explicitID (the request's company_id) always wins; one that doesn't
+//     exist is a 404 rather than a silent fallback, since the caller chose it.
+//   - Otherwise fallbackID (the source record's own company_id) is reused.
+//     If that Company has since been soft-deleted, a fresh one is created
+//     instead of failing over a Company the caller didn't pick.
 //   - With neither, a new Company is created.
 //
-// A created Company is never nameless: it takes names.explicit (the
-// request's company_name), else the soft-deleted fallback Company's own
-// name, else names.contact (the Lead/Prospect's name). With none of those
-// it's a 422 asking for company_id or company_name.
+// A created Company takes names.explicit (the request's company_name), else
+// the soft-deleted fallback Company's name, else names.contact (the source
+// record's name). With none of those it's a 422 asking for company_id or
+// company_name.
 func resolveOrCreateCompany(tx *gorm.DB, explicitID, fallbackID *uint, names newCompanyNames) (models.Company, error) {
 	var company models.Company
 	switch {
@@ -131,13 +123,11 @@ func (n newCompanyNames) pick() string {
 	return ""
 }
 
-// resolveOrCreateContact implements the Contact-resolution half of both
-// LeadHandler.Convert and ProspectHandler.Convert — reuse explicitID
-// (req.ContactID) if given (it must exist and belong to companyID);
-// otherwise reuse a Contact already in companyID with the same email
-// (case-insensitive, the oldest if several), so converting someone the
-// Company already has on file doesn't duplicate them; otherwise create a
-// new Contact under companyID seeded from the source Lead/Prospect's own
+// resolveOrCreateContact is the Contact half of Lead and Prospect Convert:
+// explicitID (the request's contact_id) if given, which must exist and
+// belong to companyID; else the oldest Contact in companyID with the same
+// email (case-insensitive), so a person the Company already has isn't
+// duplicated; else a new Contact under companyID from the source record's
 // name/email/phone.
 func resolveOrCreateContact(tx *gorm.DB, explicitID *uint, companyID uint, name, email, phone string) (models.Contact, error) {
 	var contact models.Contact

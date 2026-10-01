@@ -475,14 +475,11 @@ type bulkDeactivateResponse struct {
 	Reassigned  []reassignResult  `json:"reassigned"`
 }
 
-// bulkSetActive is the shared implementation behind BulkActivate/
-// BulkDeactivate — same "loop over ids, mutate, save, audit" shape as
-// bulk_ops.go's bulkArchiveEntity, but without a per-row CanWrite check:
-// User has no AssignedTo/owner field to check against, and the whole /users
-// route group is already Admin-only (routes.go's adminOnly), unlike
-// Deal/Lead/Prospect's bulk endpoints which sit behind the broader
-// Admin-or-Sales-Manager bulkRoles. Deactivating also applies Update's
-// self/last-Admin guards and optional reassign_to.
+// bulkSetActive is BulkActivate/BulkDeactivate's shared body: flip
+// is_active on every id in one transaction with a per-row audit entry. No
+// per-row CanWrite check: Users have no owner, and the /users group is
+// Admin-only. Deactivating also applies Update's self/last-Admin guards,
+// revokes sessions, and honours reassign_to.
 func (h *UserHandler) bulkSetActive(c *fiber.Ctx, active bool, action string, failMsg string) error {
 	var form bulkDeactivateUsersForm
 	if err := c.BodyParser(&form); err != nil {
@@ -553,9 +550,8 @@ func (h *UserHandler) bulkSetActive(c *fiber.Ctx, active bool, action string, fa
 	if err != nil {
 		return utils.Internal(c, failMsg)
 	}
-	// Same reason as Update/Delete above — is_active (or a still-cached
-	// stale value of it) gates RequireAuth, so drop the cache for every
-	// affected user rather than waiting up to authCacheTTL.
+	// As in Update: drop each user's cached auth state now rather than
+	// after authCacheTTL.
 	for _, id := range ids {
 		middleware.InvalidateAuthCache(id)
 	}
@@ -635,14 +631,14 @@ type teamMember struct {
 	ID    uint   `json:"id"`
 	Name  string `json:"name"`
 	Email string `json:"email"`
-	// Role lets pickers offer only users who may own the record (e.g. no
-	// Production on Deals/Tasks — validateAssignee).
+	// Role lets pickers offer only users who may own a record: assigned_to
+	// accepts Admin, Sales Rep, Sales Manager and Marketing, not Production.
 	Role models.Role `json:"role"`
 }
 
 // TeamMembers godoc
 // @Summary List team members (any authenticated role)
-// @Description Any authenticated role — not Admin-restricted, §2.2. Lightweight active-user list (id, name, email) for assignee dropdowns.
+// @Description Any authenticated role — not Admin-restricted, §2.2. Lightweight active-user list (id, name, email, role) for assignee dropdowns; role lets a picker offer only the sales-pipeline roles (Admin, Sales Rep, Sales Manager, Marketing) that assigned_to accepts.
 // @Tags users
 // @Security BearerAuth
 // @Produce json

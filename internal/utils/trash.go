@@ -9,12 +9,9 @@ import (
 
 // GenericTrash lists Unscoped soft-deleted rows of T, newest-deleted first,
 // through the same paginated envelope (List) every other list endpoint uses.
-// Shared by Deal/Lead's GET /.../trash — identical apart from the model type
-// and the "failed to list" message. `searchColumns` (optional) names the
-// column(s) a `?search=` query param matches against (ILIKE, OR'd together)
-// — e.g. Deal passes "title", Company/Contact/Lead pass "name". Omit it
-// (Prospect/User's Trash callers do) to leave `search` a no-op, same as
-// before this param existed.
+// searchColumns (optional) are the columns ?search= matches (ILIKE, OR'd
+// together), e.g. "title" for Deals, "name" for Companies/Contacts/Leads;
+// with none, search is ignored.
 func GenericTrash[T any](c *fiber.Ctx, db *gorm.DB, failMsg string, searchColumns ...string) error {
 	page, perPage, offset := Pagination(c)
 	query := db.Unscoped().Model(new(T)).Where("deleted_at IS NOT NULL")
@@ -42,12 +39,9 @@ func GenericTrash[T any](c *fiber.Ctx, db *gorm.DB, failMsg string, searchColumn
 }
 
 // GenericSoftDelete stamps deleted_by and soft-deletes item in one
-// transaction. Previously every Delete handler (Company/Contact/Deal/Lead/User)
-// ran these as two separate statements — a crash or error between them left
-// deleted_by set with no deleted_at (or vice versa), and a failed second write
-// after a committed first left the row inconsistently "half deleted" with no
-// rollback. item must be a pointer to an already-loaded record (its ID is
-// used for both writes).
+// transaction, so a row is never left with one set and not the other. item
+// must be a pointer to an already-loaded record (its ID is used for both
+// writes).
 func GenericSoftDelete(db *gorm.DB, item interface{}, actorID uint) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(item).Update("deleted_by", actorID).Error; err != nil {
@@ -58,8 +52,8 @@ func GenericSoftDelete(db *gorm.DB, item interface{}, actorID uint) error {
 }
 
 // GenericRestore clears deleted_at/deleted_by on the Unscoped soft-deleted row
-// of T identified by the ":id" param. Shared by Deal/Lead's POST
-// /.../:id/restore — identical apart from the model type and messages.
+// of T identified by the ":id" param, for the POST /.../:id/restore routes
+// that write no audit entry.
 func GenericRestore[T any](c *fiber.Ctx, db *gorm.DB, notFoundMsg, failMsg string) error {
 	var item T
 	if err := db.Unscoped().Where("deleted_at IS NOT NULL").First(&item, c.Params("id")).Error; err != nil {
