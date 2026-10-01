@@ -201,6 +201,8 @@ func TestQuoteGet(t *testing.T) {
 
 	resp = doJSON(t, app, testutil.AuthRequest(t, http.MethodGet, "/api/v1/quotes/999999", nil, admin.ID, admin.Role), nil)
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	resp = doJSON(t, app, testutil.AuthRequest(t, http.MethodGet, "/api/v1/quotes/abc", nil, admin.ID, admin.Role), nil)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode, "non-numeric id")
 
 	resp = doJSON(t, app, testutil.AuthRequest(t, http.MethodGet, "/api/v1/quotes/"+itoa(quote.ID), nil, production.ID, production.Role), nil)
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)

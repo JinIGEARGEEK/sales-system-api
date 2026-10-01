@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -120,23 +121,26 @@ func (h *PaymentInstallmentHandler) Create(c *fiber.Ctx) error {
 // BulkCreate returns when the schedule would plan more than is owed.
 const ScheduleExceedsReceivableCode = "exceeds_receivable"
 
-// scheduleExceedsReceivable writes a 422 and returns true when the Deal's
-// existing installments plus `rows` would total more than its receivable
-// (to the satang). Paid installments count too — the schedule as a whole is
-// what's measured against what's owed. A receivable of 0 (no Accepted Quote
-// and no Deal value yet) has nothing to measure against, so it never blocks.
-func (h *PaymentInstallmentHandler) scheduleExceedsReceivable(c *fiber.Ctx, deal *models.Deal, rows []paymentInstallmentForm) (bool, error) {
-	receivable, err := dealReceivable(h.DB, deal)
+// checkScheduleWithinReceivable writes a 422 and returns utils.ErrHandled
+// when the Deal's existing installments plus `rows` would total more than
+// its receivable (to the satang). Paid installments count too — the schedule
+// as a whole is what's measured against what's owed. A receivable of 0 (no
+// Accepted Quote and no Deal value yet) has nothing to measure against, so
+// it never blocks. Runs inside tx after the Deal row is locked (lockDeal),
+// so two concurrent BulkCreates on one Deal can't both pass on the same
+// existing total.
+func checkScheduleWithinReceivable(c *fiber.Ctx, tx *gorm.DB, deal *models.Deal, rows []paymentInstallmentForm) error {
+	receivable, err := dealReceivable(tx, deal)
 	if err != nil {
-		return false, err
+		return err
 	}
 	if receivable <= 0 {
-		return false, nil
+		return nil
 	}
 	var existing float64
-	if err := h.DB.Model(&models.PaymentInstallment{}).Where("deal_id = ?", deal.ID).
+	if err := tx.Model(&models.PaymentInstallment{}).Where("deal_id = ?", deal.ID).
 		Select("COALESCE(SUM(amount), 0)").Scan(&existing).Error; err != nil {
-		return false, err
+		return err
 	}
 	var batch float64
 	for _, row := range rows {
@@ -144,11 +148,11 @@ func (h *PaymentInstallmentHandler) scheduleExceedsReceivable(c *fiber.Ctx, deal
 	}
 	total := utils.RoundSatang(existing + batch)
 	if total <= receivable+utils.MoneyEpsilon {
-		return false, nil
+		return nil
 	}
 	msg := fmt.Sprintf("the schedule would total %.2f, more than the %.2f receivable (%.2f already scheduled)", total, receivable, existing)
 	_ = utils.ValidationError(c, msg, map[string][]string{"installments": {ScheduleExceedsReceivableCode}})
-	return true, nil
+	return utils.ErrHandled
 }
 
 type paymentInstallmentBulkForm struct {
@@ -189,14 +193,6 @@ func (h *PaymentInstallmentHandler) BulkCreate(c *fiber.Ctx) error {
 		}
 	}
 
-	exceeds, err := h.scheduleExceedsReceivable(c, deal, form.Installments)
-	if err != nil {
-		return utils.Internal(c, "Failed to generate payment schedule")
-	}
-	if exceeds {
-		return nil
-	}
-
 	installments := make([]models.PaymentInstallment, 0, len(form.Installments))
 	for _, row := range form.Installments {
 		installments = append(installments, models.PaymentInstallment{
@@ -206,12 +202,22 @@ func (h *PaymentInstallmentHandler) BulkCreate(c *fiber.Ctx) error {
 
 	actorID := middleware.CurrentUserID(c)
 	err = h.DB.Transaction(func(tx *gorm.DB) error {
+		locked, err := lockDeal(tx, deal.ID)
+		if err != nil {
+			return err
+		}
+		if err := checkScheduleWithinReceivable(c, tx, locked, form.Installments); err != nil {
+			return err
+		}
 		if err := tx.Create(&installments).Error; err != nil {
 			return err
 		}
 		after := models.JSONMap{"deal_id": deal.ID, "installment_count": len(installments)}
 		return utils.WriteAuditLog(tx, "deal", deal.ID, "bulk_created_payment_installments", nil, after, actorID)
 	})
+	if errors.Is(err, utils.ErrHandled) {
+		return nil
+	}
 	if err != nil {
 		return utils.Internal(c, "Failed to generate payment schedule")
 	}

@@ -83,7 +83,7 @@ Admin-configurable Notification Rules (`/admin/notification-rules`, `internal/no
 go test ./...
 ```
 
-Tests run against a separate `sales_system_test` database (created automatically if missing) via an in-process Fiber app — no real network listener, and the shared dev database is never touched. Coverage focuses on auth, RBAC/ownership enforcement, and the specific data-integrity behaviors called out in the spec (partial updates not clobbering omitted fields, soft- vs hard-delete semantics, audit logging on sensitive actions). CI also runs `-race` and a `govulncheck` job — see the note on `go.mod`'s pinned patch version above.
+Tests run against a separate `sales_system_test` database (created automatically if missing; set `TEST_DB_NAME` to give a second checkout its own) via an in-process Fiber app — no real network listener, and the shared dev database is never touched. Coverage focuses on auth, RBAC/ownership enforcement, and the specific data-integrity behaviors called out in the spec (partial updates not clobbering omitted fields, soft- vs hard-delete semantics, audit logging on sensitive actions). CI (`.github/workflows/ci.yml`, Go 1.26) runs `go build`, `go vet` and `go test ./... -race` against a Postgres 16 service, golangci-lint (v2.12 line), `govulncheck` v1.8.0 — see the note on `go.mod`'s pinned patch version above — and builds the Docker image and boots it against Postgres as a smoke test. To lint locally, install golangci-lint with Go 1.26 (`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2`): a binary built with an older Go refuses a `go 1.26.x` module.
 
 ## API overview
 
