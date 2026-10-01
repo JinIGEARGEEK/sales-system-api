@@ -156,15 +156,21 @@ func isWinningForm(form dealForm, to utils.StageFlags) bool {
 
 // validateContractSignedBeforeWon enforces FR-CRM-045 when an Admin has
 // enabled it in AppSettings (off by default): a Deal can only move into Won
-// with at least one Signed Contract. dealID 0 (a Deal not created yet) has
-// none, so the gate always blocks it.
+// with at least one Signed Contract. A contract counts only if it is stored
+// as signed AND has its signed file and signed_date, i.e. went through
+// POST /contracts/:id/upload; a legacy hand-marked "signed" row with no file
+// doesn't. dealID 0 (a Deal not created yet) has none, so the gate always
+// blocks it.
 func validateContractSignedBeforeWon(c *fiber.Ctx, db *gorm.DB, dealID uint) error {
 	settings := utils.GetAppSettings(db)
 	if !settings.RequireSignedContractBeforeWon {
 		return nil
 	}
 	var count int64
-	db.Model(&models.Contract{}).Where("deal_id = ? AND status = ?", dealID, models.ContractStatusSigned).Count(&count)
+	db.Model(&models.Contract{}).
+		Where("deal_id = ? AND status = ?", dealID, models.ContractStatusSigned).
+		Where("signed_file_url IS NOT NULL AND signed_file_url <> '' AND signed_date IS NOT NULL").
+		Count(&count)
 	if count == 0 {
 		_ = utils.ValidationError(c, "a signed contract is required before marking this deal Won", map[string][]string{
 			"stage": {"requires_signed_contract"},

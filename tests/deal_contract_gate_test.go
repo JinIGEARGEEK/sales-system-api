@@ -3,6 +3,7 @@ package apitests
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,11 +38,59 @@ func setRequireSignedContract(t *testing.T, db *gorm.DB, enabled bool) {
 	}
 }
 
+// seedContract inserts a contract with status. A signed one also gets a
+// signed file and signed_date, as POST /contracts/:id/upload would set;
+// seedLegacySignedContract covers a hand-marked signed row without them.
 func seedContract(t *testing.T, db *gorm.DB, dealID uint, status models.ContractStatus) *models.Contract {
 	t.Helper()
 	contract := &models.Contract{DealID: dealID, Status: status}
+	if status == models.ContractStatusSigned {
+		url, signed := "/uploads/signed.pdf", time.Now()
+		contract.SignedFileURL, contract.SignedDate = &url, &signed
+	}
 	require.NoError(t, db.Create(contract).Error)
 	return contract
+}
+
+// seedLegacySignedContract inserts a contract stored as signed with no
+// signed file, the shape of a pre-upload hand-marked contract.
+func seedLegacySignedContract(t *testing.T, db *gorm.DB, dealID uint, withDate bool) *models.Contract {
+	t.Helper()
+	contract := &models.Contract{DealID: dealID, Status: models.ContractStatusSigned}
+	if withDate {
+		signed := time.Now()
+		contract.SignedDate = &signed
+	}
+	require.NoError(t, db.Create(contract).Error)
+	return contract
+}
+
+// TestUpdateStage_LegacySignedContractWithoutFileDoesNotSatisfyGate guards
+// the stricter gate: a contract stored as signed counts only with both a
+// signed file and a signed_date. A hand-marked one (no file), or one with a
+// file but no signed_date, still blocks Won.
+func TestUpdateStage_LegacySignedContractWithoutFileDoesNotSatisfyGate(t *testing.T) {
+	app, db := testutil.App(t)
+	setRequireSignedContract(t, db, true)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	deal := seedDeal(t, db, nil)
+	seedLegacySignedContract(t, db, deal.ID, false)
+	seedLegacySignedContract(t, db, deal.ID, true)
+	noDate := seedContract(t, db, deal.ID, models.ContractStatusSigned)
+	require.NoError(t, db.Model(noDate).UpdateColumn("signed_date", nil).Error)
+	emptyURL := seedContract(t, db, deal.ID, models.ContractStatusSigned)
+	require.NoError(t, db.Model(emptyURL).UpdateColumn("signed_file_url", "").Error)
+
+	stage := func() int {
+		req := testutil.AuthRequest(t, http.MethodPatch, "/api/v1/deals/"+itoa(deal.ID)+"/stage", map[string]interface{}{
+			"stage": "Won",
+		}, admin.ID, admin.Role)
+		return doJSON(t, app, req, nil).StatusCode
+	}
+	assert.Equal(t, http.StatusUnprocessableEntity, stage(), "signed rows missing a file or signed_date must not satisfy the gate")
+
+	seedContract(t, db, deal.ID, models.ContractStatusSigned)
+	assert.Equal(t, http.StatusOK, stage(), "a contract with a signed file and signed_date satisfies the gate")
 }
 
 // TestUpdateStage_DefaultAllowsWonWithoutSignedContract guards the "not

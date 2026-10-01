@@ -69,6 +69,9 @@ func (h *TaskHandler) Create(c *fiber.Ctx) error {
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a task to another sales rep")
 	}
+	if err := validateAssignee(h.DB, form.AssignedTo); err != nil {
+		return respondAssigneeErr(c, err)
+	}
 
 	task := models.Task{
 		RelatedType: form.RelatedType, RelatedID: form.RelatedID, Title: form.Title,
@@ -122,6 +125,13 @@ func (h *TaskHandler) Update(c *fiber.Ctx) error {
 	// Create/BulkReassign apply to the incoming assignee.
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a task to another sales rep")
+	}
+	// Only a changed owner is checked, so a task whose owner was since
+	// deactivated can still be edited (same rule as PUT /deals/:id).
+	if !sameAssignee(task.AssignedTo, form.AssignedTo) {
+		if err := validateAssignee(h.DB, form.AssignedTo); err != nil {
+			return respondAssigneeErr(c, err)
+		}
 	}
 
 	task.Title = form.Title
@@ -226,6 +236,9 @@ func (h *TaskHandler) BulkReassign(c *fiber.Ctx) error {
 	}
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a task to another sales rep")
+	}
+	if err := validateAssignee(h.DB, form.AssignedTo); err != nil {
+		return respondAssigneeErr(c, err)
 	}
 
 	actorID := middleware.CurrentUserID(c)

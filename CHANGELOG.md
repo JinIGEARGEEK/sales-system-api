@@ -4,7 +4,19 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
-## Unreleased — Pipeline coverage and forecast
+## Unreleased — Review follow-ups
+
+**Task owners, reassign audit, contract gate.**
+- Task `assigned_to` must be an active user in a sales-pipeline role (Admin/Sales Rep/Sales Manager/Marketing), else `422` on field `assigned_to`. This applies to `POST /tasks`, `PATCH /tasks/bulk-reassign` and `POST /campaigns/:id/tasks`, and to `PATCH /tasks/:id` only when `assigned_to` changes (so a task whose owner was deactivated can still be edited). `null` is still allowed. Production can't own Tasks: the spec limits it to Projects, and moving a user to Production already hands their pending Tasks to someone else.
+- Reassigning a deactivated, deleted or Production-bound user's records (`reassign_to` on `PUT /users/:id`, `DELETE /users/:id`, `PATCH /users/bulk-deactivate`) now also writes a `deal`/`reassigned` audit row for each moved Deal (before/after `assigned_to`, same as `PATCH /deals/:id/reassign`), in the same transaction and in one batched insert. The `user`/`records_reassigned` summary row is unchanged. Leads, Prospects and Tasks get no per-record row, since they have no single-record reassign audit anywhere else.
+- When "require a signed contract before Won" is on, a contract now counts only if it is stored as `signed` **and** has a `signed_file_url` and `signed_date` (set by `POST /contracts/:id/upload`). Older contracts marked `signed` by hand with no file no longer count (accepted by the product owner).
+- No change needed to `computeOutstandingRow`: it already uses `utils.DealReceivable`, and no duplicate receivable code is left.
+
+**Frontend:** task assignee pickers shouldn't offer Production or inactive users, and should show the `assigned_to` `422`. Deals whose only "signed" contract has no uploaded file now get `422` `fields.stage: ["requires_signed_contract"]` when moved to Won with the gate on. Upload the signed file to fix this.
+
+Regression-guarded: `tests/task_assignee_test.go`, `TestUserBulkDeactivate_ReassignAuditsEveryDeal` and new checks in `TestUserDeactivate_ReassignTo`, `TestUpdateStage_LegacySignedContractWithoutFileDoesNotSatisfyGate`.
+
+## 2026-10-01 — Pipeline coverage and forecast
 
 `GET /dashboard/summary` (spec §9) now counts coverage and the forecast trend by when open Deals are expected to close. Days are server-local (`calendar.ParseLocalDay`, `calendar.Today`, new `calendar.QuarterStart`).
 
@@ -19,7 +31,14 @@ Entries before this file existed are reconstructed from git/PR history — going
 
 Regression-guarded: `tests/dashboard_coverage_forecast_test.go`, `TestQuarterStart`. Swagger regenerated.
 
-## Unreleased — Review round 2
+## 2026-10-01 — Quote search; `GET /quotes/:id` registered
+
+- **New `GET /quotes`** (`search`, `page`, `per_page`) for the frontend's global search: matches quote `number`, `reference_number` or the Deal title (case-insensitive), newest first, in the `GET /deals` envelope. Rows are the Quote plus `deal_title`; quotes on soft-deleted Deals are left out. Sales-pipeline roles only (Production `403`), no per-rep scoping (same as `GET /deals`).
+- **Fixed: `GET /quotes/:id` was never registered.** The spec listed it and the frontend's full-page Quote editor calls it, but every request was a `404`. It now returns the Quote (effective status) plus `deal_title`. Sales-pipeline roles only; `404` for a missing Quote or a soft-deleted Deal.
+
+Regression-guarded: `tests/quote_search_test.go`. Swagger regenerated.
+
+## 2026-10-01 — Review round 2
 
 **Access.**
 - Production is now `403` on every `/companies*` and `/contacts*` route (including `/companies/:companyId/products|projects` and `PATCH /customer-products/:id`) and on the top-level `/quotes/:id*`, `/payments/:id`, `/payment-installments/:id` and `/contracts/:id*` routes, including both `export-pdf` (spec §1.7). Its Projects page is unaffected: `GET /projects` already returns `company_name`. **Frontend:** hide the Projects page's "View company" action for Production.
@@ -78,13 +97,6 @@ Regression-guarded: `tests/duplicate_detection_test.go`, new cases in `tests/imp
 - `utils.ErrBulkSkip` lets a `BulkUpdate` apply leave one row alone without failing the batch.
 
 Regression-guarded: `tests/won_deal_protection_test.go`, `tests/payment_guards_test.go`. Swagger annotations updated; regenerate `docs/` after merging.
-
-## 2026-10-01 — Quote search; `GET /quotes/:id` registered
-
-- **New `GET /quotes`** (`search`, `page`, `per_page`) for the frontend's global search: matches quote `number`, `reference_number` or the Deal title (case-insensitive), newest first, in the `GET /deals` envelope. Rows are the Quote plus `deal_title`; quotes on soft-deleted Deals are left out. Sales-pipeline roles only (Production `403`), no per-rep scoping (same as `GET /deals`).
-- **Fixed: `GET /quotes/:id` was never registered.** The spec listed it and the frontend's full-page Quote editor calls it, but every request was a `404`. It now returns the Quote (effective status) plus `deal_title`. Sales-pipeline roles only; `404` for a missing Quote or a soft-deleted Deal.
-
-Regression-guarded: `tests/quote_search_test.go`. Swagger regenerated.
 
 ## 2026-10-01 — Quote money fixes: tax-inclusive VAT, satang rounding, Accepted lock, schedule cap
 

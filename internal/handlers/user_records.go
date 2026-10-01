@@ -26,26 +26,37 @@ type openRecordCounts struct {
 // openOwnedRecords lists, per owning table, the "still open" filter that
 // openRecordCounts counts and reassignOpenRecords moves. auditedModel marks
 // the tables with an updated_by column (Task is a HardDeleteModel).
+// auditEntity, when set, makes reassignOpenRecords also write one
+// "reassigned" audit row per moved record, the shape the entity's own
+// single-record reassign writes. Only Deals have one (PATCH
+// /deals/:id/reassign, PUT /deals/:id). Leads, Prospects and Tasks have no
+// per-record reassign audit outside their bulk endpoints, so the summary
+// records_reassigned row covers them.
 var openOwnedRecords = []struct {
 	model        interface{}
 	auditedModel bool
+	auditEntity  string
 	open         func(*gorm.DB) *gorm.DB
 	count        func(*openRecordCounts) *int64
 }{
-	{&models.Deal{}, true, func(q *gorm.DB) *gorm.DB {
+	{&models.Deal{}, true, "deal", func(q *gorm.DB) *gorm.DB {
 		return q.Where("status = ?", models.DealStatusOpen)
 	}, func(o *openRecordCounts) *int64 { return &o.Deals }},
-	{&models.Lead{}, true, func(q *gorm.DB) *gorm.DB {
+	{&models.Lead{}, true, "", func(q *gorm.DB) *gorm.DB {
 		return q.Where("converted_deal_id IS NULL AND status <> ?", models.LeadStatusDisqualified)
 	}, func(o *openRecordCounts) *int64 { return &o.Leads }},
-	{&models.Prospect{}, true, func(q *gorm.DB) *gorm.DB {
+	{&models.Prospect{}, true, "", func(q *gorm.DB) *gorm.DB {
 		return q.Where("converted_lead_id IS NULL AND status NOT IN ?",
 			[]models.ProspectStatus{models.ProspectStatusDisqualified, models.ProspectStatusConverted})
 	}, func(o *openRecordCounts) *int64 { return &o.Prospects }},
-	{&models.Task{}, false, func(q *gorm.DB) *gorm.DB {
+	{&models.Task{}, false, "", func(q *gorm.DB) *gorm.DB {
 		return q.Where("status = ?", models.TaskStatusPending)
 	}, func(o *openRecordCounts) *int64 { return &o.Tasks }},
 }
+
+// reassignAuditBatchSize caps rows per audit INSERT (7 bind params each, well
+// under Postgres's 65535 limit), so any realistic hand-off is one INSERT.
+const reassignAuditBatchSize = 1000
 
 // countOpenRecords counts the open records userID still owns, so a
 // deactivate/delete response can tell the UI to offer a reassign.
@@ -63,15 +74,39 @@ func countOpenRecords(db *gorm.DB, userID uint) (openRecordCounts, error) {
 
 // reassignOpenRecords moves every open record owned by from to to inside tx,
 // writing one records_reassigned audit row on the user with the counts
-// (none when nothing moved). Closed records keep their owner as history.
+// (none when nothing moved), plus a per-record "reassigned" row for each
+// moved record of a table with an auditEntity, all in one batched INSERT.
+// Closed records keep their owner as history.
 func reassignOpenRecords(tx *gorm.DB, from, to, actorID uint) (openRecordCounts, error) {
 	var out openRecordCounts
+	var perRecord []models.AuditLogEntry
 	for _, r := range openOwnedRecords {
 		set := map[string]interface{}{"assigned_to": to}
 		if r.auditedModel {
 			set["updated_by"] = actorID
 		}
-		res := r.open(tx.Model(r.model).Where("assigned_to = ?", from)).Updates(set)
+		q := r.open(tx.Model(r.model).Where("assigned_to = ?", from))
+		if r.auditEntity != "" {
+			// Lock and list the rows first so the audit rows name exactly
+			// the records the UPDATE moves.
+			var ids []uint
+			if err := q.Clauses(clause.Locking{Strength: "UPDATE"}).Pluck("id", &ids).Error; err != nil {
+				return out, err
+			}
+			if len(ids) == 0 {
+				continue
+			}
+			q = tx.Model(r.model).Where("id IN ?", ids)
+			for _, id := range ids {
+				perRecord = append(perRecord, models.AuditLogEntry{
+					EntityType: r.auditEntity, EntityID: id, Action: "reassigned",
+					Before:  models.JSONMap{"assigned_to": from},
+					After:   models.JSONMap{"assigned_to": to},
+					ActorID: actorID,
+				})
+			}
+		}
+		res := q.Updates(set)
 		if res.Error != nil {
 			return out, res.Error
 		}
@@ -80,6 +115,11 @@ func reassignOpenRecords(tx *gorm.DB, from, to, actorID uint) (openRecordCounts,
 	}
 	if out.Total == 0 {
 		return out, nil
+	}
+	if len(perRecord) > 0 {
+		if err := tx.CreateInBatches(&perRecord, reassignAuditBatchSize).Error; err != nil {
+			return out, err
+		}
 	}
 	after := models.JSONMap{
 		"assigned_to": to, "deals": out.Deals, "leads": out.Leads,
