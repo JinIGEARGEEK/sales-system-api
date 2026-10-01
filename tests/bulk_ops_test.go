@@ -119,21 +119,24 @@ func TestBulkArchive_DealLeadProspect(t *testing.T) {
 	lead := seedLead(t, db, nil)
 	prospect := seedProspect(t, db, nil)
 
+	// Deals answer 200 with the archived/skipped ids (protected Won Deals
+	// are skipped — see won_deal_protection_test.go); the others stay 204.
 	cases := []struct {
-		name string
-		path string
-		id   uint
+		name   string
+		path   string
+		id     uint
+		status int
 	}{
-		{"deal", "/api/v1/deals/bulk-archive", deal.ID},
-		{"lead", "/api/v1/leads/bulk-archive", lead.ID},
-		{"prospect", "/api/v1/prospects/bulk-archive", prospect.ID},
+		{"deal", "/api/v1/deals/bulk-archive", deal.ID, fiber.StatusOK},
+		{"lead", "/api/v1/leads/bulk-archive", lead.ID, fiber.StatusNoContent},
+		{"prospect", "/api/v1/prospects/bulk-archive", prospect.ID, fiber.StatusNoContent},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := testutil.AuthRequest(t, http.MethodPatch, tc.path,
 				map[string]interface{}{"ids": []uint{tc.id}}, admin.ID, models.RoleAdmin)
 			resp := doJSON(t, app, req, nil)
-			require.Equal(t, fiber.StatusNoContent, resp.StatusCode)
+			require.Equal(t, tc.status, resp.StatusCode)
 		})
 	}
 

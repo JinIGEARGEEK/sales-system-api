@@ -21,6 +21,8 @@ func TestPayment_TaxFieldsRoundTripAndPartialUpdate(t *testing.T) {
 	app, db := testutil.App(t)
 	admin := testutil.CreateUser(t, db, models.RoleAdmin)
 	deal := seedDeal(t, db, nil)
+	// The payment below settles 10,000; the receivable must cover it.
+	require.NoError(t, db.Model(deal).Update("value", 10000).Error)
 	inst := &models.PaymentInstallment{DealID: deal.ID, Amount: 10000, DueDate: time.Now().AddDate(0, 0, -3)}
 	require.NoError(t, db.Create(inst).Error)
 
