@@ -129,7 +129,7 @@ func TestQuoteUpdate_PersistsNewFieldsAndAllowsClearingOptionalOnes(t *testing.T
 
 	ref := "PO-123"
 	quote := &models.Quote{
-		DealID: deal.ID, Items: models.JSONItems{}, Status: models.QuoteStatusDraft,
+		DealID: deal.ID, Items: models.JSONItems{{Description: "Setup", Qty: 1, Price: 1000}}, Status: models.QuoteStatusDraft,
 		ReferenceNumber: &ref,
 	}
 	require.NoError(t, db.Create(quote).Error)

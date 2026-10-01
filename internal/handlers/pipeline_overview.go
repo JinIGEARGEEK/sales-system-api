@@ -23,38 +23,36 @@ func NewPipelineOverviewHandler(db *gorm.DB) *PipelineOverviewHandler {
 	return &PipelineOverviewHandler{DB: db}
 }
 
-// resolveOverviewWindow reads date_from/date_to (YYYY-MM-DD, both inclusive)
-// and returns the current window plus the equal-length window right before
-// it, which the summary strip compares against. Defaults to the last 7 days.
-func resolveOverviewWindow(c *fiber.Ctx) (cur, prev overview.Window, fields map[string][]string) {
-	now := time.Now()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-	from, to := today.AddDate(0, 0, -6), today
-	for _, p := range []struct {
-		name string
-		dst  *time.Time
-	}{{"date_from", &from}, {"date_to", &to}} {
-		if v := c.Query(p.name); v != "" {
-			t, err := time.ParseInLocation("2006-01-02", v, time.Local)
-			if err != nil {
-				return overview.Window{}, overview.Window{}, map[string][]string{p.name: {"must be a valid YYYY-MM-DD date"}}
-			}
-			*p.dst = t
-		}
+// resolveOverviewWindow reads the date range (dateRangeQuery) and returns
+// the current window plus the equal-length window right before it, which the
+// summary strip compares against. A missing bound defaults to the last 7
+// days, today included.
+func resolveOverviewWindow(c *fiber.Ctx) (cur, prev overview.Window, err error) {
+	r, err := dateRangeQuery(c)
+	if err != nil {
+		return overview.Window{}, overview.Window{}, err
 	}
-	if to.Before(from) {
-		return overview.Window{}, overview.Window{}, map[string][]string{"date_to": {"must be on or after date_from"}}
+	y, m, d := time.Now().Date()
+	tomorrow := time.Date(y, m, d+1, 0, 0, 0, 0, time.Local)
+	cur = overview.Window{From: tomorrow.AddDate(0, 0, -7), To: tomorrow}
+	if r.From != nil {
+		cur.From = *r.From
 	}
-	cur = overview.Window{From: from, To: to.AddDate(0, 0, 1)}
+	if r.ToExclusive != nil {
+		cur.To = *r.ToExclusive
+	}
+	if !cur.From.Before(cur.To) {
+		return overview.Window{}, overview.Window{}, utils.ReversedDateRange("date_from", "date_to")
+	}
 	return cur, overview.PreviousWindow(cur), nil
 }
 
 // Overview — GET /pipeline/overview?date_from=&date_to=&assigned_to=&source=&business_unit=&tag=&search=&card_limit=
 // salesPipelineRoles-gated (Admin/Sales Rep/Sales Manager/Marketing).
 func (h *PipelineOverviewHandler) Overview(c *fiber.Ctx) error {
-	cur, prev, fields := resolveOverviewWindow(c)
-	if fields != nil {
-		return utils.ValidationError(c, "Invalid date range", fields)
+	cur, prev, err := resolveOverviewWindow(c)
+	if err != nil {
+		return reportError(c, err, "")
 	}
 	limit := overview.DefaultCardLimit
 	if v := c.Query("card_limit"); v != "" {

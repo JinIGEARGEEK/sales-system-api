@@ -26,7 +26,8 @@ type SimpleModel struct {
 
 // HardDeleteModel is for resources the spec deletes with a plain DELETE (no soft-delete
 // wording in api-system-spec.md, unlike Company/Contact/Tag/User which explicitly say
-// "soft-delete"/"archived") — Lead, Deal, Activity, Payment, Task, Quote, Contract.
+// "soft-delete"/"archived") — Activity, Task, Quote, Contract. (Lead, Deal and
+// Payment moved to AuditedModel.)
 type HardDeleteModel struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	CreatedAt time.Time `gorm:"index" json:"created_at"`

@@ -16,6 +16,10 @@
 // @in header
 // @name Authorization
 // @description Bearer JWT, e.g. "Bearer <token>".
+// @securityDefinitions.apikey ApiKeyAuth
+// @in header
+// @name X-API-Key
+// @description Open API key for the /open/* routes (docs/OPEN_API_GUIDE.md).
 package main
 
 import (
@@ -23,47 +27,39 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 	"time"
 	// Embedded zoneinfo, so TZ (e.g. Asia/Bangkok, set in the Dockerfile)
 	// works on the alpine image, which ships none.
 	_ "time/tzdata"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/cors"
-	"github.com/gofiber/fiber/v2/middleware/logger"
-	"github.com/gofiber/fiber/v2/middleware/recover"
-	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"github.com/igeargeek/sales-system-api/internal/clientip"
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/database"
-	"github.com/igeargeek/sales-system-api/internal/handlers"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/notifier"
-	"github.com/igeargeek/sales-system-api/internal/routes"
+	"github.com/igeargeek/sales-system-api/internal/server"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
 func main() {
 	cfg := config.Load()
 
-	// APP_ENV itself defaults to "development" when unset (config.Load) —
-	// harmless for local/test runs (.env always sets it there), but it means
-	// an operator who simply forgets to configure APP_ENV on a real
-	// deployment silently gets the permissive dev path below rather than the
-	// deny-by-default checks that path is meant to skip only intentionally.
-	// Not a hard failure (unlike the checks below) since this repo can't
-	// confirm every deployment's env already sets this — a loud warning
-	// instead of refusing to start avoids turning an unconfirmed assumption
-	// into an outage.
+	// An unset APP_ENV defaults to "development" (config.Load), which skips
+	// the production checks below — warn rather than fail, so a deployment
+	// that never set it isn't turned into an outage.
 	if _, appEnvSet := os.LookupEnv("APP_ENV"); !appEnvSet {
 		log.Println("WARNING: APP_ENV is not set — defaulting to \"development\", which skips the JWT_SECRET/CORS_ORIGINS production checks below. Set APP_ENV explicitly if this is a real deployment.")
 	}
 
 	// Deny-by-default: only the explicit "development" env may run with the
-	// placeholder secret/wildcard CORS. A misspelled or unset APP_ENV (e.g.
-	// "prod" instead of "production") now fails closed instead of silently
-	// booting a production-looking deployment with a guessable JWT secret.
+	// placeholder secret/wildcard CORS, so a misspelled APP_ENV (e.g. "prod")
+	// fails closed rather than booting with a guessable JWT secret.
 	if cfg.AppEnv != "development" {
 		if cfg.JWTSecret == "change-me-in-production" {
 			log.Fatal("refusing to start outside development with the default JWT_SECRET — set a real secret")
@@ -78,62 +74,100 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Parsed before anything else touches the database, so a malformed
+	// TRUSTED_PROXIES fails the boot rather than the first login.
+	proxies, err := clientip.New(cfg.TrustedProxies)
+	if err != nil {
+		log.Fatalf("TRUSTED_PROXIES: %v", err)
+	}
+	if len(cfg.TrustedProxies) > 0 {
+		log.Printf("trusting X-Forwarded-For from %s", strings.Join(cfg.TrustedProxies, ", "))
+	}
+
 	db, err := database.Connect(cfg)
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
 	}
 
-	if err := database.AutoMigrate(db); err != nil {
-		log.Fatalf("failed to run migrations: %v", err)
+	// Cancelled on SIGTERM (what Railway sends to stop/replace a deploy) or
+	// SIGINT (Ctrl-C locally) — the start of a graceful shutdown below.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Migrations and seeds under one cross-replica lock — see
+	// database.WithBootLock. The ctx only bounds waiting for the lock: a
+	// SIGTERM while another replica holds it aborts this boot.
+	err = database.WithBootLock(ctx, db, func() error {
+		if err := database.AutoMigrate(db); err != nil {
+			return fmt.Errorf("failed to run migrations: %w", err)
+		}
+		seedAdmin(db, cfg)
+		seedPipelineConfig(db)
+		seedLeadScoringCriteria(db)
+		seedAppSettings(db)
+		seedNotificationRules(db)
+		if cfg.AppEnv == "development" {
+			seedDemoData(db)
+		}
+		return nil
+	})
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	seedAdmin(db)
-	seedPipelineConfig(db)
-	seedLeadScoringCriteria(db)
-	seedAppSettings(db)
-	if cfg.AppEnv == "development" {
-		seedDemoData(db)
-	}
+	app := server.New(cfg, db, storageBackend, proxies, true)
 
-	app := fiber.New(fiber.Config{
-		ErrorHandler: apiErrorHandler,
-	})
-	app.Use(recover.New())
-	// requestid before logger so every access-log line carries the same ID
-	// apiErrorHandler logs below — without this there was no way to
-	// correlate an access-log entry with the corresponding server-side error
-	// log line for the same request when debugging a production incident.
-	// Echoes/generates X-Request-ID; the response header lets a client (or
-	// this API's own frontend) report it back for support purposes too.
-	app.Use(requestid.New())
-	app.Use(logger.New(logger.Config{
-		Format: "${time} ${status} - ${latency} ${method} ${path} reqid=${locals:requestid}\n",
-	}))
-	app.Use(cors.New(cors.Config{
-		AllowOrigins: cfg.CORSOrigins,
-		// A cross-origin frontend can only read non-standard response
-		// headers listed here.
-		ExposeHeaders: handlers.LaneRebalancedHeader,
-	}))
-
-	// Unauthenticated — used by the hosting platform's health check (e.g.
-	// Railway) to decide whether a deploy is ready to receive traffic.
-	app.Get("/health", func(c *fiber.Ctx) error {
-		return c.SendStatus(fiber.StatusOK)
-	})
-
-	routes.Setup(app, db, cfg, storageBackend)
-
-	// Background job: emails a Task's assignee once its due date has passed.
-	// Safe to run even without SMTP configured — see internal/utils/mailer.go.
-	notifier.StartTaskDueReminders(db, cfg)
-	notifier.StartWorkflowRuleReminders(db, cfg)
+	// Background jobs. All safe to run without SMTP configured (see
+	// internal/utils/mailer.go): their in-app work (rule-created Tasks,
+	// notification log, forecast snapshots) runs either way, and email is
+	// skipped silently — LogMailStatus says so once here instead. Each stops
+	// ticking when ctx is cancelled.
+	utils.LogMailStatus(cfg)
+	notifier.StartTaskDueReminders(ctx, db, cfg)
+	notifier.StartWorkflowRuleReminders(ctx, db, cfg)
 	// Daily forecast-accuracy snapshot — see internal/notifier/forecast_snapshots.go.
-	notifier.StartForecastSnapshots(db, cfg)
-	notifier.StartWeeklyDigest(db, cfg)
+	notifier.StartForecastSnapshots(ctx, db, cfg)
+	notifier.StartWeeklyDigest(ctx, db, cfg)
 
-	log.Fatal(app.Listen(":" + cfg.Port))
+	listenErr := make(chan error, 1)
+	go func() { listenErr <- app.Listen(":" + cfg.Port) }()
+
+	select {
+	case err := <-listenErr:
+		// Listen only returns on its own (before any shutdown) when it
+		// couldn't bind — nothing to drain.
+		log.Fatalf("server stopped: %v", err)
+	case <-ctx.Done():
+	}
+	// Restore default signal handling: a second SIGTERM/Ctrl-C during the
+	// drain below kills the process immediately, as an operator expects.
+	stop()
+	log.Println("shutdown signal received — draining in-flight requests")
+
+	// Stop accepting connections and wait for in-flight requests (an upload
+	// or export mid-stream) to finish, up to shutdownTimeout — kept inside
+	// railway.toml's drainingSeconds so Railway's SIGKILL doesn't land
+	// first. Then give a background job pass already underway a few seconds
+	// to finish (its ticker stopped when ctx was cancelled) before closing
+	// the pool under it.
+	if err := app.ShutdownWithTimeout(shutdownTimeout); err != nil {
+		log.Printf("http shutdown: %v", err)
+	}
+	if !notifier.Wait(jobShutdownTimeout) {
+		log.Printf("background jobs still running after %s — exiting anyway", jobShutdownTimeout)
+	}
+	if sqlDB, err := db.DB(); err == nil {
+		_ = sqlDB.Close()
+	}
+	log.Println("shutdown complete")
 }
+
+// Shutdown budget: shutdownTimeout for HTTP requests plus jobShutdownTimeout
+// for a background pass, together under railway.toml's drainingSeconds (30).
+const (
+	shutdownTimeout    = 20 * time.Second
+	jobShutdownTimeout = 5 * time.Second
+)
 
 // newStorageBackend builds the Storage implementation config.StorageBackend
 // selects — see biz_spec/s3-migration-plan.md. Fails fast on a missing S3_*
@@ -167,32 +201,12 @@ func newStorageBackend(cfg *config.Config) (utils.Storage, error) {
 	}
 }
 
-// apiErrorHandler guarantees every error — including a panic caught by
-// recover.New() or a handler that returns a bare error instead of routing
-// through utils.* — still gets the §1.5 JSON envelope instead of Fiber's
-// default plain-text response.
-func apiErrorHandler(c *fiber.Ctx, err error) error {
-	code := fiber.StatusInternalServerError
-	message := err.Error()
-	if fe, ok := err.(*fiber.Error); ok {
-		code = fe.Code
-		message = fe.Message
-	}
-	// 5xx messages can carry raw Go/GORM/driver error text (internal details
-	// that shouldn't reach a client) — log the real error server-side and
-	// return a generic message instead. 4xx messages (e.g. Fiber's own
-	// "Cannot GET /x") are safe to pass through as-is.
-	if code >= fiber.StatusInternalServerError {
-		reqID, _ := c.Locals("requestid").(string)
-		log.Printf("unhandled error on %s %s (reqid=%s): %v", c.Method(), c.Path(), reqID, err)
-		message = "Internal server error"
-	}
-	return utils.ErrorResponse(c, code, "INTERNAL_ERROR", message)
-}
-
-// seedAdmin creates an initial Admin user if the users table is empty so
-// there's a way to log in on first run.
-func seedAdmin(db *gorm.DB) {
+// seedAdmin creates the first Admin when the users table is empty. The
+// password is ADMIN_INITIAL_PASSWORD if set (never logged); otherwise it's
+// generated and printed once — to the log in development, else to stderr —
+// since there's no other way in on a fresh deploy. MustChangePassword
+// retires it at first login, and WithBootLock keeps it to one replica.
+func seedAdmin(db *gorm.DB, cfg *config.Config) {
 	var count int64
 	db.Model(&models.User{}).Count(&count)
 	if count > 0 {
@@ -200,7 +214,15 @@ func seedAdmin(db *gorm.DB) {
 	}
 
 	const email = "admin@igeargeek.com"
-	password := utils.NewTempPassword()
+	password, fromEnv := cfg.AdminInitialPassword, cfg.AdminInitialPassword != ""
+	// Same minimum as change-password, so the seed can't be weaker than a
+	// password the Admin could set for themselves.
+	if fromEnv && len(password) < utils.MinPasswordLength {
+		log.Fatalf("ADMIN_INITIAL_PASSWORD must be at least %d characters", utils.MinPasswordLength)
+	}
+	if !fromEnv {
+		password = utils.NewTempPassword()
+	}
 
 	hash, err := utils.HashPassword(password)
 	if err != nil {
@@ -220,14 +242,27 @@ func seedAdmin(db *gorm.DB) {
 		log.Fatalf("failed to seed admin user: %v", err)
 	}
 
-	log.Printf("Seeded initial admin user — email: %s, password: %s (change this immediately)", email, password)
+	switch {
+	case fromEnv:
+		log.Printf("Seeded initial admin user %s with the password from ADMIN_INITIAL_PASSWORD — it must be changed at first login", email)
+	case cfg.AppEnv == "development":
+		log.Printf("Seeded initial admin user — email: %s, password: %s (change this immediately)", email, password)
+	default:
+		log.Printf("Seeded initial admin user %s with a generated password — printed once to stderr below; set ADMIN_INITIAL_PASSWORD before a first boot to avoid this", email)
+		fmt.Fprintf(os.Stderr, "\n"+
+			"==================== ONE-TIME ADMIN CREDENTIAL ====================\n"+
+			"  email:    %s\n"+
+			"  password: %s\n"+
+			"  Printed only on the boot that created this account. Log in and\n"+
+			"  change it now (it's required at first login).\n"+
+			"====================================================================\n\n",
+			email, password)
+	}
 }
 
-// seedPipelineConfig inserts the default PipelineStage/LeadSourceOption rows
-// (the values that used to be hardcoded Go enums) if their tables are empty,
-// same first-run-only idiom as seedAdmin above. Existing Deals/Leads keep
-// validating fine post-migration because these are the exact strings already
-// stored on those rows.
+// seedPipelineConfig inserts the default PipelineStage/LeadSourceOption/...
+// option rows if their tables are empty, same first-run-only idiom as
+// seedAdmin above.
 func seedPipelineConfig(db *gorm.DB) {
 	var stageCount int64
 	db.Model(&models.PipelineStage{}).Count(&stageCount)
@@ -321,6 +356,26 @@ func seedLeadScoringCriteria(db *gorm.DB) {
 			log.Fatalf("failed to seed default lead scoring criteria: %v", err)
 		}
 		log.Printf("Seeded %d default lead scoring criteria", len(models.DefaultLeadScoringCriteria))
+	}
+}
+
+// seedNotificationRules inserts each models.DefaultNotificationRules row
+// whose entity type has no rule yet (active or not), so an existing
+// deployment gets the new renewal rules once, and an Admin who deactivates
+// or edits one never has it re-created. ON CONFLICT DO NOTHING covers an
+// Admin-made rule that already uses the default's name.
+func seedNotificationRules(db *gorm.DB) {
+	for _, def := range models.DefaultNotificationRules {
+		var count int64
+		db.Model(&models.NotificationRule{}).Where("entity_type = ?", def.EntityType).Count(&count)
+		if count > 0 {
+			continue
+		}
+		rule := def
+		if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&rule).Error; err != nil {
+			log.Fatalf("failed to seed default notification rule %q: %v", def.Name, err)
+		}
+		log.Printf("Seeded default notification rule %q", def.Name)
 	}
 }
 

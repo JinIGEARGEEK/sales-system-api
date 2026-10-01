@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -55,41 +56,45 @@ func (h *DealHandler) List(c *fiber.Ctx) error {
 	return utils.List(c, deals, page, perPage, total)
 }
 
+// dealFields are the Deal fields Lead Convert's `deal` object accepts too;
+// dealForm embeds them, so both bodies share one JSON shape and one
+// validation chain.
+type dealFields struct {
+	Title             string               `json:"title"`
+	Value             float64              `json:"value"`
+	Stage             models.DealStage     `json:"stage"`
+	ExpectedCloseDate *string              `json:"expected_close_date"`
+	AssignedTo        *uint                `json:"assigned_to"`
+	Channel           models.LeadSource    `json:"channel"`
+	BusinessUnit      *models.BusinessUnit `json:"business_unit"`
+	BusinessUnitItem  *string              `json:"business_unit_item"`
+	// LostReason is required once stage or status is Lost.
+	LostReason *models.LostReason `json:"lost_reason"`
+}
+
 type dealForm struct {
-	CompanyID         uint                     `json:"company_id"`
-	ContactID         uint                     `json:"contact_id"`
-	Title             string                   `json:"title"`
-	Value             float64                  `json:"value"`
-	Stage             models.DealStage         `json:"stage"`
-	Status            models.DealStatus        `json:"status"`
-	ExpectedCloseDate *string                  `json:"expected_close_date"`
-	AssignedTo        *uint                    `json:"assigned_to"`
-	Channel           models.LeadSource        `json:"channel"`
-	BusinessUnit      *models.BusinessUnit     `json:"business_unit"`
-	BusinessUnitItem  *string                  `json:"business_unit_item"`
-	Probability       *int                     `json:"probability"`
-	LostReason        *models.LostReason       `json:"lost_reason"`
-	ForecastCategory  *models.ForecastCategory `json:"forecast_category"`
+	dealFields
+	CompanyID        uint                     `json:"company_id"`
+	ContactID        uint                     `json:"contact_id"`
+	Status           models.DealStatus        `json:"status"`
+	Probability      *int                     `json:"probability"`
+	ForecastCategory *models.ForecastCategory `json:"forecast_category"`
 }
 
 // validateStageAndChannel checks Stage/Channel against the active
-// PipelineStage/LeadSourceOption rows — the DB-backed replacement for the
-// previously hardcoded DealStage/LeadSource enum whitelist. An empty value is
-// allowed through (defaulted downstream), and a value already stored on an
-// existing row (e.g. the seeded hardcoded stage names) always validates fine.
+// PipelineStage/LeadSourceOption rows (empty is allowed, defaulted
+// downstream) and BusinessUnit against its enum. to is form.Stage's flags.
 //
-// Returns utils.ErrHandled (never the nil c.JSON(...) forwards on its own) so
-// callers' `if err != nil { return nil }` guard actually fires — see
-// ErrHandled's doc for why forwarding ValidationError's own return value here
-// would silently let every invalid stage/channel through.
-func (h *DealHandler) validateStageAndChannel(c *fiber.Ctx, form dealForm) error {
-	if !utils.IsActivePipelineStage(h.DB, string(form.Stage)) {
+// Returns utils.ErrHandled rather than ValidationError's own (nil) result so
+// callers' `if err != nil` guard fires — see ErrHandled's doc.
+func validateStageAndChannel(c *fiber.Ctx, db *gorm.DB, form dealForm, to utils.StageFlags) error {
+	if form.Stage != "" && !to.Active {
 		_ = utils.ValidationError(c, "stage is not a valid active pipeline stage", map[string][]string{
 			"stage": {"invalid"},
 		})
 		return utils.ErrHandled
 	}
-	if !utils.IsActiveLeadSource(h.DB, string(form.Channel)) {
+	if !utils.IsActiveLeadSource(db, string(form.Channel)) {
 		_ = utils.ValidationError(c, "channel is not a valid active lead source", map[string][]string{
 			"channel": {"invalid"},
 		})
@@ -104,21 +109,17 @@ func (h *DealHandler) validateStageAndChannel(c *fiber.Ctx, form dealForm) error
 	return nil
 }
 
-// isLosingForm reports whether the submitted form is setting this Deal to
-// Lost (by stage or by status directly) — the trigger for requiring
-// lost_reason. Prefers the configured PipelineStage row's IsLostStage flag
-// (via utils.IsLostStage) so an admin-renamed/custom Lost stage is still
-// recognized, the same resolution DealHandler.UpdateStage already uses.
-func isLosingForm(db *gorm.DB, form dealForm) bool {
-	return utils.IsLostStage(db, form.Stage) || form.Status == models.DealStatusLost
+// isLosingForm reports whether the form sets the Deal to Lost, by stage
+// (to is form.Stage's flags) or by status — the trigger for requiring
+// lost_reason.
+func isLosingForm(form dealForm, to utils.StageFlags) bool {
+	return to.Lost || form.Status == models.DealStatusLost
 }
 
-// validateProbabilityAndLostReason mirrors the conditional-required pattern
-// already used elsewhere in this codebase (e.g. lost_reason is only required
-// once Stage/Status moves to Lost, the same way Contract-signed-before-Won-style
-// gates only fire once their triggering condition is met). Returns
-// utils.ErrHandled (see its doc) if invalid, nil if valid.
-func validateProbabilityAndLostReason(c *fiber.Ctx, db *gorm.DB, form dealForm) error {
+// validateProbabilityAndLostReason range-checks probability, checks
+// forecast_category, and requires a valid lost_reason once the form is
+// losing. Returns utils.ErrHandled (see its doc) if invalid, nil if valid.
+func validateProbabilityAndLostReason(c *fiber.Ctx, form dealForm, to utils.StageFlags) error {
 	if form.Probability != nil && (*form.Probability < 0 || *form.Probability > 100) {
 		_ = utils.ValidationError(c, "probability must be between 0 and 100", map[string][]string{
 			"probability": {"must be between 0 and 100"},
@@ -131,7 +132,7 @@ func validateProbabilityAndLostReason(c *fiber.Ctx, db *gorm.DB, form dealForm) 
 		})
 		return utils.ErrHandled
 	}
-	if isLosingForm(db, form) {
+	if isLosingForm(form, to) {
 		if form.LostReason == nil || *form.LostReason == "" {
 			_ = utils.ValidationError(c, "lost_reason is required when marking a deal Lost", map[string][]string{
 				"lost_reason": {"required"},
@@ -148,27 +149,29 @@ func validateProbabilityAndLostReason(c *fiber.Ctx, db *gorm.DB, form dealForm) 
 	return nil
 }
 
-// isWinningForm reports whether the submitted form is setting this Deal to
-// Won (by stage or by status directly) — the trigger for FR-CRM-045's
-// signed-contract precondition. Mirrors isLosingForm's resolution.
-func isWinningForm(db *gorm.DB, form dealForm) bool {
-	return utils.IsWonStage(db, form.Stage) || form.Status == models.DealStatusWon
+// isWinningForm reports whether the form sets the Deal to Won, by stage or
+// by status — the trigger for FR-CRM-045's signed-contract precondition.
+func isWinningForm(form dealForm, to utils.StageFlags) bool {
+	return to.Won || form.Status == models.DealStatusWon
 }
 
-// validateContractSignedBeforeWon enforces FR-CRM-045 ("configurable, not
-// hard-enforced by default" — so it's a no-op unless an Admin has turned it
-// on via AppSettings). Once enabled, a Deal can only move into Won if it
-// already has at least one Contract with status Signed. dealID is 0 for a
-// brand-new Deal being created directly in a Won stage/status — which can
-// never have an existing Contract yet, so the same Count query correctly
-// blocks that case too, with no special-casing needed.
+// validateContractSignedBeforeWon enforces FR-CRM-045 when an Admin has
+// enabled it in AppSettings (off by default): a Deal can only move into Won
+// with at least one Signed Contract. A contract counts only if it is stored
+// as signed AND has its signed file and signed_date, i.e. went through
+// POST /contracts/:id/upload; a legacy hand-marked "signed" row with no file
+// doesn't. dealID 0 (a Deal not created yet) has none, so the gate always
+// blocks it.
 func validateContractSignedBeforeWon(c *fiber.Ctx, db *gorm.DB, dealID uint) error {
 	settings := utils.GetAppSettings(db)
 	if !settings.RequireSignedContractBeforeWon {
 		return nil
 	}
 	var count int64
-	db.Model(&models.Contract{}).Where("deal_id = ? AND status = ?", dealID, models.ContractStatusSigned).Count(&count)
+	db.Model(&models.Contract{}).
+		Where("deal_id = ? AND status = ?", dealID, models.ContractStatusSigned).
+		Where("signed_file_url IS NOT NULL AND signed_file_url <> '' AND signed_date IS NOT NULL").
+		Count(&count)
 	if count == 0 {
 		_ = utils.ValidationError(c, "a signed contract is required before marking this deal Won", map[string][]string{
 			"stage": {"requires_signed_contract"},
@@ -178,10 +181,9 @@ func validateContractSignedBeforeWon(c *fiber.Ctx, db *gorm.DB, dealID uint) err
 	return nil
 }
 
-// validateDealRequiredFields checks the three dealForm fields Create and
-// Update both insist on (company_id, contact_id, title) — extracted since the
-// two handlers previously duplicated this exact check verbatim. Returns
-// utils.ErrHandled (see its doc) if invalid, nil if valid.
+// validateDealRequiredFields checks company_id, contact_id and title, which
+// Create and Update both require. Returns utils.ErrHandled (see its doc) if
+// invalid, nil if valid.
 func validateDealRequiredFields(c *fiber.Ctx, form dealForm) error {
 	if form.Title == "" || form.CompanyID == 0 || form.ContactID == 0 {
 		_ = utils.ValidationError(c, "company_id, contact_id and title are required", map[string][]string{
@@ -194,15 +196,10 @@ func validateDealRequiredFields(c *fiber.Ctx, form dealForm) error {
 	return nil
 }
 
-// validateDealValueAndDate checks the two dealForm fields that previously had
-// no format/range validation at all: Value (must be non-negative — a client
-// bug or bad import row supplying a negative number would silently corrupt
-// every value-sum aggregate on the dashboard) and ExpectedCloseDate (must
-// parse as either a plain "YYYY-MM-DD" date or a full RFC3339 timestamp — the
-// two shapes the frontend actually sends, see forecastTrend's comment). A
-// malformed date string would otherwise persist untouched and silently fail
-// to land in any forecastTrend month bucket instead of erroring at write time.
-// Returns utils.ErrHandled (see its doc) if invalid, nil if valid.
+// validateDealValueAndDate rejects a negative Value (it would skew every
+// value-sum aggregate) and an ExpectedCloseDate that isn't YYYY-MM-DD or
+// RFC3339 (it would never land in a forecastTrend month bucket). Returns
+// utils.ErrHandled (see its doc) if invalid, nil if valid.
 func validateDealValueAndDate(c *fiber.Ctx, form dealForm) error {
 	if form.Value < 0 {
 		_ = utils.ValidationError(c, "value must not be negative", map[string][]string{
@@ -224,39 +221,67 @@ func validateDealValueAndDate(c *fiber.Ctx, form dealForm) error {
 	return nil
 }
 
-// defaultProbabilityFor resolves the win-probability default for a stage via
-// utils.StageDefaultProbability, which prefers the configured PipelineStage
-// row (Won/Lost flags -> 100/0, in-between stages -> interpolated by
-// sort_order) over the hardcoded models.StageDefaultProbability switch, so a
-// custom Admin-added stage — or a renamed Won/Lost stage — still gets a
-// sensible default instead of a flat 10.
+// validateNewDealForm is the check chain for a Deal that doesn't exist yet
+// (Deal Create, Lead Convert), after any required-field check: assignee,
+// value/date, probability/lost_reason, the signed-contract gate on a Won
+// start, and stage/channel/business_unit. Returns form.Stage's flags for
+// the caller to resolve status with, and utils.ErrHandled once a response
+// has been written.
+func validateNewDealForm(c *fiber.Ctx, db *gorm.DB, form dealForm) (utils.StageFlags, error) {
+	to := utils.LookupStageFlags(db, form.Stage)
+	if !CanWrite(c, form.AssignedTo) {
+		_ = utils.Forbidden(c, "Cannot assign a deal to another sales rep")
+		return to, utils.ErrHandled
+	}
+	if err := validateAssignee(db, form.AssignedTo); err != nil {
+		_ = respondAssigneeErr(c, err)
+		return to, utils.ErrHandled
+	}
+	if err := validateDealValueAndDate(c, form); err != nil {
+		return to, err
+	}
+	if err := validateProbabilityAndLostReason(c, form, to); err != nil {
+		return to, err
+	}
+	if isWinningForm(form, to) {
+		if err := validateContractSignedBeforeWon(c, db, 0); err != nil {
+			return to, err
+		}
+	}
+	return to, validateStageAndChannel(c, db, form, to)
+}
+
+// defaultProbabilityFor resolves the win-probability default for a stage
+// (see utils.StageDefaultProbability).
 func (h *DealHandler) defaultProbabilityFor(stage models.DealStage) int {
 	return utils.StageDefaultProbability(h.DB, stage)
 }
 
 // defaultForecastCategoryFor resolves the Commit/Best Case/Pipeline default
-// for a stage via models.StageDefaultForecastCategory. Unlike
-// defaultProbabilityFor, this isn't backed by the configurable PipelineStage
-// table — forecast category is a coarse three-way exec-facing grouping, not a
-// per-stage-configured number, so the fixed switch is enough.
+// for a stage. Unlike probability it isn't configurable per PipelineStage —
+// the fixed three-way grouping is enough.
 func (h *DealHandler) defaultForecastCategoryFor(stage models.DealStage) models.ForecastCategory {
 	return models.StageDefaultForecastCategory(stage)
 }
 
-// syncStatusWithStageFlags forces deal.Status to won/lost whenever the
-// deal's current Stage resolves (via utils.IsWonStage/IsLostStage) to a
-// won/lost stage, regardless of what Status the request body supplied.
-// Mirrors UpdateStage's isWon/isLost handling so Create/Update (the full
-// form) can't drift out of sync with the Kanban quick-move endpoint — e.g. a
-// client submitting stage=<custom Lost stage> with status="open" would
-// otherwise be miscounted as open in forecast/report aggregates.
-func (h *DealHandler) syncStatusWithStageFlags(deal *models.Deal) {
+// resolveDealStatus is the one rule for a Deal's status given the stage it
+// is moving from and to: a Won/Lost stage forces won/lost (so a custom Lost
+// stage with status "open" can't be miscounted in forecasts); leaving a
+// Won/Lost stage for an open one reopens the deal; otherwise the requested
+// status stands, so "lost at an open stage" is honored. clearLostReason is
+// true whenever the result isn't lost — the reason belongs to a Lost stint.
+func resolveDealStatus(from, to utils.StageFlags, stageChanged bool, requested models.DealStatus) (status models.DealStatus, clearLostReason bool) {
 	switch {
-	case utils.IsWonStage(h.DB, deal.Stage):
-		deal.Status = models.DealStatusWon
-	case utils.IsLostStage(h.DB, deal.Stage):
-		deal.Status = models.DealStatusLost
+	case to.Won:
+		status = models.DealStatusWon
+	case to.Lost:
+		status = models.DealStatusLost
+	case stageChanged && from.Terminal():
+		status = models.DealStatusOpen
+	default:
+		status = requested
 	}
+	return status, status != models.DealStatusLost
 }
 
 // Create godoc
@@ -270,6 +295,7 @@ func (h *DealHandler) syncStatusWithStageFlags(deal *models.Deal) {
 // @Success 201 {object} models.Deal
 // @Failure 400 {object} map[string]interface{} "Invalid request body, or validation error (required fields, value, expected_close_date, probability, lost_reason, stage/channel/business_unit)"
 // @Failure 403 {object} map[string]interface{} "Cannot assign a deal to another sales rep"
+// @Failure 422 {object} map[string]interface{} "assigned_to is not an active sales-role user"
 // @Router /deals [post]
 func (h *DealHandler) Create(c *fiber.Ctx) error {
 	var form dealForm
@@ -279,23 +305,8 @@ func (h *DealHandler) Create(c *fiber.Ctx) error {
 	if err := validateDealRequiredFields(c, form); err != nil {
 		return nil
 	}
-	if !CanWrite(c, form.AssignedTo) {
-		return utils.Forbidden(c, "Cannot assign a deal to another sales rep")
-	}
-	if err := validateDealValueAndDate(c, form); err != nil {
-		return nil
-	}
-	if err := validateProbabilityAndLostReason(c, h.DB, form); err != nil {
-		return nil
-	}
-	if isWinningForm(h.DB, form) {
-		// dealID 0 — a brand-new Deal can't have a Contract yet, so this only
-		// ever matters (and always blocks) when the toggle is enabled.
-		if err := validateContractSignedBeforeWon(c, h.DB, 0); err != nil {
-			return nil
-		}
-	}
-	if err := h.validateStageAndChannel(c, form); err != nil {
+	to, err := validateNewDealForm(c, h.DB, form)
+	if err != nil {
 		return nil
 	}
 
@@ -307,17 +318,14 @@ func (h *DealHandler) Create(c *fiber.Ctx) error {
 		Probability: form.Probability, LostReason: form.LostReason,
 		ForecastCategory: form.ForecastCategory,
 	}
+	// The default stage is never Won/Lost, matching an empty stage's flags.
 	if deal.Stage == "" {
 		deal.Stage = utils.DefaultPipelineStage(h.DB)
 	}
 	if deal.Status == "" {
 		deal.Status = models.DealStatusOpen
 	}
-	// Keep Status in sync with the resolved stage flags — otherwise a client
-	// could submit a custom Lost/Won stage alongside status "open" and the
-	// deal would be excluded from won/lost dashboards (forecast revenue,
-	// reports) despite sitting in a terminal stage.
-	h.syncStatusWithStageFlags(&deal)
+	deal.Status, _ = resolveDealStatus(to, to, false, deal.Status)
 	if deal.Probability == nil {
 		def := h.defaultProbabilityFor(deal.Stage)
 		deal.Probability = &def
@@ -335,12 +343,12 @@ func (h *DealHandler) Create(c *fiber.Ctx) error {
 
 // Get godoc
 // @Summary Get a deal (Admin/Sales Rep/Sales Manager)
-// @Description Returns a single Deal by ID.
+// @Description Returns a single Deal by ID, plus the read-only value_quote_number (number of the Accepted quote its value is synced from — value_quote_id — else null).
 // @Tags deals
 // @Security BearerAuth
 // @Produce json
 // @Param id path int true "Deal ID"
-// @Success 200 {object} models.Deal
+// @Success 200 {object} handlers.dealDetail
 // @Failure 404 {object} map[string]interface{} "Deal not found"
 // @Router /deals/{id} [get]
 func (h *DealHandler) Get(c *fiber.Ctx) error {
@@ -348,22 +356,25 @@ func (h *DealHandler) Get(c *fiber.Ctx) error {
 	if err := utils.FindByID(c, h.DB, &deal, "Deal not found"); err != nil {
 		return nil
 	}
-	return utils.OK(c, deal)
+	return utils.OK(c, withValueQuoteNumber(h.DB, deal))
 }
 
 // Update godoc
 // @Summary Update a deal (Admin/Sales Rep/Sales Manager)
-// @Description Full update of a Deal — same validation as Create. Writes a stage_changed audit log entry when the submitted stage differs from the deal's current one. Only the assigned Sales Rep (or Admin/Sales Manager) may update; a Sales Rep cannot reassign to another rep. api-system-spec.md §7.1.
+// @Description Full update of a Deal — same validation as Create. An omitted stage/status keeps the stored value; moving from a Won/Lost stage to an open one sets status open. Moving a Won Deal with money attached (a non-deleted Payment, any installment, or a signed Contract) out of Won is 409 (WON_DEAL_PROTECTED) for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without it), recorded in a won_reversed audit entry. Writes a stage_changed audit log entry when the submitted stage differs from the deal's current one. Only the assigned Sales Rep (or Admin/Sales Manager) may update; a Sales Rep may keep or claim the deal but not reassign it to another rep or unassign it (403). A changed assigned_to must be an active sales-role user (422). value/company_id changes write an updated audit entry and an assigned_to change a reassigned one. While value_quote_id is set (value synced from an Accepted quote), a value different from the stored one is 422 fields.value ["synced_from_quote"]; resending the same value is fine. The response adds value_quote_number. api-system-spec.md §7.1.
 // @Tags deals
 // @Security BearerAuth
 // @Accept json
 // @Produce json
 // @Param id path int true "Deal ID"
 // @Param body body dealForm true "Deal fields"
-// @Success 200 {object} models.Deal
+// @Param reason query string false "Required from a manager moving a Won Deal with money out of Won (max 500 chars)"
+// @Success 200 {object} handlers.dealDetail
 // @Failure 400 {object} map[string]interface{} "Invalid request body, or validation error (required fields, value, expected_close_date, probability, lost_reason, stage/channel/business_unit)"
-// @Failure 403 {object} map[string]interface{} "Not authorized to update this deal, or cannot assign a deal to another sales rep"
+// @Failure 403 {object} map[string]interface{} "Not authorized to update this deal, or cannot assign a deal to another sales rep or unassign it"
+// @Failure 422 {object} map[string]interface{} "assigned_to is not an active sales-role user, or value changed while synced from an Accepted quote (fields.value synced_from_quote)"
 // @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Failure 409 {object} map[string]interface{} "Won Deal with money: WON_DEAL_PROTECTED (not a manager) or REASON_REQUIRED"
 // @Router /deals/{id} [put]
 func (h *DealHandler) Update(c *fiber.Ctx) error {
 	var deal models.Deal
@@ -378,8 +389,40 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
-	if !CanWrite(c, form.AssignedTo) {
-		return utils.Forbidden(c, "Cannot assign a deal to another sales rep")
+	// An omitted stage/status keeps the stored one. Filled in before
+	// validation so the Won/Lost gates below see the deal's real state.
+	if form.Stage == "" {
+		form.Stage = deal.Stage
+	}
+	if form.Status == "" {
+		form.Status = deal.Status
+	}
+	oldStage := deal.Stage
+	stageChanged := form.Stage != oldStage
+	to := utils.LookupStageFlags(h.DB, form.Stage)
+	from := to
+	if stageChanged {
+		from = utils.LookupStageFlags(h.DB, oldStage)
+	}
+	status, clearLostReason := resolveDealStatus(from, to, stageChanged, form.Status)
+	// The form resubmits the current status on every save, so a reopen
+	// (leaving Won/Lost for an open stage) must be what validation sees —
+	// otherwise a Lost deal moved back would still demand a lost_reason.
+	// A Won/Lost destination is checked through its flags instead.
+	if !to.Terminal() {
+		form.Status = status
+	}
+	// A Sales Rep may keep or claim the deal, not unassign it or hand it on.
+	// An unchanged assignee isn't re-validated, so a deal still owned by a
+	// since-deactivated user stays editable.
+	assigneeChanged := !sameAssignee(deal.AssignedTo, form.AssignedTo)
+	if !CanSetAssignee(c, deal.AssignedTo, form.AssignedTo) {
+		return utils.Forbidden(c, "Cannot assign a deal to another sales rep or unassign it")
+	}
+	if assigneeChanged {
+		if err := validateAssignee(h.DB, form.AssignedTo); err != nil {
+			return respondAssigneeErr(c, err)
+		}
 	}
 	if err := validateDealRequiredFields(c, form); err != nil {
 		return nil
@@ -387,39 +430,61 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 	if err := validateDealValueAndDate(c, form); err != nil {
 		return nil
 	}
-	if err := validateProbabilityAndLostReason(c, h.DB, form); err != nil {
+	// A value synced from an Accepted quote can't be edited here; resending
+	// it (to within MoneyEpsilon) is fine and keeps the stored figure.
+	// Re-checked under the Deal row lock below, against a concurrent accept.
+	var syncedErr *dealValueSyncedErr
+	if err := checkSyncedDealValue(h.DB, &deal, form.Value); errors.As(err, &syncedErr) {
+		return respondDealValueSynced(c, syncedErr)
+	}
+	if deal.ValueQuoteID != nil {
+		form.Value = deal.Value
+	}
+	if err := validateProbabilityAndLostReason(c, form, to); err != nil {
 		return nil
 	}
-	// Only check on the actual transition into Won, not on every subsequent
-	// save of a deal that's already Won — the frontend's Overview form
-	// resubmits the deal's current stage/status on every save (even an
-	// unrelated field edit), and deal.Status here is still the pre-mutation
-	// value, so this only fires once per Won transition.
-	if isWinningForm(h.DB, form) && deal.Status != models.DealStatusWon {
+	// Only on the transition into Won (deal.Status is still the stored
+	// value), not on every resubmitting save of an already-Won deal.
+	if isWinningForm(form, to) && deal.Status != models.DealStatusWon {
 		if err := validateContractSignedBeforeWon(c, h.DB, deal.ID); err != nil {
 			return nil
 		}
 	}
-	if err := h.validateStageAndChannel(c, form); err != nil {
+	if err := validateStageAndChannel(c, h.DB, form, to); err != nil {
 		return nil
 	}
+	// Leaving Won (for an open stage or Lost) on a Deal with money attached
+	// is a manager's call, with a reason — see guardProtectedWonDeal.
+	var unwinReason string
+	forcedUnwin := false
+	if deal.Status == models.DealStatusWon && status != models.DealStatusWon {
+		var err error
+		if unwinReason, forcedUnwin, err = guardProtectedWonDeal(c, h.DB, &deal, "move out of Won"); err != nil {
+			return nil
+		}
+	}
 
-	// oldStage/before captured ahead of the mutation below — this form
-	// resubmits the deal's full state on every save (even an unrelated field
-	// edit), so oldStage != deal.Stage after mutating is the only reliable
-	// signal that the rep actually changed Stage here, same check UpdateStage
-	// uses for its own audit row.
-	oldStage := deal.Stage
 	before := models.JSONMap{"stage": deal.Stage, "status": deal.Status}
+	// value/company_id changes get an "updated" row, an owner change a
+	// "reassigned" one (same shape as PATCH /deals/:id/reassign).
+	fieldsBefore, fieldsAfter := models.JSONMap{}, models.JSONMap{}
+	if deal.Value != form.Value {
+		fieldsBefore["value"], fieldsAfter["value"] = deal.Value, form.Value
+	}
+	if deal.CompanyID != form.CompanyID {
+		fieldsBefore["company_id"], fieldsAfter["company_id"] = deal.CompanyID, form.CompanyID
+	}
+	ownerBefore := models.JSONMap{"assigned_to": deal.AssignedTo}
 
 	deal.CompanyID, deal.ContactID, deal.Title, deal.Value = form.CompanyID, form.ContactID, form.Title, form.Value
-	deal.Stage, deal.Status, deal.ExpectedCloseDate = form.Stage, form.Status, form.ExpectedCloseDate
+	deal.Stage, deal.Status, deal.ExpectedCloseDate = form.Stage, status, form.ExpectedCloseDate
 	deal.AssignedTo, deal.Channel = form.AssignedTo, form.Channel
 	deal.BusinessUnit, deal.BusinessUnitItem = form.BusinessUnit, form.BusinessUnitItem
 	deal.Probability, deal.LostReason = form.Probability, form.LostReason
 	deal.ForecastCategory = form.ForecastCategory
-	// Keep Status in sync with the resolved stage flags — see Create's comment.
-	h.syncStatusWithStageFlags(&deal)
+	if clearLostReason {
+		deal.LostReason = nil
+	}
 	if deal.Probability == nil {
 		def := h.defaultProbabilityFor(deal.Stage)
 		deal.Probability = &def
@@ -428,55 +493,76 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 		def := h.defaultForecastCategoryFor(deal.Stage)
 		deal.ForecastCategory = &def
 	}
-	// LostReason only makes sense while the deal is actually Lost — clear a
-	// stale reason left over from a previous Lost stint once it moves elsewhere.
-	// Uses the same PipelineStage-flag-aware resolution as isLosingForm/UpdateStage
-	// so a renamed/custom Lost stage doesn't silently lose its lost_reason.
-	if !utils.IsLostStage(h.DB, deal.Stage) && deal.Status != models.DealStatusLost {
-		deal.LostReason = nil
-	}
-	if oldStage != deal.Stage {
+	if stageChanged {
 		deal.MarkStageEntered(string(oldStage))
 		// No drag geometry on the edit form — append to the new lane's end.
 		deal.Position = dealLanes.next(h.DB, deal.Stage)
 	}
 
-	// Previously a plain h.DB.Save with no audit trail at all — a Stage
-	// change made from the Overview edit form (as opposed to the Kanban
-	// board's dedicated PATCH /deals/:id/stage, which already wrote a
-	// stage_changed row) was silently invisible to both the Admin audit
-	// viewer and the Activities pages' Deal "Pipeline History" section,
-	// which reads this same audit trail.
+	// A stage change here gets the same stage_changed audit row and
+	// company Activity (a stage move counts as customer contact) as
+	// UpdateStage, feeding the audit viewer and Pipeline History.
 	after := models.JSONMap{"stage": deal.Stage, "status": deal.Status}
-	// Logging a company-scoped Activity alongside the stage_changed audit
-	// row (same oldStage != deal.Stage gate) is what makes
-	// Company.last_activity_at reflect that the customer was contacted —
-	// a stage move, even into Lost, counts as real contact.
 	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error {
+		// A quote accepted since the read may have synced value meanwhile.
+		var locked models.Deal
+		if err := lockRow(tx, &locked, deal.ID, "id", "value", "value_quote_id"); err != nil {
+			return err
+		}
+		if err := checkSyncedDealValue(tx, &locked, deal.Value); err != nil {
+			return err
+		}
+		deal.ValueQuoteID = locked.ValueQuoteID
+		if locked.ValueQuoteID != nil {
+			deal.Value = locked.Value
+		}
 		if err := tx.Save(&deal).Error; err != nil {
 			return err
 		}
-		if oldStage != deal.Stage {
+		actorID := middleware.CurrentUserID(c)
+		if len(fieldsBefore) > 0 {
+			if err := utils.WriteAuditLog(tx, "deal", deal.ID, "updated", fieldsBefore, fieldsAfter, actorID); err != nil {
+				return err
+			}
+		}
+		if assigneeChanged {
+			if err := utils.WriteAuditLog(tx, "deal", deal.ID, "reassigned", ownerBefore,
+				models.JSONMap{"assigned_to": deal.AssignedTo}, actorID); err != nil {
+				return err
+			}
+		}
+		if forcedUnwin {
+			if err := writeWonReversedAudit(tx, &deal, before, unwinReason, actorID); err != nil {
+				return err
+			}
+		}
+		if stageChanged {
 			subject := fmt.Sprintf("Deal stage changed: %s → %s", oldStage, deal.Stage)
 			return utils.LogCompanyActivity(tx, deal.CompanyID, subject, middleware.CurrentUserID(c))
 		}
 		return nil
-	}, oldStage != deal.Stage, "deal", deal.ID, "stage_changed", before, after, middleware.CurrentUserID(c))
+	}, stageChanged, "deal", deal.ID, "stage_changed", before, after, middleware.CurrentUserID(c))
+	if errors.As(err, &syncedErr) {
+		return respondDealValueSynced(c, syncedErr)
+	}
 	if err != nil {
 		return utils.Internal(c, "Failed to update deal")
 	}
-	return utils.OK(c, deal)
+	return utils.OK(c, withValueQuoteNumber(h.DB, deal))
+
 }
 
 // Delete godoc
 // @Summary Delete a deal (Admin/Sales Rep/Sales Manager)
-// @Description Soft-delete (AuditedModel) — recoverable via Restore/Trash below. Only the assigned Sales Rep (or Admin/Sales Manager) may delete.
+// @Description Soft-delete (AuditedModel) — recoverable via Restore/Trash below, and written to the audit log (action deleted). Only the assigned Sales Rep (or Admin/Sales Manager) may delete. A Won Deal with money attached (a non-deleted Payment, any installment, or a signed Contract) is 409 WON_DEAL_PROTECTED for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without it), stored in the audit entry.
 // @Tags deals
 // @Security BearerAuth
 // @Param id path int true "Deal ID"
+// @Param reason query string false "Required from a manager deleting a Won Deal with money (max 500 chars)"
 // @Success 204 "No Content"
 // @Failure 403 {object} map[string]interface{} "Not authorized to delete this deal"
 // @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Failure 409 {object} map[string]interface{} "Won Deal with money: WON_DEAL_PROTECTED (not a manager) or REASON_REQUIRED"
 // @Router /deals/{id} [delete]
 func (h *DealHandler) Delete(c *fiber.Ctx) error {
 	var deal models.Deal
@@ -486,8 +572,24 @@ func (h *DealHandler) Delete(c *fiber.Ctx) error {
 	if !CanWrite(c, deal.AssignedTo) {
 		return utils.Forbidden(c, "Not authorized to delete this deal")
 	}
+	reason, forced, err := guardProtectedWonDeal(c, h.DB, &deal, "delete")
+	if err != nil {
+		return nil
+	}
+
 	actorID := middleware.CurrentUserID(c)
-	if err := utils.GenericSoftDelete(h.DB, &deal, actorID); err != nil {
+	before := models.JSONMap{"title": deal.Title, "stage": deal.Stage, "status": deal.Status, "value": deal.Value}
+	after := models.JSONMap{"deleted_by": actorID}
+	if forced {
+		after["reason"] = reason
+	}
+	err = h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := utils.GenericSoftDelete(tx, &deal, actorID); err != nil {
+			return err
+		}
+		return utils.WriteAuditLog(tx, "deal", deal.ID, "deleted", before, after, actorID)
+	})
+	if err != nil {
 		return utils.Internal(c, "Failed to delete deal")
 	}
 	return utils.NoContent(c)
@@ -508,16 +610,32 @@ func (h *DealHandler) Trash(c *fiber.Ctx) error {
 
 // Restore godoc
 // @Summary Restore a deleted deal (Admin/Sales Manager)
-// @Description Restores a soft-deleted Deal.
+// @Description Restores a soft-deleted Deal, writing a restored audit log entry.
 // @Tags deals
 // @Security BearerAuth
 // @Produce json
 // @Param id path int true "Deal ID"
-// @Success 200 {object} models.Deal
+// @Success 200 {object} handlers.dealDetail
 // @Failure 404 {object} map[string]interface{} "Deleted deal not found"
 // @Router /deals/{id}/restore [post]
 func (h *DealHandler) Restore(c *fiber.Ctx) error {
-	return utils.GenericRestore[models.Deal](c, h.DB, "Deleted deal not found", "Failed to restore deal")
+	var deal models.Deal
+	if err := h.DB.Unscoped().Where("deleted_at IS NOT NULL").First(&deal, c.Params("id")).Error; err != nil {
+		return utils.NotFound(c, "Deleted deal not found")
+	}
+	actorID := middleware.CurrentUserID(c)
+	before := models.JSONMap{"deleted_at": deal.DeletedAt.Time, "deleted_by": deal.DeletedBy}
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Unscoped().Model(&deal).Updates(map[string]interface{}{"deleted_at": nil, "deleted_by": nil}).Error; err != nil {
+			return err
+		}
+		return utils.WriteAuditLog(tx, "deal", deal.ID, "restored", before, nil, actorID)
+	})
+	if err != nil {
+		return utils.Internal(c, "Failed to restore deal")
+	}
+	deal.DeletedAt, deal.DeletedBy = gorm.DeletedAt{}, nil
+	return utils.OK(c, withValueQuoteNumber(h.DB, deal))
 }
 
 type bulkIDsForm struct {
@@ -572,17 +690,17 @@ func (h *DealHandler) BulkTag(c *fiber.Ctx) error {
 
 // BulkArchive godoc
 // @Summary Bulk archive deals (Admin/Sales Manager)
-// @Description Soft-deletes every listed Deal (same as Delete), in one transaction, writing a bulk_archived audit entry per row.
+// @Description Soft-deletes every listed Deal (same as Delete), in one transaction, writing a bulk_archived audit entry per row. A Won Deal with money attached (a non-deleted Payment, any installment, or a signed Contract) is skipped and reported, not archived — delete it singly with a reason. Returns 200 { archived: id[], skipped: [{ id, reason: "won_deal_with_money" }] }.
 // @Tags deals
 // @Security BearerAuth
 // @Accept json
 // @Produce json
 // @Param body body bulkIDsForm true "Deal IDs"
-// @Success 204 "No Content"
+// @Success 200 {object} bulkArchiveResult
 // @Failure 400 {object} map[string]interface{} "Invalid request body, or ids is required"
 // @Router /deals/bulk-archive [patch]
 func (h *DealHandler) BulkArchive(c *fiber.Ctx) error {
-	return bulkArchiveEntity(c, h.DB, "deal", func(d *models.Deal) *uint { return d.AssignedTo })
+	return bulkArchiveDeals(c, h.DB)
 }
 
 // mergeTags appends tags not already present, case-sensitively, preserving order.
@@ -608,28 +726,30 @@ type dealStageForm struct {
 	// dropdown-move, is distinguishable from an explicit 0) — see
 	// Deal.Position's doc comment (models/deal.go).
 	Position *float64 `json:"position"`
-	// LostReason is optional here (the Kanban drag doesn't collect one), but
-	// when sent on a move into a Lost stage it's validated and saved — the
-	// Overview Pipeline's side panel asks for it (FR-CRM-123). Ignored on a
-	// move into any other stage.
+	// LostReason is required on a move into a Lost stage, as on PUT (a
+	// Deal already Lost with a stored reason may omit it to reposition) —
+	// the Kanban drag and the Overview Pipeline's side panel (FR-CRM-123)
+	// both ask for it. Ignored on a move into any other stage.
 	LostReason *models.LostReason `json:"lost_reason"`
 }
 
 // UpdateStage godoc
 // @Summary Move a deal to a new pipeline stage (Admin/Sales Rep/Sales Manager)
-// @Description Dedicated endpoint for the Kanban drag-and-drop quick-move. Sets status to won/lost alongside stage (and re-derives probability) in the same transaction; writes a stage_changed audit log entry per §8.5's explicit minimum scope. Moving into a stage resolved as Won is blocked (422-style validation error) if AppSettings.RequireSignedContractBeforeWon is enabled and the deal has no Contract with status Signed. Only the assigned Sales Rep (or Admin/Sales Manager) may move it.
+// @Description Dedicated endpoint for the Kanban drag-and-drop quick-move. Sets status to won/lost alongside stage — or open (clearing lost_reason) on a move into any other stage — and re-derives probability in the same transaction; writes a stage_changed audit log entry per §8.5's explicit minimum scope. Moving into a stage resolved as Won is blocked (422-style validation error) if AppSettings.RequireSignedContractBeforeWon is enabled and the deal has no Contract with status Signed. A move into a Lost stage requires lost_reason (422), unless the Deal is already Lost with one stored. Moving a Won Deal with money attached out of Won is 409 WON_DEAL_PROTECTED for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without it), recorded in a won_reversed audit entry. Only the assigned Sales Rep (or Admin/Sales Manager) may move it.
 // @Tags deals
 // @Security BearerAuth
 // @Accept json
 // @Produce json
 // @Param id path int true "Deal ID"
 // @Param body body dealStageForm true "New stage"
-// @Success 200 {object} models.Deal
+// @Param reason query string false "Required from a manager moving a Won Deal with money out of Won (max 500 chars)"
+// @Success 200 {object} handlers.dealDetail
 // @Header 200 {string} X-Lane-Rebalanced "\"true\" when the destination lane was renumbered to 1..n — refetch the lane, its other cards' positions changed"
 // @Failure 400 {object} map[string]interface{} "Invalid request body, stage is required, stage is not a valid active pipeline stage, or a signed contract is required before marking this deal Won"
 // @Failure 403 {object} map[string]interface{} "Not authorized to update this deal"
 // @Failure 404 {object} map[string]interface{} "Deal not found"
-// @Failure 422 {object} map[string]interface{} "position out of range (±1e9)"
+// @Failure 409 {object} map[string]interface{} "Won Deal with money: WON_DEAL_PROTECTED (not a manager) or REASON_REQUIRED"
+// @Failure 422 {object} map[string]interface{} "position out of range (±1e9), or lost_reason missing/invalid on a move into Lost"
 // @Router /deals/{id}/stage [patch]
 func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	var deal models.Deal
@@ -647,58 +767,64 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	if form.Stage == "" {
 		return utils.ValidationError(c, "stage is required", map[string][]string{"stage": {"required"}})
 	}
-	if !utils.IsActivePipelineStage(h.DB, string(form.Stage)) {
+	to := utils.LookupStageFlags(h.DB, form.Stage)
+	if !to.Active {
 		return utils.ValidationError(c, "stage is not a valid active pipeline stage", map[string][]string{"stage": {"invalid"}})
+	}
+	if form.LostReason != nil && *form.LostReason == "" {
+		form.LostReason = nil
 	}
 	if form.LostReason != nil && !models.IsValidLostReason(*form.LostReason) {
 		return utils.ValidationError(c, "lost_reason is invalid", map[string][]string{"lost_reason": {"invalid"}})
 	}
+	if to.Lost && form.LostReason == nil && (deal.Status != models.DealStatusLost || deal.LostReason == nil) {
+		return utils.ValidationError(c, "lost_reason is required when marking a deal Lost", map[string][]string{"lost_reason": {"required"}})
+	}
 	if err := validateCardPosition(c, form.Position); err != nil {
 		return nil
 	}
-
-	// isWon/isLost prefer the configured PipelineStage row's flags (so a custom,
-	// admin-added stage can behave like Won/Lost without being named exactly
-	// that) — falling back to the hardcoded name match if no row exists yet,
-	// e.g. right after a migration and before the seed runs. Shared with
-	// Create/Update's syncStatusWithStageFlags/defaultProbabilityFor via
-	// utils.IsWonStage/IsLostStage so both endpoints resolve stages the same way.
-	isWon := utils.IsWonStage(h.DB, form.Stage)
-	isLost := utils.IsLostStage(h.DB, form.Stage)
+	// Only on the transition into Won (deal.Status is still the stored
+	// value), not on a reposition within the Won lane.
+	if to.Won && deal.Status != models.DealStatusWon {
+		if err := validateContractSignedBeforeWon(c, h.DB, deal.ID); err != nil {
+			return nil
+		}
+	}
+	// Any move out of the Won lane un-wins (the status follows the stage);
+	// on a Deal with money that needs a manager and a reason.
+	var unwinReason string
+	forcedUnwin := false
+	if deal.Status == models.DealStatusWon && !to.Won {
+		var err error
+		if unwinReason, forcedUnwin, err = guardProtectedWonDeal(c, h.DB, &deal, "move out of Won"); err != nil {
+			return nil
+		}
+	}
 
 	before := models.JSONMap{"stage": deal.Stage, "status": deal.Status}
 	oldStage := deal.Stage
 	deal.Stage = form.Stage
+	// A quick-move into an open stage always reopens, so it requests "open"
+	// and where it came from doesn't matter.
+	status, clearLostReason := resolveDealStatus(utils.StageFlags{}, to, false, models.DealStatusOpen)
+	deal.Status = status
 	switch {
-	case isWon:
-		// Only check on the actual transition into Won, not on every
-		// re-affirming move within the Won stage (e.g. dragging the card to a
-		// different position within the same Won column) — deal.Status here
-		// is still the pre-mutation value.
-		if deal.Status != models.DealStatusWon {
-			if err := validateContractSignedBeforeWon(c, h.DB, deal.ID); err != nil {
-				return nil
-			}
-		}
-		deal.Status = models.DealStatusWon
-		// Hook point: FR-CRM-064 auto-creates/updates a CustomerProduct(status: Active)
-		// per Product on this Deal's accepted Quote — deferred until Quotes have a
-		// real "accepted" flow to hang the side effect off.
-	case isLost:
-		deal.Status = models.DealStatusLost
+	case to.Lost:
+		// Required above unless the Deal already has one stored.
 		if form.LostReason != nil {
 			deal.LostReason = form.LostReason
 		}
-	default:
-		if deal.Status != models.DealStatusWon && deal.Status != models.DealStatusLost {
-			deal.Status = models.DealStatusOpen
-		}
+	case to.Won:
+		// A move into Won leaves lost_reason as it was; only a reopen drops it.
+		// Hook point: FR-CRM-064 auto-creates/updates a CustomerProduct(status: Active)
+		// per Product on this Deal's accepted Quote — deferred until Quotes have a
+		// real "accepted" flow to hang the side effect off.
+	case clearLostReason:
+		deal.LostReason = nil
 	}
 	// Re-derive probability for the new stage on every drag/quick-move (Kanban
 	// has no probability input of its own) — the Deal's Overview tab can still
-	// override it manually afterwards. lost_reason is optional on this
-	// quick-move endpoint (only the full Update form requires it when Lost):
-	// saved above when sent with a move into Lost, otherwise left untouched.
+	// override it manually afterwards.
 	if oldStage != deal.Stage {
 		def := h.defaultProbabilityFor(deal.Stage)
 		deal.Probability = &def
@@ -714,6 +840,11 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error {
 		if err := tx.Save(&deal).Error; err != nil {
 			return err
+		}
+		if forcedUnwin {
+			if err := writeWonReversedAudit(tx, &deal, before, unwinReason, middleware.CurrentUserID(c)); err != nil {
+				return err
+			}
 		}
 		var err error
 		if rebalanced, err = dealLanes.rebalanceIfCrowded(tx, deal.Stage, deal.ID, &deal.Position); err != nil {
@@ -731,7 +862,7 @@ func (h *DealHandler) UpdateStage(c *fiber.Ctx) error {
 	if rebalanced {
 		c.Set(LaneRebalancedHeader, "true")
 	}
-	return utils.OK(c, deal)
+	return utils.OK(c, withValueQuoteNumber(h.DB, deal))
 }
 
 type dealReassignForm struct {
@@ -747,9 +878,10 @@ type dealReassignForm struct {
 // @Produce json
 // @Param id path int true "Deal ID"
 // @Param body body dealReassignForm true "New assignee"
-// @Success 200 {object} models.Deal
+// @Success 200 {object} handlers.dealDetail
 // @Failure 400 {object} map[string]interface{} "Invalid request body"
 // @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Failure 422 {object} map[string]interface{} "assigned_to is not an active sales-role user"
 // @Router /deals/{id}/reassign [patch]
 func (h *DealHandler) Reassign(c *fiber.Ctx) error {
 	var deal models.Deal
@@ -761,6 +893,9 @@ func (h *DealHandler) Reassign(c *fiber.Ctx) error {
 	if err := c.BodyParser(&form); err != nil {
 		return utils.BadRequest(c, "Invalid request body")
 	}
+	if err := validateAssignee(h.DB, form.AssignedTo); err != nil {
+		return respondAssigneeErr(c, err)
+	}
 
 	before := models.JSONMap{"assigned_to": deal.AssignedTo}
 	deal.AssignedTo = form.AssignedTo
@@ -771,5 +906,5 @@ func (h *DealHandler) Reassign(c *fiber.Ctx) error {
 	if err != nil {
 		return utils.Internal(c, "Failed to reassign deal")
 	}
-	return utils.OK(c, deal)
+	return utils.OK(c, withValueQuoteNumber(h.DB, deal))
 }

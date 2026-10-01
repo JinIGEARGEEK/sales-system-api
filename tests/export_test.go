@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/require"
@@ -127,4 +128,82 @@ func TestExport_NegativeNumbersNotSanitized(t *testing.T) {
 		}
 	}
 	require.True(t, found)
+}
+
+// TestExport_CompaniesIncludesBranchAndPostalCode guards the Branch Code /
+// Postal Code columns the accounting sync added, placed right after Tax ID.
+func TestExport_CompaniesIncludesBranchAndPostalCode(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	taxID, branch, postal := "0105555555555", "00001", "10110"
+	require.NoError(t, db.Create(&models.Company{
+		Name: "Acme Corp", Status: models.StatusActive, TaxID: &taxID, BranchCode: &branch, PostalCode: &postal,
+	}).Error)
+
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/companies/export?tax_id="+taxID, nil, admin.ID, models.RoleAdmin)
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
+
+	rows, err := csv.NewReader(resp.Body).ReadAll()
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	header := rows[0]
+	col := func(name string) int {
+		for i, h := range header {
+			if h == name {
+				return i
+			}
+		}
+		t.Fatalf("missing column %q in %v", name, header)
+		return -1
+	}
+	require.Equal(t, col("Tax ID")+1, col("Branch Code"))
+	require.Equal(t, col("Branch Code")+1, col("Postal Code"))
+	require.Equal(t, branch, rows[1][col("Branch Code")])
+	require.Equal(t, postal, rows[1][col("Postal Code")])
+}
+
+// TestExport_PagesNeitherSkipNorRepeatRows guards exportStream's paging: an
+// export longer than one page (exportBatchSize = 500) must contain every
+// matching row exactly once. Newer rows get higher ids, so created_at DESC
+// runs against id order — the case the old FindInBatches paging (which pages
+// by id) got wrong. Every 10 rows share a created_at to exercise the id
+// tie-breaker.
+func TestExport_PagesNeitherSkipNorRepeatRows(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	company := seedCompany(t, db)
+	contact := seedContact(t, db, company.ID)
+
+	prefix := "PageCheck-" + itoa(company.ID) + "-"
+	const n = 1203
+	base := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	deals := make([]models.Deal, n)
+	for i := range deals {
+		deals[i] = models.Deal{
+			CompanyID: company.ID, ContactID: contact.ID, Title: prefix + itoa(uint(i)),
+			Value: 1, Stage: models.DealStageLead, Status: models.DealStatusOpen,
+		}
+		deals[i].CreatedAt = base.Add(time.Duration(i/10) * time.Second)
+	}
+	require.NoError(t, db.CreateInBatches(&deals, 500).Error)
+
+	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/deals/export", nil, admin.ID, models.RoleAdmin)
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	require.Equal(t, fiber.StatusOK, resp.StatusCode)
+	rows, err := csv.NewReader(resp.Body).ReadAll()
+	require.NoError(t, err)
+
+	seen := map[string]int{}
+	for _, row := range rows[1:] {
+		if strings.HasPrefix(row[0], prefix) {
+			seen[row[0]]++
+		}
+	}
+	require.Len(t, seen, n, "every deal exported")
+	for title, count := range seen {
+		require.Equal(t, 1, count, "%s exported once", title)
+	}
 }

@@ -15,7 +15,7 @@ import (
 )
 
 // exportBatchSize bounds how many rows ExportHandler loads into memory at
-// once. Each export streams the response via FindInBatches + a chunked HTTP
+// once. Each export streams the response page by page + a chunked HTTP
 // body instead of Find()-ing the entire (unbounded, filterable) table into a
 // single slice — a company/deal/contact table with a six-figure row count
 // would otherwise risk an OOM or request-timeout on every export click.
@@ -66,7 +66,8 @@ func streamCSV(c *fiber.Ctx, filename string, header []string, writeRows func(w 
 // SQL, a permissions error) surfaces as a normal 500 with an error body
 // instead of a misleadingly-200'd response that silently truncates to just
 // the CSV header. rowFn is called once per page (this first one, then each
-// FindInBatches page after it) to render that page's rows.
+// later page) to render that page's rows. query's ORDER BY must end in a
+// unique column so the LIMIT/OFFSET pages are stable.
 //
 // This can't close the window entirely: once the first page succeeds and
 // streaming begins, a failure on some later page (row 50,001 of a 100,000-row
@@ -86,14 +87,21 @@ func exportStream[T any](c *fiber.Ctx, query *gorm.DB, filename string, header [
 		if err := rowFn(w, first); err != nil {
 			return err
 		}
-		if len(first) < exportBatchSize {
-			return nil // fewer rows than one page — first Find already got everything
+		// LIMIT/OFFSET pages in the caller's ORDER BY, which must end in a
+		// unique column (id) so pages neither overlap nor skip rows.
+		// FindInBatches can't be used here: it pages by primary key and keeps
+		// any Offset on every batch, which skipped and repeated rows once an
+		// export passed one page.
+		for page, batch := 1, first; len(batch) == exportBatchSize; page++ {
+			batch = nil
+			if err := query.Session(&gorm.Session{}).Offset(page * exportBatchSize).Limit(exportBatchSize).Find(&batch).Error; err != nil {
+				return err
+			}
+			if err := rowFn(w, batch); err != nil {
+				return err
+			}
 		}
-		var rest []T
-		return query.Session(&gorm.Session{}).Offset(exportBatchSize).
-			FindInBatches(&rest, exportBatchSize, func(tx *gorm.DB, batchNum int) error {
-				return rowFn(w, rest)
-			}).Error
+		return nil
 	})
 }
 
@@ -168,13 +176,6 @@ func boolYesNo(b bool) string {
 	return "No"
 }
 
-func derefStr(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
-}
-
 // Companies godoc
 // @Summary Export companies as CSV (Admin/Sales Manager only)
 // @Description CSV download of the full (non-deleted, non-paginated) Company dataset. Filters mirror CompanyHandler.List. Admin/Sales Manager only.
@@ -185,14 +186,18 @@ func derefStr(s *string) string {
 // @Failure 500 {object} map[string]interface{} "Failed to export data"
 // @Router /companies/export [get]
 func (h *ExportHandler) Companies(c *fiber.Ctx) error {
-	query := applyCompanyFilters(h.DB.Model(&models.Company{}), c).Order("created_at DESC")
+	query, err := applyCompanyFilters(h.DB.Model(&models.Company{}), c)
+	if err != nil {
+		return updatedSinceInvalid(c)
+	}
+	query = query.Order("companies.created_at DESC, companies.id DESC")
 
-	header := []string{"Name", "Industry", "Size", "Website", "Tags", "Status", "Legal Name", "Address", "Tax ID", "Notes", "Created Date"}
+	header := []string{"Name", "Industry", "Size", "Website", "Tags", "Status", "Legal Name", "Address", "Tax ID", "Branch Code", "Postal Code", "Notes", "Created Date"}
 	return exportStream(c, query, "companies.csv", header, func(w *csv.Writer, batch []models.Company) error {
 		for _, co := range batch {
 			if err := writeCSVRow(w, []string{
 				co.Name, co.Industry, co.Size, co.Website, joinTags(co.Tags), string(co.Status),
-				derefStr(co.LegalName), derefStr(co.Address), derefStr(co.TaxID), co.Notes,
+				utils.DerefString(co.LegalName), utils.DerefString(co.Address), utils.DerefString(co.TaxID), utils.DerefString(co.BranchCode), utils.DerefString(co.PostalCode), co.Notes,
 				co.CreatedAt.Format("2006-01-02"),
 			}); err != nil {
 				return err
@@ -212,7 +217,7 @@ func (h *ExportHandler) Companies(c *fiber.Ctx) error {
 // @Failure 500 {object} map[string]interface{} "Failed to export data"
 // @Router /contacts/export [get]
 func (h *ExportHandler) Contacts(c *fiber.Ctx) error {
-	query := applyContactFilters(h.DB.Model(&models.Contact{}), c).Order("created_at DESC")
+	query := applyContactFilters(h.DB.Model(&models.Contact{}), c).Order("contacts.created_at DESC, contacts.id DESC")
 
 	header := []string{"Name", "Company", "Email", "Phone", "Role/Title", "Tags", "Status", "Created Date"}
 	return exportStream(c, query, "contacts.csv", header, func(w *csv.Writer, batch []models.Contact) error {
@@ -239,7 +244,7 @@ func (h *ExportHandler) Contacts(c *fiber.Ctx) error {
 // @Failure 500 {object} map[string]interface{} "Failed to export data"
 // @Router /deals/export [get]
 func (h *ExportHandler) Deals(c *fiber.Ctx) error {
-	query := applyDealFilters(h.DB.Model(&models.Deal{}), c).Order("created_at DESC")
+	query := applyDealFilters(h.DB.Model(&models.Deal{}), c).Order("deals.created_at DESC, deals.id DESC")
 
 	header := []string{
 		"Title", "Company", "Value", "Stage", "Status", "Expected Close Date",
@@ -260,8 +265,8 @@ func (h *ExportHandler) Deals(c *fiber.Ctx) error {
 			}
 			if err := writeCSVRow(w, []string{
 				d.Title, companyNameByID[d.CompanyID], strconv.FormatFloat(d.Value, 'f', 2, 64),
-				string(d.Stage), string(d.Status), derefStr(d.ExpectedCloseDate),
-				assignedName, string(d.Channel), businessUnit, derefStr(d.BusinessUnitItem),
+				string(d.Stage), string(d.Status), utils.DerefString(d.ExpectedCloseDate),
+				assignedName, string(d.Channel), businessUnit, utils.DerefString(d.BusinessUnitItem),
 				joinTags(d.Tags), d.CreatedAt.Format("2006-01-02"),
 			}); err != nil {
 				return err
@@ -281,7 +286,7 @@ func (h *ExportHandler) Deals(c *fiber.Ctx) error {
 // @Failure 500 {object} map[string]interface{} "Failed to export data"
 // @Router /products/export [get]
 func (h *ExportHandler) Products(c *fiber.Ctx) error {
-	query := applyProductFilters(h.DB.Model(&models.Product{}), c).Order("created_at DESC")
+	query := applyProductFilters(h.DB.Model(&models.Product{}), c).Order("products.created_at DESC, products.id DESC")
 
 	header := []string{"Name", "Category", "Description", "Active", "Created Date"}
 	return exportStream(c, query, "products.csv", header, func(w *csv.Writer, batch []models.Product) error {
@@ -306,7 +311,7 @@ func (h *ExportHandler) Products(c *fiber.Ctx) error {
 // @Failure 500 {object} map[string]interface{} "Failed to export data"
 // @Router /projects/export [get]
 func (h *ExportHandler) Projects(c *fiber.Ctx) error {
-	query := applyProjectFilters(h.DB.Model(&models.Project{}), c).Order("created_at DESC")
+	query := applyProjectFilters(h.DB.Model(&models.Project{}), c).Order("projects.created_at DESC, projects.id DESC")
 
 	header := []string{"Name", "Company", "Status", "Start Date", "Target End Date", "Production Reference", "Notes", "Created Date"}
 	return exportStream(c, query, "projects.csv", header, func(w *csv.Writer, batch []models.Project) error {
@@ -318,7 +323,7 @@ func (h *ExportHandler) Projects(c *fiber.Ctx) error {
 			}
 			if err := writeCSVRow(w, []string{
 				p.Name, companyNameByID[p.CompanyID], string(p.Status),
-				p.StartDate.Format("2006-01-02"), targetEnd, derefStr(p.ProductionReference), p.Notes,
+				p.StartDate.Format("2006-01-02"), targetEnd, utils.DerefString(p.ProductionReference), p.Notes,
 				p.CreatedAt.Format("2006-01-02"),
 			}); err != nil {
 				return err

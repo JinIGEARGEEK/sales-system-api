@@ -11,6 +11,9 @@ const (
 
 // Company — api-system-spec.md §4. LegalName/Address/TaxID are used on Contract
 // PDF exports — a real legal document needs the registered party details.
+// TaxID + BranchCode is how an accounting integration identifies a Company
+// (a Thai full tax invoice names the buyer's branch), hence TaxID's index
+// for the exact-match ?tax_id= filter.
 type Company struct {
 	AuditedModel
 	Name        string               `gorm:"not null" json:"name"`
@@ -23,7 +26,12 @@ type Company struct {
 	Status      ActiveArchivedStatus `gorm:"type:varchar(16);default:'active';index" json:"status"`
 	LegalName   *string              `json:"legal_name"`
 	Address     *string              `json:"address"`
-	TaxID       *string              `json:"tax_id"`
+	TaxID       *string              `gorm:"index" json:"tax_id"`
+	// BranchCode/PostalCode are each exactly five digits when set
+	// (BranchCode "00000" = head office). An update that omits either keeps
+	// the saved value (validateCompanyForm).
+	BranchCode *string `gorm:"type:varchar(5)" json:"branch_code"`
+	PostalCode *string `gorm:"type:varchar(5)" json:"postal_code"`
 	// Domain is the lowercase, scheme/www-stripped host extracted from Website
 	// at write time (see utils.ExtractDomain) — indexed so ImportCompanies'
 	// domain-based dedupe is an indexed lookup instead of an in-memory scan of

@@ -26,7 +26,12 @@ RUN apk add --no-cache ca-certificates \
 WORKDIR /app
 
 COPY --from=build /out/api ./api
-RUN chown app:app ./api
+# ./uploads is where STORAGE_BACKEND=local (the default) writes Quote/
+# Contract/Attachment files. WORKDIR creates /app root-owned, so without
+# pre-creating this as app the non-root process's os.MkdirAll("./uploads")
+# fails and every upload 500s. (A Railway Volume mounted here replaces this
+# directory with the volume's own root-owned mount — see the README.)
+RUN mkdir -p ./uploads && chown app:app ./api ./uploads
 USER app
 
 # Business-day logic (the Overview Pipeline's "today", the weekly digest's

@@ -77,6 +77,24 @@ func doJSON(t *testing.T, app *fiber.App, req *http.Request, out interface{}) *h
 	return resp
 }
 
+// listIDs GETs path as userID/role, requires a 200, and returns the ids of
+// the response's data array in order.
+func listIDs(t *testing.T, app *fiber.App, path string, userID uint, role models.Role) []uint {
+	t.Helper()
+	var out struct {
+		Data []struct {
+			ID uint `json:"id"`
+		} `json:"data"`
+	}
+	resp := doJSON(t, app, testutil.AuthRequest(t, http.MethodGet, path, nil, userID, role), &out)
+	require.Equal(t, http.StatusOK, resp.StatusCode, path)
+	ids := make([]uint, len(out.Data))
+	for i, r := range out.Data {
+		ids[i] = r.ID
+	}
+	return ids
+}
+
 // keepSeedConfig snapshots the seed-once config tables (pipeline_stages,
 // prospect_stages, app_settings — not truncated between tests, see
 // testutil) and restores them when the test ends, for a test that renames a

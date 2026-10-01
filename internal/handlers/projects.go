@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -252,8 +251,8 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 	}
 	oldStatus := project.Status
 
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(c.Body(), &raw); err != nil {
+	raw, ok := bodyKeys(c)
+	if !ok {
 		return utils.BadRequest(c, "Invalid request body")
 	}
 
@@ -282,7 +281,7 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 		if form.Name != "" {
 			project.Name = form.Name
 		}
-		if _, ok := raw["deal_id"]; ok {
+		if raw.has("deal_id") {
 			project.DealID = form.DealID
 		}
 		if form.Status != "" {
@@ -291,19 +290,19 @@ func (h *ProjectHandler) Update(c *fiber.Ctx) error {
 		if form.StartDate != nil {
 			project.StartDate = *form.StartDate
 		}
-		if _, ok := raw["target_end_date"]; ok {
+		if raw.has("target_end_date") {
 			project.TargetEndDate = form.TargetEndDate
 		}
-		if _, ok := raw["expected_proposal_date"]; ok {
+		if raw.has("expected_proposal_date") {
 			project.ExpectedProposalDate = form.ExpectedProposalDate
 		}
-		if _, ok := raw["expected_start_date"]; ok {
+		if raw.has("expected_start_date") {
 			project.ExpectedStartDate = form.ExpectedStartDate
 		}
-		if _, ok := raw["production_reference"]; ok {
+		if raw.has("production_reference") {
 			project.ProductionReference = form.ProductionReference
 		}
-		if _, ok := raw["notes"]; ok {
+		if raw.has("notes") {
 			project.Notes = form.Notes
 		}
 	}

@@ -20,7 +20,7 @@ import (
 // balancer), a revoked key can keep authenticating successfully against any
 // *other* instance for up to this long, not just the one that served the
 // revoke request. A single-instance deployment (this app's only deployment
-// target today, per routes.go's clientIP comment) never sees this gap at
+// target today) never sees this gap at
 // all — flagged here for whoever scales this out later, not as a live bug.
 const apiKeyCacheTTL = 30 * time.Second
 

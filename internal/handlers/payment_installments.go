@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -20,11 +21,10 @@ func NewPaymentInstallmentHandler(db *gorm.DB) *PaymentInstallmentHandler {
 	return &PaymentInstallmentHandler{DB: db}
 }
 
-// installmentStatuses loads a Deal's installments and its actual Payments
-// total, then runs the shared waterfall helper — same total-paid sum
-// PaymentHandler.List already computes (payments.go:38-41), kept here as its
-// own small query rather than calling that handler, since only the sum is
-// needed.
+// installmentStatuses loads a Deal's installments and its actual Payments,
+// then runs the shared allocation helper — linked payments
+// (Payment.InstallmentID) settle their own installment first, the rest
+// waterfall; cash + WHT both count (Payment.SettledAmount).
 func (h *PaymentInstallmentHandler) installmentStatuses(dealID uint) ([]utils.InstallmentStatus, error) {
 	var installments []models.PaymentInstallment
 	if err := h.DB.Where("deal_id = ?", dealID).Order("due_date").Find(&installments).Error; err != nil {
@@ -35,17 +35,12 @@ func (h *PaymentInstallmentHandler) installmentStatuses(dealID uint) ([]utils.In
 	if err := h.DB.Where("deal_id = ?", dealID).Find(&payments).Error; err != nil {
 		return nil, err
 	}
-	var totalPaid float64
-	for _, p := range payments {
-		totalPaid += p.Amount
-	}
-
-	return utils.ComputeInstallmentStatuses(installments, totalPaid, time.Now()), nil
+	return utils.ComputeInstallmentStatusesFromPayments(installments, payments, time.Now()), nil
 }
 
 // List godoc
 // @Summary List a deal's payment installment schedule (Admin/Sales Rep/Sales Manager/Marketing)
-// @Description Returns each planned installment with its derived paid/partial/overdue/upcoming status (utils.ComputeInstallmentStatuses), ordered by due_date. Backs the Deal detail page's Payment Schedule section, and is also served read-only to API keys at /open/deals/{dealId}/payment-installments. Sales Rep/Marketing callers only see Deals assigned to them or unassigned; Admin/Sales Manager see every Deal. api-system-spec.md §7.5a.
+// @Description Returns each planned installment with its derived paid/partial/overdue/upcoming status (utils.ComputeInstallmentStatusesFromPayments), ordered by due_date. Backs the Deal detail page's Payment Schedule section, and is also served read-only to API keys at /open/deals/{dealId}/payment-installments. Sales Rep/Marketing callers only see Deals assigned to them or unassigned; Admin/Sales Manager see every Deal. api-system-spec.md §7.5a.
 // @Tags payment-installments
 // @Security BearerAuth
 // @Security ApiKeyAuth
@@ -121,13 +116,65 @@ func (h *PaymentInstallmentHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, installment)
 }
 
+// ScheduleExceedsReceivableCode is the 422 `fields.installments` code
+// BulkCreate returns when the schedule would plan more than is owed.
+const ScheduleExceedsReceivableCode = "exceeds_receivable"
+
+// dealReceivable is what the customer owes on the Deal, by the Outstanding
+// Balance report's rule (utils.DealReceivable): its latest Accepted Quote's
+// taxable amount + VAT when priced, else the Deal value.
+func dealReceivable(db *gorm.DB, deal *models.Deal) (float64, error) {
+	var quotes []models.Quote
+	if err := db.Where("deal_id = ? AND status = ?", deal.ID, models.QuoteStatusAccepted).
+		Order("created_at DESC, id DESC").Limit(1).Find(&quotes).Error; err != nil {
+		return 0, err
+	}
+	var latest *models.Quote
+	if len(quotes) > 0 {
+		latest = &quotes[0]
+	}
+	amount, _ := utils.DealReceivable(deal.Value, latest)
+	return amount, nil
+}
+
+// scheduleExceedsReceivable writes a 422 and returns true when the Deal's
+// existing installments plus `rows` would total more than its receivable
+// (to the satang). Paid installments count too — the schedule as a whole is
+// what's measured against what's owed. A receivable of 0 (no Accepted Quote
+// and no Deal value yet) has nothing to measure against, so it never blocks.
+func (h *PaymentInstallmentHandler) scheduleExceedsReceivable(c *fiber.Ctx, deal *models.Deal, rows []paymentInstallmentForm) (bool, error) {
+	receivable, err := dealReceivable(h.DB, deal)
+	if err != nil {
+		return false, err
+	}
+	if receivable <= 0 {
+		return false, nil
+	}
+	var existing float64
+	if err := h.DB.Model(&models.PaymentInstallment{}).Where("deal_id = ?", deal.ID).
+		Select("COALESCE(SUM(amount), 0)").Scan(&existing).Error; err != nil {
+		return false, err
+	}
+	var batch float64
+	for _, row := range rows {
+		batch += row.Amount
+	}
+	total := utils.RoundSatang(existing + batch)
+	if total <= receivable+utils.MoneyEpsilon {
+		return false, nil
+	}
+	msg := fmt.Sprintf("the schedule would total %.2f, more than the %.2f receivable (%.2f already scheduled)", total, receivable, existing)
+	_ = utils.ValidationError(c, msg, map[string][]string{"installments": {ScheduleExceedsReceivableCode}})
+	return true, nil
+}
+
 type paymentInstallmentBulkForm struct {
 	Installments []paymentInstallmentForm `json:"installments"`
 }
 
 // BulkCreate godoc
 // @Summary Generate a payment schedule in one action (Admin/Sales Rep/Sales Manager)
-// @Description Creates every installment in one batch insert + one summary audit-log entry, instead of the caller looping N calls to Create — mirrors CampaignHandler.BulkCreateTasks's shape. The frontend computes the actual split (equal amounts, spaced dates); this endpoint only validates and inserts, same permissive per-row rules as the single-row Create. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create.
+// @Description Creates every installment in one batch insert + one summary audit-log entry, instead of the caller looping N calls to Create — mirrors CampaignHandler.BulkCreateTasks's shape. The frontend computes the actual split (equal amounts, spaced dates); this endpoint only validates and inserts, same per-row rules as the single-row Create. The whole batch is rejected (422, fields.installments ["exceeds_receivable"]) when the Deal's existing installments plus this batch would total more than its receivable — the Outstanding Balance rule: latest Accepted Quote's taxable amount + VAT when priced, else the Deal value; skipped when that receivable is 0. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create.
 // @Tags payment-installments
 // @Security BearerAuth
 // @Accept json
@@ -138,6 +185,7 @@ type paymentInstallmentBulkForm struct {
 // @Failure 400 {object} map[string]interface{} "Invalid request body"
 // @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
 // @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Failure 422 {object} map[string]interface{} "Empty or invalid installments, or the schedule would exceed the receivable (exceeds_receivable)"
 // @Router /deals/{dealId}/payment-installments/bulk [post]
 func (h *PaymentInstallmentHandler) BulkCreate(c *fiber.Ctx) error {
 	deal, err := dealForSubResource(c, h.DB, c.Params("dealId"))
@@ -156,6 +204,14 @@ func (h *PaymentInstallmentHandler) BulkCreate(c *fiber.Ctx) error {
 		if !row.validate(c) {
 			return nil
 		}
+	}
+
+	exceeds, err := h.scheduleExceedsReceivable(c, deal, form.Installments)
+	if err != nil {
+		return utils.Internal(c, "Failed to generate payment schedule")
+	}
+	if exceeds {
+		return nil
 	}
 
 	installments := make([]models.PaymentInstallment, 0, len(form.Installments))
@@ -181,7 +237,7 @@ func (h *PaymentInstallmentHandler) BulkCreate(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Edit a planned installment (Admin/Sales Rep/Sales Manager)
-// @Description Same validation as Create. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may edit.
+// @Description Same validation as Create. Writes a payment_installment updated audit entry (before/after) when something changed. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may edit.
 // @Tags payment-installments
 // @Security BearerAuth
 // @Accept json
@@ -209,16 +265,30 @@ func (h *PaymentInstallmentHandler) Update(c *fiber.Ctx) error {
 		return nil
 	}
 
+	before := installmentSnapshot(installment)
 	installment.Amount, installment.DueDate, installment.Note = form.Amount, *form.DueDate, form.Note
-	if err := h.DB.Save(&installment).Error; err != nil {
+	after := installmentSnapshot(installment)
+	changed := !reflect.DeepEqual(before, after)
+	err := utils.SaveWithAudit(h.DB, func(tx *gorm.DB) error { return tx.Save(&installment).Error },
+		changed, "payment_installment", installment.ID, "updated", before, after, middleware.CurrentUserID(c))
+	if err != nil {
 		return utils.Internal(c, "Failed to update payment installment")
 	}
 	return utils.OK(c, installment)
 }
 
+// installmentSnapshot is a PaymentInstallment's audit-log before/after:
+// plain values, so two snapshots compare with reflect.DeepEqual.
+func installmentSnapshot(i models.PaymentInstallment) models.JSONMap {
+	return models.JSONMap{
+		"deal_id": i.DealID, "amount": i.Amount,
+		"due_date": i.DueDate.Format(time.RFC3339), "note": i.Note,
+	}
+}
+
 // Delete godoc
 // @Summary Delete a planned installment
-// @Description Hard delete. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.
+// @Description Hard delete, with a payment_installment deleted audit entry holding the row as it was. Payments linked to it (installment_id, deleted ones included) are unlinked, not deleted — their money rejoins the Deal's waterfall. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.
 // @Tags payment-installments
 // @Security BearerAuth
 // @Param id path int true "Payment Installment ID"
@@ -234,7 +304,20 @@ func (h *PaymentInstallmentHandler) Delete(c *fiber.Ctx) error {
 	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(installment.DealID)); err != nil {
 		return respondFindErr(c, err, "Deal not found")
 	}
-	if err := h.DB.Delete(&installment).Error; err != nil {
+	before := installmentSnapshot(installment)
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		// Unscoped: a deleted Payment must not keep pointing at a row that's
+		// gone; its own deleted audit entry still records the link.
+		if err := tx.Unscoped().Model(&models.Payment{}).Where("installment_id = ?", installment.ID).
+			Update("installment_id", nil).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&installment).Error; err != nil {
+			return err
+		}
+		return utils.WriteAuditLog(tx, "payment_installment", installment.ID, "deleted", before, nil, middleware.CurrentUserID(c))
+	})
+	if err != nil {
 		return utils.Internal(c, "Failed to delete payment installment")
 	}
 	return utils.NoContent(c)

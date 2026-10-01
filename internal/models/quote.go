@@ -4,6 +4,8 @@ import (
 	"time"
 
 	"github.com/lib/pq"
+
+	"github.com/igeargeek/sales-system-api/internal/calendar"
 )
 
 type QuoteStatus string
@@ -36,12 +38,59 @@ func IsValidQuoteStatus(s QuoteStatus) bool {
 	return false
 }
 
-// QuotePriceType records whether Quote.Items' Price values are meant to be
-// read as tax-exclusive or tax-inclusive — display/PDF concern only, doesn't
-// change how ComputeQuoteTotals adds VAT (a quote entered "incl_tax" is
-// expected to already have VAT baked into its item prices by whoever typed
-// them in; this is a labeling/expectation field, not a second computation
-// path).
+// quoteStatusTransitions is the Quote lifecycle: the stored statuses each
+// stored status may move to via PUT. Staying in the same status is always
+// allowed (a full-replace PUT resends it).
+//
+//	draft    → sent, accepted, rejected
+//	sent     → draft (recalled to revise), accepted, rejected
+//	accepted → rejected (the deal's Accepted quote is replaced by another)
+//	rejected → nothing (terminal; Duplicate it to start a new revision)
+//
+// "expired" is never stored: it is EffectiveStatus for a Sent quote past its
+// validity date. Such a quote is still "sent" here, except that it can no
+// longer be accepted (see CanTransitionQuoteStatus) — recall it to draft and
+// move the validity date, or reject it.
+var quoteStatusTransitions = map[QuoteStatus][]QuoteStatus{
+	QuoteStatusDraft:    {QuoteStatusSent, QuoteStatusAccepted, QuoteStatusRejected},
+	QuoteStatusSent:     {QuoteStatusDraft, QuoteStatusAccepted, QuoteStatusRejected},
+	QuoteStatusAccepted: {QuoteStatusRejected},
+	QuoteStatusRejected: {},
+}
+
+// CanTransitionQuoteStatus reports whether a quote whose stored status is
+// from (and whose EffectiveStatus is effective) may be set to to.
+func CanTransitionQuoteStatus(from, effective, to QuoteStatus) bool {
+	if from == to {
+		return true
+	}
+	if effective == QuoteStatusExpired && to == QuoteStatusAccepted {
+		return false
+	}
+	for _, v := range quoteStatusTransitions[from] {
+		if v == to {
+			return true
+		}
+	}
+	return false
+}
+
+// IsLocked reports whether the quote's content is read-only: an Accepted or
+// Rejected quote can only change status (see quoteStatusTransitions).
+func (q *Quote) IsLocked() bool {
+	return q.Status == QuoteStatusAccepted || q.Status == QuoteStatusRejected
+}
+
+// QuotePriceType records whether Quote.Items' Price values are tax-exclusive
+// or tax-inclusive, and utils.ComputeQuoteTotals computes VAT accordingly:
+// "excl_tax" adds 7% VAT on top of the (discounted) prices; "incl_tax" means
+// the prices already contain VAT, so it's backed out instead (taxable =
+// net / 1.07, VAT = net - taxable, both rounded to satang) and the grand
+// total before WHT is exactly the prices as entered. Either way
+// TaxableAmount is the pre-VAT figure that revenue and WHT are based on.
+// With VatEnabled off the two behave the same. (Until 2026-10-01 this was a
+// label only and VAT was always added on top, double-charging VAT on every
+// incl_tax quote with VAT on.)
 type QuotePriceType string
 
 const (
@@ -152,6 +201,13 @@ type Quote struct {
 	// reason as Number above — existing rows never had this column.
 	ExtractionStatus   *string        `gorm:"type:varchar(16)" json:"extraction_status,omitempty"`
 	ExtractionWarnings pq.StringArray `gorm:"type:text[]" json:"extraction_warnings,omitempty"`
+	// RevisionOfID/RevisionNo link a quote made by Duplicate back to the
+	// first quote of its chain (the root, never an intermediate copy), so
+	// every revision of one offer shares a RevisionOfID. The root itself has
+	// nil and 0; each copy gets the chain's highest RevisionNo + 1. The FK
+	// (ON DELETE SET NULL) is added by database.ensureQuoteRevisionFK.
+	RevisionOfID *uint `gorm:"index" json:"revision_of_id"`
+	RevisionNo   int   `gorm:"not null;default:0" json:"revision_no"`
 }
 
 func (Quote) TableName() string { return "quotes" }
@@ -175,14 +231,6 @@ func ParseFlexDate(value *string) (t time.Time, ok bool) {
 	return time.Time{}, false
 }
 
-// ParseValidityDate is ParseFlexDate specialized to ValidityDate — kept as a
-// named wrapper since EffectiveStatus/ReportHandler.QuotesExpiringSoon
-// already call it by this name; new callers needing the same leniency for a
-// different field (e.g. IssueDate) should call ParseFlexDate directly.
-func ParseValidityDate(validityDate *string) (t time.Time, ok bool) {
-	return ParseFlexDate(validityDate)
-}
-
 // EffectiveStatus returns QuoteStatusExpired when this Quote is Sent and its
 // ValidityDate has passed, otherwise it returns the stored Status unchanged.
 // This is a read-derived value only — it never mutates q.Status or the
@@ -191,15 +239,46 @@ func ParseValidityDate(validityDate *string) (t time.Time, ok bool) {
 // expire), and Accepted/Rejected are terminal states that Expired shouldn't
 // override.
 func (q *Quote) EffectiveStatus() QuoteStatus {
+	return q.EffectiveStatusAt(time.Now())
+}
+
+// EffectiveStatusAt is EffectiveStatus as of now. The validity date is the
+// quote's last valid day, so it expires once the server-local calendar day
+// is past it.
+func (q *Quote) EffectiveStatusAt(now time.Time) QuoteStatus {
 	if q.Status != QuoteStatusSent {
 		return q.Status
 	}
-	validUntil, ok := ParseValidityDate(q.ValidityDate)
+	validUntil, ok := q.ValidityDay()
 	if !ok {
 		return q.Status
 	}
-	if time.Now().After(validUntil) {
+	if calendar.Today(now).After(validUntil) {
 		return QuoteStatusExpired
 	}
 	return q.Status
+}
+
+// ValidityDay is ValidityDate as a calendar day (calendar.ParseLocalDay): a
+// bare date as written, a timestamp by its server-local date.
+func (q *Quote) ValidityDay() (time.Time, bool) {
+	if q.ValidityDate == nil {
+		return time.Time{}, false
+	}
+	return calendar.ParseLocalDay(*q.ValidityDate)
+}
+
+// ExpiresWithin reports whether the quote's validity date falls within the
+// next `days` calendar days of now, today included — still valid, but not
+// for long — and returns that date.
+func (q *Quote) ExpiresWithin(now time.Time, days int) (validUntil time.Time, ok bool) {
+	validUntil, ok = q.ValidityDay()
+	if !ok {
+		return time.Time{}, false
+	}
+	today := calendar.Today(now)
+	if validUntil.Before(today) || validUntil.After(today.AddDate(0, 0, days)) {
+		return time.Time{}, false
+	}
+	return validUntil, true
 }

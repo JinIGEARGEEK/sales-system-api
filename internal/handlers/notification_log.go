@@ -44,6 +44,12 @@ type notificationFiringRow struct {
 	CompanyID   uint      `json:"company_id,omitempty"`
 	CompanyName string    `json:"company_name,omitempty"`
 	NotifiedAt  time.Time `json:"notified_at"`
+	// EntityID/Context — the raw NotificationLog key: the id of the rule's
+	// own entity type (e.g. a payment_installment or customer_product id,
+	// which DealID/CompanyID above resolve up from) and the dedupe context
+	// (a Deal stage, a Company tier, or a renewal/end date).
+	EntityID uint   `json:"entity_id"`
+	Context  string `json:"context"`
 }
 
 // List — GET /notification-log. Any authenticated role — scoping happens
@@ -96,10 +102,17 @@ func (h *NotificationLogHandler) List(c *fiber.Ctx) error {
 			rows = append(rows, notificationFiringRow{
 				ID: l.ID, RuleName: rule.Name, EntityType: string(rule.EntityType),
 				ProspectID: prospect.ID, ProspectName: prospect.Name, NotifiedAt: l.NotifiedAt,
+				EntityID: l.EntityID, Context: l.Context,
 			})
 
-		case models.NotificationEntityCompany:
-			company, ok := resolved.companies[l.EntityID]
+		case models.NotificationEntityCompany, models.NotificationEntityCustomerProductRenewal:
+			companyID := l.EntityID
+			if rule.EntityType == models.NotificationEntityCustomerProductRenewal {
+				if companyID, ok = resolved.companyIDForCustomerProduct[l.EntityID]; !ok {
+					continue
+				}
+			}
+			company, ok := resolved.companies[companyID]
 			if !ok {
 				continue
 			}
@@ -117,6 +130,7 @@ func (h *NotificationLogHandler) List(c *fiber.Ctx) error {
 			rows = append(rows, notificationFiringRow{
 				ID: l.ID, RuleName: rule.Name, EntityType: string(rule.EntityType),
 				CompanyID: company.ID, CompanyName: company.Name, NotifiedAt: l.NotifiedAt,
+				EntityID: l.EntityID, Context: l.Context,
 			})
 
 		default:
@@ -127,6 +141,7 @@ func (h *NotificationLogHandler) List(c *fiber.Ctx) error {
 			rows = append(rows, notificationFiringRow{
 				ID: l.ID, RuleName: rule.Name, EntityType: string(rule.EntityType),
 				DealID: deal.ID, DealTitle: deal.Title, NotifiedAt: l.NotifiedAt,
+				EntityID: l.EntityID, Context: l.Context,
 			})
 		}
 	}
@@ -141,12 +156,16 @@ func (h *NotificationLogHandler) List(c *fiber.Ctx) error {
 // Quote/Contract rows are pre-resolved down to their owning Deal ID during
 // resolveEntities so dealFor is a single map read, no query.
 type resolvedEntities struct {
-	prospects         map[uint]models.Prospect
-	companies         map[uint]models.Company
-	companyDealOwner  map[uint]*uint // company id -> most recent Deal's AssignedTo
-	deals             map[uint]models.Deal
-	dealIDForQuote    map[uint]uint // quote id -> deal id
-	dealIDForContract map[uint]uint // contract id -> deal id
+	prospects            map[uint]models.Prospect
+	companies            map[uint]models.Company
+	companyDealOwner     map[uint]*uint // company id -> most recent Deal's AssignedTo
+	deals                map[uint]models.Deal
+	dealIDForQuote       map[uint]uint // quote id -> deal id
+	dealIDForContract    map[uint]uint // contract id -> deal id (contract and contract_expiry rules)
+	dealIDForInstallment map[uint]uint // payment installment id -> deal id
+	// companyIDForCustomerProduct: customer_product_renewal firings resolve
+	// to their Company, scoped like a "company" firing.
+	companyIDForCustomerProduct map[uint]uint
 }
 
 // dealFor resolves a NotificationRule firing (a Deal, Quote, or Contract id
@@ -167,8 +186,15 @@ func (r resolvedEntities) dealFor(entityType models.NotificationEntityType, enti
 		}
 		deal, ok := r.deals[dealID]
 		return deal, ok
-	case models.NotificationEntityContract:
+	case models.NotificationEntityContract, models.NotificationEntityContractExpiry:
 		dealID, ok := r.dealIDForContract[entityID]
+		if !ok {
+			return models.Deal{}, false
+		}
+		deal, ok := r.deals[dealID]
+		return deal, ok
+	case models.NotificationEntityPaymentInstallment:
+		dealID, ok := r.dealIDForInstallment[entityID]
 		if !ok {
 			return models.Deal{}, false
 		}
@@ -201,7 +227,7 @@ func dealIDsFor[T any](db *gorm.DB, ids []uint, getIDAndDealID func(T) (id, deal
 // List's row-building loop will need, grouped by rule.EntityType, so the loop
 // itself does zero further queries.
 func (h *NotificationLogHandler) resolveEntities(logs []models.NotificationLog, ruleByID map[uint]models.NotificationRule) resolvedEntities {
-	var prospectIDs, companyIDs, dealIDs, quoteIDs, contractIDs []uint
+	var prospectIDs, companyIDs, dealIDs, quoteIDs, contractIDs, installmentIDs, customerProductIDs []uint
 	for _, l := range logs {
 		rule, ok := ruleByID[l.RuleID]
 		if !ok {
@@ -216,9 +242,18 @@ func (h *NotificationLogHandler) resolveEntities(logs []models.NotificationLog, 
 			dealIDs = append(dealIDs, l.EntityID)
 		case models.NotificationEntityQuote:
 			quoteIDs = append(quoteIDs, l.EntityID)
-		case models.NotificationEntityContract:
+		case models.NotificationEntityContract, models.NotificationEntityContractExpiry:
 			contractIDs = append(contractIDs, l.EntityID)
+		case models.NotificationEntityPaymentInstallment:
+			installmentIDs = append(installmentIDs, l.EntityID)
+		case models.NotificationEntityCustomerProductRenewal:
+			customerProductIDs = append(customerProductIDs, l.EntityID)
 		}
+	}
+	// customer_product_renewal firings join the Company batch below.
+	companyIDForCustomerProduct := dealIDsFor(h.DB, customerProductIDs, func(cp models.CustomerProduct) (uint, uint) { return cp.ID, cp.CompanyID })
+	for _, companyID := range companyIDForCustomerProduct {
+		companyIDs = append(companyIDs, companyID)
 	}
 
 	resolved := resolvedEntities{
@@ -226,6 +261,8 @@ func (h *NotificationLogHandler) resolveEntities(logs []models.NotificationLog, 
 		companies:        map[uint]models.Company{},
 		companyDealOwner: map[uint]*uint{},
 		deals:            map[uint]models.Deal{},
+
+		companyIDForCustomerProduct: companyIDForCustomerProduct,
 		// dealIDForQuote/dealIDForContract are assigned below via
 		// dealIDsFor, which returns a non-nil map (empty when there's
 		// nothing to resolve) — no need to pre-initialize them here too.
@@ -271,6 +308,10 @@ func (h *NotificationLogHandler) resolveEntities(logs []models.NotificationLog, 
 	// two near-identical copies of the same loop.
 	resolved.dealIDForQuote = dealIDsFor(h.DB, quoteIDs, func(q models.Quote) (uint, uint) { return q.ID, q.DealID })
 	resolved.dealIDForContract = dealIDsFor(h.DB, contractIDs, func(ct models.Contract) (uint, uint) { return ct.ID, ct.DealID })
+	resolved.dealIDForInstallment = dealIDsFor(h.DB, installmentIDs, func(pi models.PaymentInstallment) (uint, uint) { return pi.ID, pi.DealID })
+	for _, dealID := range resolved.dealIDForInstallment {
+		dealIDs = append(dealIDs, dealID)
+	}
 	for _, dealID := range resolved.dealIDForQuote {
 		dealIDs = append(dealIDs, dealID)
 	}

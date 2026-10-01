@@ -769,3 +769,140 @@ func TestOpenAPI_DealPaymentInstallmentsList(t *testing.T) {
 	require.NoError(t, db.Model(&models.PaymentInstallment{}).Where("deal_id = ?", deal.ID).Count(&count).Error)
 	require.EqualValues(t, 2, count)
 }
+
+// TestOpenAPI_CompanyTaxIDBranchCodeFilter guards the exact-match ?tax_id=
+// and ?branch_code= filters an accounting integration uses to find a Company
+// by tax ID + branch instead of by (inconsistently spelled) name.
+func TestOpenAPI_CompanyTaxIDBranchCodeFilter(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	apiKey := createAPIKey(t, app, admin.ID, admin.ID)
+
+	create := func(name, taxID, branch string) uint {
+		var created struct {
+			Data models.Company `json:"data"`
+		}
+		req := openRequest(t, http.MethodPost, "/api/v1/open/companies", map[string]interface{}{
+			"name": name, "tax_id": taxID, "branch_code": branch,
+		}, apiKey)
+		require.Equal(t, fiber.StatusCreated, doJSON(t, app, req, &created).StatusCode)
+		return created.Data.ID
+	}
+	headOffice := create("Acme จำกัด", "0105555555555", "00000")
+	branch := create("Acme Co., Ltd. (Branch 1)", "0105555555555", "00001")
+	create("Other Co.", "0105555555556", "00000")
+
+	list := func(query string) []uint {
+		var body struct {
+			Data []models.Company `json:"data"`
+		}
+		req := openRequest(t, http.MethodGet, "/api/v1/open/companies?"+query, nil, apiKey)
+		require.Equal(t, fiber.StatusOK, doJSON(t, app, req, &body).StatusCode)
+		ids := make([]uint, 0, len(body.Data))
+		for _, co := range body.Data {
+			ids = append(ids, co.ID)
+		}
+		return ids
+	}
+
+	require.ElementsMatch(t, []uint{headOffice, branch}, list("tax_id=0105555555555"))
+	require.Equal(t, []uint{branch}, list("tax_id=0105555555555&branch_code=00001"))
+	require.Empty(t, list("tax_id=010555555555"), "a prefix of a tax_id must not match")
+	require.Empty(t, list("tax_id=0105555555555&branch_code=00002"))
+}
+
+// TestOpenAPI_CompanyBranchPostalCodes guards branch_code/postal_code on
+// Create/Get/Update: five digits only, trimmed, blank stored as null — and,
+// unlike the rest of the full-replace PUT, kept when a body omits them, so a
+// client that predates these fields can't wipe them.
+func TestOpenAPI_CompanyBranchPostalCodes(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	apiKey := createAPIKey(t, app, admin.ID, admin.ID)
+
+	var created struct {
+		Data models.Company `json:"data"`
+	}
+	createReq := openRequest(t, http.MethodPost, "/api/v1/open/companies", map[string]interface{}{
+		"name": "Acme Corp", "tax_id": "0105555555555", "branch_code": "00000", "postal_code": " 10110 ",
+	}, apiKey)
+	require.Equal(t, fiber.StatusCreated, doJSON(t, app, createReq, &created).StatusCode)
+	require.NotNil(t, created.Data.BranchCode)
+	require.Equal(t, "00000", *created.Data.BranchCode)
+	require.NotNil(t, created.Data.PostalCode)
+	require.Equal(t, "10110", *created.Data.PostalCode, "postal_code must be trimmed")
+
+	path := "/api/v1/open/companies/" + itoa(created.Data.ID)
+	get := func() models.Company {
+		var body struct {
+			Data models.Company `json:"data"`
+		}
+		require.Equal(t, fiber.StatusOK, doJSON(t, app, openRequest(t, http.MethodGet, path, nil, apiKey), &body).StatusCode)
+		return body.Data
+	}
+
+	for _, bad := range []map[string]interface{}{
+		{"name": "Acme Corp", "branch_code": "0000"},
+		{"name": "Acme Corp", "branch_code": "00A00"},
+		{"name": "Acme Corp", "postal_code": "101100"},
+	} {
+		resp := doJSON(t, app, openRequest(t, http.MethodPut, path, bad, apiKey), nil)
+		require.Equal(t, fiber.StatusUnprocessableEntity, resp.StatusCode, "%v", bad)
+	}
+
+	// A JSON number would drop the leading zeros, so it's a type error (400),
+	// not a value coerced to "0".
+	numeric := doJSON(t, app, openRequest(t, http.MethodPut, path,
+		map[string]interface{}{"name": "Acme Corp", "branch_code": 0}, apiKey), nil)
+	require.Equal(t, fiber.StatusBadRequest, numeric.StatusCode)
+
+	// The code checks run before industry auto-registration, so a rejected
+	// request leaves no new industry option behind.
+	rejected := doJSON(t, app, openRequest(t, http.MethodPut, path,
+		map[string]interface{}{"name": "Acme Corp", "industry": "Never Saved Industry", "branch_code": "1"}, apiKey), nil)
+	require.Equal(t, fiber.StatusUnprocessableEntity, rejected.StatusCode)
+	var industries int64
+	require.NoError(t, db.Model(&models.IndustryOption{}).Where("name = ?", "Never Saved Industry").Count(&industries).Error)
+	require.Zero(t, industries)
+
+	// A PUT that omits both fields keeps them.
+	require.Equal(t, fiber.StatusOK, doJSON(t, app, openRequest(t, http.MethodPut, path,
+		map[string]interface{}{"name": "Acme Corp", "tax_id": "0105555555555"}, apiKey), nil).StatusCode)
+	kept := get()
+	require.NotNil(t, kept.BranchCode)
+	require.Equal(t, "00000", *kept.BranchCode)
+	require.NotNil(t, kept.PostalCode)
+	require.Equal(t, "10110", *kept.PostalCode)
+
+	// Explicit null and "" each clear.
+	require.Equal(t, fiber.StatusOK, doJSON(t, app, openRequest(t, http.MethodPut, path,
+		map[string]interface{}{"name": "Acme Corp", "branch_code": nil, "postal_code": ""}, apiKey), nil).StatusCode)
+	cleared := get()
+	require.Nil(t, cleared.BranchCode)
+	require.Nil(t, cleared.PostalCode)
+}
+
+// TestOpenAPI_PipelineGroupsRoleGated guards that a Production-owned key gets
+// the same 403s on Companies/Contacts/Leads/Prospects as the staff routes,
+// while Projects/Products (which Production works) stay open to it.
+func TestOpenAPI_PipelineGroupsRoleGated(t *testing.T) {
+	app, db := testutil.App(t)
+	admin := testutil.CreateUser(t, db, models.RoleAdmin)
+	production := testutil.CreateUser(t, db, models.RoleProduction)
+	marketing := testutil.CreateUser(t, db, models.RoleMarketing)
+
+	productionKey := createAPIKey(t, app, admin.ID, production.ID)
+	marketingKey := createAPIKey(t, app, admin.ID, marketing.ID)
+
+	for _, path := range []string{"/companies", "/contacts", "/leads", "/prospects"} {
+		target := "/api/v1/open" + path
+		require.Equal(t, fiber.StatusForbidden,
+			doJSON(t, app, openRequest(t, http.MethodGet, target, nil, productionKey), nil).StatusCode, path)
+		require.Equal(t, fiber.StatusOK,
+			doJSON(t, app, openRequest(t, http.MethodGet, target, nil, marketingKey), nil).StatusCode, path)
+	}
+	for _, path := range []string{"/projects", "/products"} {
+		require.Equal(t, fiber.StatusOK,
+			doJSON(t, app, openRequest(t, http.MethodGet, "/api/v1/open"+path, nil, productionKey), nil).StatusCode, path)
+	}
+}

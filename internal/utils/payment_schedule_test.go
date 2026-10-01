@@ -9,6 +9,12 @@ import (
 	"github.com/igeargeek/sales-system-api/internal/models"
 )
 
+// statusesForTotal allocates a plain total paid (no installment links, no
+// WHT split) — the shape most of these cases are easiest to state in.
+func statusesForTotal(installments []models.PaymentInstallment, totalPaid float64, now time.Time) []InstallmentStatus {
+	return ComputeInstallmentStatusesFromPayments(installments, []models.Payment{{Amount: totalPaid}}, now)
+}
+
 func daysFromNow(now time.Time, days int) time.Time { return now.AddDate(0, 0, days) }
 
 // TestComputeInstallmentStatuses_Waterfall reproduces the worked example
@@ -23,7 +29,7 @@ func TestComputeInstallmentStatuses_Waterfall(t *testing.T) {
 		{Amount: 30000, DueDate: daysFromNow(now, 40)},
 	}
 
-	statuses := ComputeInstallmentStatuses(installments, 50000, now)
+	statuses := statusesForTotal(installments, 50000, now)
 
 	assert.Equal(t, InstallmentStatusPaid, statuses[0].Status)
 	assert.InDelta(t, 30000.0, statuses[0].Covered, 0.001)
@@ -44,7 +50,7 @@ func TestComputeInstallmentStatuses_Overdue(t *testing.T) {
 		{Amount: 30000, DueDate: daysFromNow(now, -5)},
 	}
 
-	statuses := ComputeInstallmentStatuses(installments, 0, now)
+	statuses := statusesForTotal(installments, 0, now)
 
 	assert.Equal(t, InstallmentStatusOverdue, statuses[0].Status)
 }
@@ -58,7 +64,7 @@ func TestComputeInstallmentStatuses_SortsByDueDate(t *testing.T) {
 		{Amount: 10000, DueDate: daysFromNow(now, -10)},
 	}
 
-	statuses := ComputeInstallmentStatuses(installments, 10000, now)
+	statuses := statusesForTotal(installments, 10000, now)
 
 	// Earliest due date (was second in the input) is paid first.
 	assert.InDelta(t, -10.0, statuses[0].Installment.DueDate.Sub(now).Hours()/24, 0.01)
@@ -75,7 +81,87 @@ func TestComputeInstallmentStatuses_FullyPaidNotOverdue(t *testing.T) {
 		{Amount: 10000, DueDate: daysFromNow(now, -30)},
 	}
 
-	statuses := ComputeInstallmentStatuses(installments, 10000, now)
+	statuses := statusesForTotal(installments, 10000, now)
 
 	assert.Equal(t, InstallmentStatusPaid, statuses[0].Status)
+}
+
+// A payment linked to installment #2 settles #2 first, even though #1 is
+// due earlier; without the link the same money would waterfall into #1.
+func TestComputeInstallmentStatusesFromPayments_LinkedFirst(t *testing.T) {
+	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+	installments := []models.PaymentInstallment{
+		{HardDeleteModel: models.HardDeleteModel{ID: 1}, Amount: 30000, DueDate: daysFromNow(now, -10)},
+		{HardDeleteModel: models.HardDeleteModel{ID: 2}, Amount: 40000, DueDate: daysFromNow(now, 20)},
+	}
+	two := uint(2)
+	payments := []models.Payment{{Amount: 40000, InstallmentID: &two}}
+
+	statuses := ComputeInstallmentStatusesFromPayments(installments, payments, now)
+	assert.Equal(t, InstallmentStatusOverdue, statuses[0].Status, "#1 is untouched by a payment linked to #2")
+	assert.Equal(t, InstallmentStatusPaid, statuses[1].Status)
+
+	unlinked := ComputeInstallmentStatusesFromPayments(installments, []models.Payment{{Amount: 40000}}, now)
+	assert.Equal(t, InstallmentStatusPaid, unlinked[0].Status, "unlinked money still waterfalls earliest-first")
+	assert.Equal(t, InstallmentStatusPartial, unlinked[1].Status)
+	assert.InDelta(t, 10000.0, unlinked[1].Covered, 0.001)
+}
+
+// Linked excess over its installment rejoins the waterfall; WHT counts as
+// settled; a link to an installment not in the set is treated as unlinked.
+func TestComputeInstallmentStatusesFromPayments_ExcessWhtAndStaleLink(t *testing.T) {
+	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+	installments := []models.PaymentInstallment{
+		{HardDeleteModel: models.HardDeleteModel{ID: 1}, Amount: 10000, DueDate: daysFromNow(now, -10)},
+		{HardDeleteModel: models.HardDeleteModel{ID: 2}, Amount: 10000, DueDate: daysFromNow(now, 10)},
+		{HardDeleteModel: models.HardDeleteModel{ID: 3}, Amount: 10000, DueDate: daysFromNow(now, 40)},
+	}
+	two, gone := uint(2), uint(99)
+	payments := []models.Payment{
+		{Amount: 14700, WhtAmount: 300, InstallmentID: &two}, // settles 15000: #2 + 5000 excess
+		{Amount: 4850, WhtAmount: 150, InstallmentID: &gone}, // stale link: plain 5000
+	}
+	statuses := ComputeInstallmentStatusesFromPayments(installments, payments, now)
+	assert.Equal(t, InstallmentStatusPaid, statuses[0].Status, "#1 gets 5000 excess + 5000 unlinked")
+	assert.Equal(t, InstallmentStatusPaid, statuses[1].Status)
+	assert.Equal(t, InstallmentStatusUpcoming, statuses[2].Status)
+
+	// No links at all: identical to the legacy total-paid form.
+	plain := []models.Payment{{Amount: 9700, WhtAmount: 300}, {Amount: 5000}}
+	assert.Equal(t, statusesForTotal(installments, 15000, now), ComputeInstallmentStatusesFromPayments(installments, plain, now))
+}
+
+func TestAgingBucket(t *testing.T) {
+	cases := map[int]string{-3: AgingCurrent, 0: AgingCurrent, 1: Aging1To30, 30: Aging1To30, 31: Aging31To60,
+		60: Aging31To60, 61: Aging61To90, 90: Aging61To90, 91: Aging90Plus, 400: Aging90Plus}
+	for days, want := range cases {
+		assert.Equal(t, want, AgingBucket(days), "days=%d", days)
+	}
+
+}
+
+// Cash plus a percentage WHT can sum a hair under the installment; that's
+// paid, not partial/overdue (which fired a spurious "Overdue payment" Task).
+func TestComputeInstallmentStatuses_FloatShortfallIsPaid(t *testing.T) {
+	now := time.Date(2026, 9, 15, 10, 0, 0, 0, time.Local)
+	// (0.7 + 0.1) + 0.2 sums to 0.9999999999999999 in float64.
+	installments := []models.PaymentInstallment{{Amount: 1, DueDate: daysFromNow(now, -5)}}
+	payments := []models.Payment{{Amount: 0.7, WhtAmount: 0.1}, {Amount: 0.2}}
+	statuses := ComputeInstallmentStatusesFromPayments(installments, payments, now)
+	assert.Equal(t, InstallmentStatusPaid, statuses[0].Status)
+
+	short := []models.PaymentInstallment{{Amount: 10000, DueDate: daysFromNow(now, -5)}}
+	statuses = statusesForTotal(short, 9999.999999, now)
+	assert.Equal(t, InstallmentStatusPaid, statuses[0].Status)
+}
+
+// On its due date an unpaid installment is not yet overdue (DaysOverdue is
+// 0, aging "current"); it becomes overdue the next calendar day.
+func TestComputeInstallmentStatuses_DueTodayIsNotOverdue(t *testing.T) {
+	due := time.Date(2026, 9, 27, 0, 0, 0, 0, time.Local)
+	inst := []models.PaymentInstallment{{Amount: 1000, DueDate: due}}
+
+	assert.Equal(t, InstallmentStatusUpcoming, statusesForTotal(inst, 0, time.Date(2026, 9, 27, 16, 0, 0, 0, time.Local))[0].Status)
+	assert.Equal(t, InstallmentStatusPartial, statusesForTotal(inst, 400, time.Date(2026, 9, 27, 16, 0, 0, 0, time.Local))[0].Status)
+	assert.Equal(t, InstallmentStatusOverdue, statusesForTotal(inst, 0, time.Date(2026, 9, 28, 0, 30, 0, 0, time.Local))[0].Status)
 }

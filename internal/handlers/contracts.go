@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/go-pdf/fpdf"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
+	"github.com/igeargeek/sales-system-api/internal/calendar"
+	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
@@ -42,6 +43,38 @@ func (h *ContractHandler) List(c *fiber.Ctx) error {
 type contractForm struct {
 	Status  models.ContractStatus `json:"status"`
 	QuoteID *uint                 `json:"quote_id"`
+	// EndDate — the term's end, YYYY-MM-DD or RFC 3339, stored as a date.
+	// On Update, omitted keeps the stored value and null/"" clears it.
+	EndDate *string `json:"end_date"`
+}
+
+// applyContractEndDate parses form.EndDate onto contract when the body had
+// an end_date key. Writes the 422 itself and returns false on failure.
+func applyContractEndDate(c *fiber.Ctx, contract *models.Contract, endDate *string, present bool) bool {
+	if !present {
+		return true
+	}
+	d, ok := parseOptionalCalendarDate(c, "end_date", endDate)
+	if ok {
+		contract.EndDate = d
+	}
+	return ok
+}
+
+// parseOptionalCalendarDate parses an optional date-column field (Contract
+// end_date, CustomerProduct renewal_date) with calendar.Parse: nil
+// or "" is (nil, true) — clear it — and an unparseable value writes the 422
+// for field and returns ok=false.
+func parseOptionalCalendarDate(c *fiber.Ctx, field string, v *string) (*time.Time, bool) {
+	if v == nil || *v == "" {
+		return nil, true
+	}
+	d, err := calendar.Parse(*v)
+	if err != nil {
+		_ = utils.ValidationError(c, field+" is invalid", map[string][]string{field: {err.Error()}})
+		return nil, false
+	}
+	return &d, true
 }
 
 // validateContractForm checks status enum membership and, if quote_id is
@@ -68,9 +101,96 @@ func validateContractForm(c *fiber.Ctx, db *gorm.DB, dealID uint, form contractF
 	return true
 }
 
+// hasSignedDocument reports whether the contract carries what makes it
+// signed: an uploaded signed file and a signed_date. Upload sets both.
+func hasSignedDocument(contract models.Contract) bool {
+	return contract.SignedFileURL != nil && *contract.SignedFileURL != "" && contract.SignedDate != nil
+}
+
+// requireSignedDocument is the 422 for setting status signed by hand on a
+// contract without hasSignedDocument — signed comes from POST
+// /contracts/:id/upload. Writes the response itself and returns false.
+func requireSignedDocument(c *fiber.Ctx, contract models.Contract, to models.ContractStatus) bool {
+	if to != models.ContractStatusSigned || hasSignedDocument(contract) {
+		return true
+	}
+	_ = utils.ValidationError(c, "a contract becomes signed by uploading the signed document", map[string][]string{
+		"status": {"requires_signed_document"},
+	})
+	return false
+}
+
+// signedContractChange returns the first field form would change on a
+// contract whose stored status is signed, or "". A signed contract is
+// locked: no status change (back to draft or otherwise), quote_id or
+// end_date edit. Keys off the stored status, never a derived one (a signed
+// contract past its end_date may display as expired but stays signed).
+// Resending the stored values is not a change.
+func signedContractChange(c *fiber.Ctx, contract models.Contract, form contractForm) string {
+	if form.Status != "" && form.Status != contract.Status {
+		return "status"
+	}
+	if form.QuoteID != nil && (contract.QuoteID == nil || *form.QuoteID != *contract.QuoteID) {
+		return "quote_id"
+	}
+	if bodyHas(c, "end_date") {
+		next := models.Contract{}
+		if d, err := calendar.Parse(stringOrEmpty(form.EndDate)); err == nil {
+			next.EndDate = &d
+		}
+		if !sameDay(next.EndDate, contract.EndDate) {
+			return "end_date"
+		}
+	}
+	return ""
+}
+
+func stringOrEmpty(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// sameDay compares two optional date-column values by calendar day.
+func sameDay(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Format("2006-01-02") == b.Format("2006-01-02")
+}
+
+// saveContract persists a contract change inside a transaction that locks
+// the row and checks its stored status is still oldStatus (so a concurrent
+// Upload/Update can't be overwritten by a stale Save), and writes a
+// contract status_changed audit entry when the status moved.
+func (h *ContractHandler) saveContract(c *fiber.Ctx, contract *models.Contract, oldStatus models.ContractStatus) error {
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		var stored models.Contract
+		if err := lockRow(tx, &stored, contract.ID, "id", "status"); err != nil {
+			return err
+		}
+		if stored.Status != oldStatus {
+			return &lifecycleConflict{fmt.Sprintf("this contract was changed to %s meanwhile; reload it and try again", stored.Status)}
+		}
+		if err := tx.Save(contract).Error; err != nil {
+			return err
+		}
+		if contract.Status == oldStatus {
+			return nil
+		}
+		return utils.WriteAuditLog(tx, "contract", contract.ID, "status_changed",
+			models.JSONMap{"status": oldStatus}, models.JSONMap{"status": contract.Status}, middleware.CurrentUserID(c))
+	})
+	if err != nil {
+		return respondLifecycleErr(c, err, "Contract not found", "Failed to update contract")
+	}
+	return utils.OK(c, contract)
+}
+
 // Create godoc
 // @Summary Create a contract (Admin/Sales Rep/Sales Manager)
-// @Description Creates a Contract on a Deal, optionally linked to a Quote (quote_id) for PDF line items. status defaults to draft. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §8.1.
+// @Description Creates a Contract on a Deal, optionally linked to a Quote (quote_id) for PDF line items, with an optional end_date (YYYY-MM-DD). status defaults to draft; signed is a 422 (a contract becomes signed by uploading the signed document). Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §8.1.
 // @Tags contracts
 // @Security BearerAuth
 // @Accept json
@@ -81,6 +201,7 @@ func validateContractForm(c *fiber.Ctx, db *gorm.DB, dealID uint, form contractF
 // @Failure 400 {object} map[string]interface{} "Invalid request body"
 // @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
 // @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Failure 422 {object} map[string]interface{} "Invalid status/quote_id/end_date, or status signed"
 // @Router /deals/{dealId}/contracts [post]
 func (h *ContractHandler) Create(c *fiber.Ctx) error {
 	deal, err := dealForSubResource(c, h.DB, c.Params("dealId"))
@@ -100,6 +221,12 @@ func (h *ContractHandler) Create(c *fiber.Ctx) error {
 	if contract.Status == "" {
 		contract.Status = models.ContractStatusDraft
 	}
+	if !requireSignedDocument(c, contract, contract.Status) {
+		return nil
+	}
+	if !applyContractEndDate(c, &contract, form.EndDate, true) {
+		return nil
+	}
 	if err := h.DB.Create(&contract).Error; err != nil {
 		return utils.Internal(c, "Failed to create contract")
 	}
@@ -108,7 +235,7 @@ func (h *ContractHandler) Create(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Update a contract
-// @Description Updates status and/or quote_id. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §8.1.
+// @Description Updates status, quote_id and/or end_date (YYYY-MM-DD; omitted keeps it, null clears it — drives the contract_expiry notification rule). status signed needs an uploaded signed document and signed_date (422 otherwise). A contract whose stored status is signed is locked: any change is a 409 (resending the stored values is not). Status changes are audited. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §8.1.
 // @Tags contracts
 // @Security BearerAuth
 // @Accept json
@@ -119,6 +246,8 @@ func (h *ContractHandler) Create(c *fiber.Ctx) error {
 // @Failure 400 {object} map[string]interface{} "Invalid request body"
 // @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
 // @Failure 404 {object} map[string]interface{} "Contract not found, or deal not found"
+// @Failure 409 {object} map[string]interface{} "Contract is signed (locked)"
+// @Failure 422 {object} map[string]interface{} "Invalid field, or status signed without a signed document"
 // @Router /contracts/{id} [put]
 func (h *ContractHandler) Update(c *fiber.Ctx) error {
 	var contract models.Contract
@@ -136,22 +265,36 @@ func (h *ContractHandler) Update(c *fiber.Ctx) error {
 	if !validateContractForm(c, h.DB, contract.DealID, form) {
 		return nil
 	}
+
+	// ---- Contract lifecycle guard ----
+	oldStatus := contract.Status
+	if oldStatus == models.ContractStatusSigned {
+		if field := signedContractChange(c, contract, form); field != "" {
+			return utils.Conflict(c, fmt.Sprintf("a signed contract is locked (%s can't change)", field))
+		}
+		return utils.OK(c, contract)
+	}
+	if form.Status != "" && !requireSignedDocument(c, contract, form.Status) {
+		return nil
+	}
+	// ---- end contract lifecycle guard ----
+
 	if form.Status != "" {
 		contract.Status = form.Status
 	}
 	if form.QuoteID != nil {
 		contract.QuoteID = form.QuoteID
 	}
-
-	if err := h.DB.Save(&contract).Error; err != nil {
-		return utils.Internal(c, "Failed to update contract")
+	if !applyContractEndDate(c, &contract, form.EndDate, bodyHas(c, "end_date")) {
+		return nil
 	}
-	return utils.OK(c, contract)
+
+	return h.saveContract(c, &contract, oldStatus)
 }
 
 // Upload godoc
 // @Summary Upload a signed contract document
-// @Description Uploads the signed document, sets signed_file_url/signed_date, and sets status to Signed. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may upload. api-system-spec.md §8.1.
+// @Description Uploads the signed document, sets signed_file_url/signed_date, and sets status to Signed (audited). A contract already signed is a 409 — its signed document isn't replaced; add further files as Attachments. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may upload. api-system-spec.md §8.1.
 // @Tags contracts
 // @Security BearerAuth
 // @Accept multipart/form-data
@@ -162,6 +305,7 @@ func (h *ContractHandler) Update(c *fiber.Ctx) error {
 // @Failure 400 {object} map[string]interface{} "Missing file, or unsupported file type"
 // @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
 // @Failure 404 {object} map[string]interface{} "Contract not found, or deal not found"
+// @Failure 409 {object} map[string]interface{} "Contract is already signed"
 // @Failure 413 {object} map[string]interface{} "File exceeds 10MB limit"
 // @Router /contracts/{id}/upload [post]
 func (h *ContractHandler) Upload(c *fiber.Ctx) error {
@@ -171,6 +315,9 @@ func (h *ContractHandler) Upload(c *fiber.Ctx) error {
 	}
 	if _, err := dealForSubResource(c, h.DB, fmt.Sprint(contract.DealID)); err != nil {
 		return respondFindErr(c, err, "Deal not found")
+	}
+	if contract.Status == models.ContractStatusSigned {
+		return utils.Conflict(c, "this contract is already signed; its signed document can't be replaced")
 	}
 
 	fh, err := c.FormFile("file")
@@ -184,13 +331,11 @@ func (h *ContractHandler) Upload(c *fiber.Ctx) error {
 	fileURL := "/uploads/" + key
 
 	now := time.Now()
+	oldStatus := contract.Status
 	contract.SignedFileURL = &fileURL
 	contract.SignedDate = &now
 	contract.Status = models.ContractStatusSigned
-	if err := h.DB.Save(&contract).Error; err != nil {
-		return utils.Internal(c, "Failed to update contract")
-	}
-	return utils.OK(c, contract)
+	return h.saveContract(c, &contract, oldStatus)
 }
 
 // ExportPDF godoc
@@ -225,26 +370,17 @@ func (h *ContractHandler) ExportPDF(c *fiber.Ctx) error {
 		}
 	}
 
-	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf := utils.NewPDF()
 	pdf.AddPage()
 
-	pdf.SetFont("Arial", "B", 16)
+	pdf.SetFont(utils.PDFFont, "B", 16)
 	pdf.Cell(0, 10, "Contract")
 	pdf.Ln(12)
 
-	pdf.SetFont("Arial", "", 11)
+	pdf.SetFont(utils.PDFFont, "", 11)
 	pdf.Cell(0, 6, fmt.Sprintf("Deal: %s", deal.Title))
 	pdf.Ln(6)
-	pdf.Cell(0, 6, fmt.Sprintf("Party: %s", strOrDefault(company.LegalName, company.Name)))
-	pdf.Ln(6)
-	if company.Address != nil && *company.Address != "" {
-		pdf.Cell(0, 6, fmt.Sprintf("Address: %s", *company.Address))
-		pdf.Ln(6)
-	}
-	if company.TaxID != nil && *company.TaxID != "" {
-		pdf.Cell(0, 6, fmt.Sprintf("Tax ID: %s", *company.TaxID))
-		pdf.Ln(6)
-	}
+	utils.RenderPartyBlock(pdf, fmt.Sprintf("Party: %s", utils.StringOrDefault(company.LegalName, company.Name)), company)
 	pdf.Cell(0, 6, fmt.Sprintf("Contact: %s (%s)", contact.Name, contact.RoleTitle))
 	pdf.Ln(6)
 	pdf.Cell(0, 6, fmt.Sprintf("Status: %s", contract.Status))
@@ -253,26 +389,30 @@ func (h *ContractHandler) ExportPDF(c *fiber.Ctx) error {
 		pdf.Cell(0, 6, fmt.Sprintf("Signed Date: %s", contract.SignedDate.Format("2006-01-02")))
 		pdf.Ln(6)
 	}
+	if contract.EndDate != nil {
+		pdf.Cell(0, 6, fmt.Sprintf("End Date: %s", contract.EndDate.Format("2006-01-02")))
+		pdf.Ln(6)
+	}
 	pdf.Ln(4)
 
 	if quote != nil {
 		if quote.ScopeOfWork != "" {
-			pdf.SetFont("Arial", "B", 11)
+			pdf.SetFont(utils.PDFFont, "B", 11)
 			pdf.Cell(0, 6, "Scope of Work")
 			pdf.Ln(7)
-			pdf.SetFont("Arial", "", 10)
+			pdf.SetFont(utils.PDFFont, "", 10)
 			pdf.MultiCell(0, 5, quote.ScopeOfWork, "", "L", false)
 			pdf.Ln(4)
 		}
 		utils.RenderLineItemsTable(pdf, quote.Items)
 		pdf.Ln(16)
 	} else {
-		pdf.SetFont("Arial", "I", 10)
+		pdf.SetFont(utils.PDFFont, "I", 10)
 		pdf.Cell(0, 6, "No linked quote — pricing not included.")
 		pdf.Ln(16)
 	}
 
-	pdf.SetFont("Arial", "", 10)
+	pdf.SetFont(utils.PDFFont, "", 10)
 	pdf.Cell(85, 6, "___________________________")
 	pdf.Cell(10, 6, "")
 	pdf.Cell(85, 6, "___________________________")
@@ -289,12 +429,4 @@ func (h *ContractHandler) ExportPDF(c *fiber.Ctx) error {
 	c.Set("Content-Type", "application/pdf")
 	c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="contract-%d.pdf"`, contract.ID))
 	return c.Send(buf.Bytes())
-}
-
-// strOrDefault returns *s if non-nil and non-empty, else def.
-func strOrDefault(s *string, def string) string {
-	if s != nil && *s != "" {
-		return *s
-	}
-	return def
 }

@@ -88,19 +88,7 @@ func TestCompanyList_StaleDaysFilter(t *testing.T) {
 		Type: models.ActivityTypeCall, RelatedType: models.RelatedTypeCompany, RelatedID: recentCompany.ID,
 	}).Error)
 
-	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/companies?stale_days=30", nil, admin.ID, admin.Role)
-	var out struct {
-		Data []struct {
-			ID uint `json:"id"`
-		} `json:"data"`
-	}
-	resp := doJSON(t, app, req, &out)
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	ids := make([]uint, len(out.Data))
-	for i, c := range out.Data {
-		ids[i] = c.ID
-	}
+	ids := listIDs(t, app, "/api/v1/companies?stale_days=30", admin.ID, admin.Role)
 	assert.Contains(t, ids, staleCompany.ID, "company with no Activity at all must be considered stale")
 	assert.NotContains(t, ids, recentCompany.ID, "company with a recent Activity must not be considered stale")
 }
@@ -118,35 +106,13 @@ func TestCompanyList_HasWonDealFilter(t *testing.T) {
 	companyWithoutWonDeal := seedCompany(t, db)
 
 	t.Run("has_won_deal=true", func(t *testing.T) {
-		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/companies?has_won_deal=true", nil, admin.ID, admin.Role)
-		var out struct {
-			Data []struct {
-				ID uint `json:"id"`
-			} `json:"data"`
-		}
-		resp := doJSON(t, app, req, &out)
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		ids := make([]uint, len(out.Data))
-		for i, c := range out.Data {
-			ids[i] = c.ID
-		}
+		ids := listIDs(t, app, "/api/v1/companies?has_won_deal=true", admin.ID, admin.Role)
 		assert.Contains(t, ids, companyWithWonDeal)
 		assert.NotContains(t, ids, companyWithoutWonDeal.ID)
 	})
 
 	t.Run("has_won_deal=false", func(t *testing.T) {
-		req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/companies?has_won_deal=false", nil, admin.ID, admin.Role)
-		var out struct {
-			Data []struct {
-				ID uint `json:"id"`
-			} `json:"data"`
-		}
-		resp := doJSON(t, app, req, &out)
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		ids := make([]uint, len(out.Data))
-		for i, c := range out.Data {
-			ids[i] = c.ID
-		}
+		ids := listIDs(t, app, "/api/v1/companies?has_won_deal=false", admin.ID, admin.Role)
 		assert.Contains(t, ids, companyWithoutWonDeal.ID)
 		assert.NotContains(t, ids, companyWithWonDeal)
 	})

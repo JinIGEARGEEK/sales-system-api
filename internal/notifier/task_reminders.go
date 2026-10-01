@@ -5,6 +5,7 @@
 package notifier
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/models"
-	"github.com/igeargeek/sales-system-api/internal/utils"
 )
 
 // taskReminderInterval is how often the background checker looks for newly-due
@@ -24,33 +24,35 @@ const taskReminderInterval = 15 * time.Minute
 // StartTaskDueReminders launches a background goroutine that periodically
 // emails the assignee of any open Task whose due date has passed and that
 // hasn't been notified yet. Safe to call even when SMTP isn't configured —
-// utils.SendMail no-ops (logs a warning) in that case rather than erroring.
+// utils.SendMail silently no-ops then, and the task is still stamped
+// NotifiedAt, so turning SMTP on later doesn't suddenly email a backlog of
+// long-past-due tasks. The task itself is the in-app alert either way.
 //
-// This is the only background job in the app; it runs on its own ticker
-// rather than piggybacking on the Fiber request lifecycle since due-date
-// checks aren't triggered by any specific HTTP request.
-func StartTaskDueReminders(db *gorm.DB, cfg *config.Config) {
-	ticker := time.NewTicker(taskReminderInterval)
-	go func() {
-		// Run one pass immediately on startup instead of waiting a full
-		// interval for the first check.
-		checkDueTasks(db, cfg)
-		for range ticker.C {
-			checkDueTasks(db, cfg)
-		}
-	}()
+// One of several background jobs (see also workflow_rules.go,
+// forecast_snapshots.go, weekly_digest.go, all started from cmd/api/main.go),
+// each on its own ticker rather than piggybacking on the Fiber request
+// lifecycle, since none is triggered by a specific HTTP request. Each runs
+// one pass immediately on startup instead of waiting a full interval, and
+// stops when ctx is cancelled (see runEvery).
+func StartTaskDueReminders(ctx context.Context, db *gorm.DB, cfg *config.Config) {
+	runEvery(ctx, "task due reminders", taskReminderInterval, func() { checkDueTasks(db, cfg) })
 }
 
-// checkDueTasks finds pending tasks that are due and not yet notified, emails
-// each assignee, and stamps NotifiedAt so it isn't sent again. A failure
-// sending one task's email (or resolving its assignee) is logged and does not
-// stop the rest of the batch.
+// checkDueTasks finds pending tasks that are due and not yet notified, and
+// for each one claims it (stamps NotifiedAt) and then emails the assignee.
+// A failure on one task is logged and does not stop the rest of the batch.
+//
+// Claim-then-send, not send-then-stamp: with more than one instance
+// running, two passes could both select the same task and both email it.
+// The claim is a conditional UPDATE only one of them can win, so a
+// reminder goes out at most once. The trade-off is that a send that fails
+// after the claim isn't retried — acceptable for a reminder about a task
+// that's already visible in-app, and better than the duplicate (or, on a
+// permanently failing address, an email attempt every 15 minutes forever).
 //
 // Assignees and related Deal/Contact/Company names are resolved via a
-// handful of batched queries up front (one per distinct related-entity type,
-// plus one for assignees) rather than the two First()-per-task round trips
-// this used to run — the difference between ~4 queries and 2*len(tasks) once
-// there's a real backlog of due tasks.
+// handful of batched queries up front (one per related-entity type, plus
+// one for assignees), not two round trips per task.
 func checkDueTasks(db *gorm.DB, cfg *config.Config) {
 	var tasks []models.Task
 	err := db.Where("status = ? AND due_date <= ? AND notified_at IS NULL", models.TaskStatusPending, time.Now()).
@@ -63,7 +65,14 @@ func checkDueTasks(db *gorm.DB, cfg *config.Config) {
 		return
 	}
 
-	assignees := loadAssignees(db, tasks)
+	// A lookup failure aborts the pass rather than proceeding with an empty
+	// map, which would read as "every assignee is gone" and stamp the whole
+	// batch handled without sending anything.
+	assignees, err := loadAssignees(db, tasks)
+	if err != nil {
+		log.Printf("notifier: failed to batch-resolve task assignees: %v", err)
+		return
+	}
 	relatedNames := loadRelatedNames(db, tasks)
 
 	for _, task := range tasks {
@@ -75,8 +84,10 @@ func checkDueTasks(db *gorm.DB, cfg *config.Config) {
 }
 
 // loadAssignees batch-resolves every distinct Task.AssignedTo in tasks into
-// a userID -> User map, replacing a First() per task.
-func loadAssignees(db *gorm.DB, tasks []models.Task) map[uint]models.User {
+// a userID -> User map, replacing a First() per task. Only users who can
+// still receive a reminder are loaded — not soft-deleted (GORM's default
+// scope) and still active — so a missing entry means "nobody to email".
+func loadAssignees(db *gorm.DB, tasks []models.Task) (map[uint]models.User, error) {
 	idSet := make(map[uint]bool)
 	for _, t := range tasks {
 		if t.AssignedTo != nil {
@@ -84,22 +95,17 @@ func loadAssignees(db *gorm.DB, tasks []models.Task) map[uint]models.User {
 		}
 	}
 	if len(idSet) == 0 {
-		return nil
-	}
-	ids := make([]uint, 0, len(idSet))
-	for id := range idSet {
-		ids = append(ids, id)
+		return nil, nil
 	}
 	var users []models.User
-	if err := db.Where("id IN ?", ids).Find(&users).Error; err != nil {
-		log.Printf("notifier: failed to batch-resolve task assignees: %v", err)
-		return nil
+	if err := db.Where("id IN ? AND is_active = ?", mapKeys(idSet), true).Find(&users).Error; err != nil {
+		return nil, err
 	}
 	byID := make(map[uint]models.User, len(users))
 	for _, u := range users {
 		byID[u.ID] = u
 	}
-	return byID
+	return byID, nil
 }
 
 // relatedKey identifies a Task's related record for relatedNames' map.
@@ -164,33 +170,35 @@ func mapKeys(m map[uint]bool) []uint {
 	return ids
 }
 
-// notifyTaskDue resolves the assignee's email, sends the reminder, and marks
-// the task as notified. Returns an error (logged by the caller) if the
-// assignee isn't in the pre-loaded map or the update fails — a send failure
-// from utils.SendMail itself is also surfaced here so the caller logs it and
-// moves on to the next task.
+// notifyTaskDue claims the task (see checkDueTasks) and, if this pass won
+// the claim and the assignee can still receive it, emails the reminder.
+// Returns an error (logged by the caller) if the claim or the send fails.
+//
+// A task with no assignee, or whose assignee has since been deleted or
+// deactivated, or has no email, is claimed without sending: there's nobody
+// to remind, and leaving it unclaimed would re-check (and, for a missing
+// assignee, log an error about) the same task every 15 minutes forever.
 func notifyTaskDue(db *gorm.DB, cfg *config.Config, task models.Task, assignees map[uint]models.User, relatedNames map[relatedKey]string) error {
-	if task.AssignedTo == nil {
-		// Nothing to notify — mark it done so it's not re-checked forever.
-		return markNotified(db, task)
+	claimed, err := claimTask(db, task)
+	if err != nil || !claimed {
+		return err
 	}
 
-	assignee, ok := assignees[*task.AssignedTo]
-	if !ok {
-		return fmt.Errorf("resolve assignee %d: not found", *task.AssignedTo)
+	if task.AssignedTo == nil {
+		return nil
 	}
-	if assignee.Email == "" {
-		return markNotified(db, task)
+	assignee, ok := assignees[*task.AssignedTo]
+	if !ok || assignee.Email == "" {
+		return nil
 	}
 
 	subject := fmt.Sprintf("Task due: %s", task.Title)
 	body := buildReminderBody(task, relatedNames)
 
-	if err := utils.SendMail(cfg, assignee.Email, subject, body); err != nil {
-		return fmt.Errorf("send reminder email: %w", err)
+	if err := sendMail(cfg, assignee.Email, subject, body); err != nil {
+		return fmt.Errorf("send reminder email (not retried — task already claimed): %w", err)
 	}
-
-	return markNotified(db, task)
+	return nil
 }
 
 // buildReminderBody assembles a simple plain-text email, including the
@@ -209,10 +217,17 @@ func buildReminderBody(task models.Task, relatedNames map[relatedKey]string) str
 	return body
 }
 
-func markNotified(db *gorm.DB, task models.Task) error {
-	now := time.Now()
-	if err := db.Model(&models.Task{}).Where("id = ?", task.ID).Update("notified_at", &now).Error; err != nil {
-		return fmt.Errorf("mark task %d notified: %w", task.ID, err)
+// claimTask stamps NotifiedAt only if nobody has yet, reporting whether this
+// call did it — the conditional UPDATE is atomic in Postgres, so of two
+// instances racing on the same task exactly one sees RowsAffected == 1.
+// Also re-checks the task is still pending: one completed since the select
+// above shouldn't be reminded about (nor stamped — it's no longer due).
+func claimTask(db *gorm.DB, task models.Task) (bool, error) {
+	res := db.Model(&models.Task{}).
+		Where("id = ? AND notified_at IS NULL AND status = ?", task.ID, models.TaskStatusPending).
+		Update("notified_at", gorm.Expr("now()"))
+	if res.Error != nil {
+		return false, fmt.Errorf("claim task %d: %w", task.ID, res.Error)
 	}
-	return nil
+	return res.RowsAffected == 1, nil
 }

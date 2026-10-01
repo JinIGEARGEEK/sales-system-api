@@ -81,7 +81,9 @@ func (h *OptionHandler[T, PT]) Create(c *fiber.Ctx) error {
 	p.SetIsActive(form.IsActive == nil || *form.IsActive)
 	p.SetCreatedBy(&actorID)
 	p.SetUpdatedBy(&actorID)
-	if err := h.DB.Create(&item).Error; err != nil {
+	// CreateKeepingFalse: IsActive is NOT NULL DEFAULT true, which a plain
+	// Create would apply over an explicit false.
+	if err := utils.CreateKeepingFalse(h.DB, &item); err != nil {
 		return utils.ValidationError(c, h.Msg.NameConflict, map[string][]string{"name": {"Name is already in use"}})
 	}
 	return utils.Created(c, item)

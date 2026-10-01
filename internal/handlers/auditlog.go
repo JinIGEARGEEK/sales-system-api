@@ -27,15 +27,20 @@ func NewAuditLogHandler(db *gorm.DB) *AuditLogHandler {
 // @Param actor_id query string false "Filter by acting user ID (Admin only — ignored for Sales Rep/Sales Manager)"
 // @Param action query string false "Filter by action (e.g. stage_changed) — applies to all roles, narrowing within the role's visible slice"
 // @Param entity_id query string false "Filter by entity ID (e.g. a specific Deal ID) — applies to all roles"
-// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD), filters on created_at"
-// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD), filters on created_at"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on created_at"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on created_at"
 // @Param sort query string false "Sort field, prefix with - for descending (default -created_at)"
 // @Param page query int false "Page number (default 1)"
 // @Param per_page query int false "Items per page"
 // @Success 200 {object} map[string]interface{}
+// @Failure 422 {object} map[string]interface{} "Malformed date_from/date_to, or date_to before date_from"
 // @Failure 500 {object} map[string]interface{} "Failed to list audit log"
 // @Router /audit-log [get]
 func (h *AuditLogHandler) List(c *fiber.Ctx) error {
+	window, err := dateRangeQuery(c)
+	if err != nil {
+		return reportError(c, err, "")
+	}
 	page, perPage, offset := utils.Pagination(c)
 	query := h.DB.Model(&models.AuditLogEntry{})
 	isAdmin := middleware.CurrentRole(c) == models.RoleAdmin
@@ -61,12 +66,8 @@ func (h *AuditLogHandler) List(c *fiber.Ctx) error {
 	if v := c.Query("entity_id"); v != "" {
 		query = query.Where("entity_id = ?", v)
 	}
-	if v := c.Query("date_from"); v != "" {
-		query = query.Where("created_at >= ?", v)
-	}
-	if v := c.Query("date_to"); v != "" {
-		query = query.Where("created_at <= ?", v)
-	}
+	// Inclusive server-local days: date_to covers its whole day.
+	query = window.Apply(query, "created_at")
 
 	var total int64
 	query.Count(&total)

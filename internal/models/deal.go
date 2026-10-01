@@ -179,6 +179,19 @@ type Deal struct {
 	// The lane this record was in before its last move (see
 	// MarkStageEntered); nil if it has never moved.
 	PreviousStage *string `gorm:"type:varchar(64)" json:"previous_stage"`
+	// WonAt is when the Deal became Won (status won), nil while it isn't —
+	// what the dashboard and reports count "won this period" by, rather than
+	// created_at. Kept in step with Status by the BeforeSave hook (won_at.go)
+	// on every struct write; see database.BackfillDealWonAt for older rows.
+	WonAt *time.Time `gorm:"index" json:"won_at"`
+	// ValueQuoteID is the Accepted Quote whose pre-VAT taxable amount the
+	// Deal's Value was last synced from (handlers.syncDealValue), nil when
+	// Value is the rep's own figure. While set, PUT /deals/:id can't change
+	// Value. FK to quotes(id), ON DELETE SET NULL (database.
+	// ensureDealValueQuoteFK). Create-only for GORM writes ("<-:create"): a
+	// full-row Save of a stale Deal must never overwrite it, so only the sync
+	// code's own UPDATE statements change it.
+	ValueQuoteID *uint `gorm:"index;<-:create" json:"value_quote_id"`
 }
 
 func (Deal) TableName() string { return "deals" }

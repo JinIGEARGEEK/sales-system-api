@@ -134,6 +134,9 @@ func (h *CampaignHandler) BulkCreateTasks(c *fiber.Ctx) error {
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a task to another sales rep")
 	}
+	if err := validateAssignee(h.DB, form.AssignedTo); err != nil {
+		return respondAssigneeErr(c, err)
+	}
 
 	priority := form.Priority
 	if priority == "" {
@@ -178,7 +181,9 @@ func (h *CampaignHandler) BulkCreateTasks(c *fiber.Ctx) error {
 // related_type — Company tasks match deals.company_id directly, Lead/Contact
 // tasks match through their own company_id — so each branch gets its own
 // EXISTS clause (same shape as applyCompanyFilters' has_won_deal, adapted
-// per target type), unioned into one count.
+// per target type), unioned into one count. Trashed Deals, and trashed
+// Leads/Contacts a Task still points at, don't count (raw EXISTS subqueries
+// get no soft-delete scoping, so each checks deleted_at itself).
 func (h *CampaignHandler) Progress(c *fiber.Ctx) error {
 	var campaign models.Campaign
 	if err := utils.FindByID(c, h.DB, &campaign, "Campaign not found"); err != nil {
@@ -197,9 +202,9 @@ func (h *CampaignHandler) Progress(c *fiber.Ctx) error {
 	convertedQuery := h.DB.Model(&models.Task{}).
 		Where("campaign_id = ?", campaign.ID).
 		Where(`(
-			(tasks.related_type = ? AND EXISTS (SELECT 1 FROM deals WHERE deals.company_id = tasks.related_id AND deals.status = ? AND deals.created_at >= ?))
-			OR (tasks.related_type = ? AND EXISTS (SELECT 1 FROM leads JOIN deals ON deals.company_id = leads.company_id WHERE leads.id = tasks.related_id AND deals.status = ? AND deals.created_at >= ?))
-			OR (tasks.related_type = ? AND EXISTS (SELECT 1 FROM contacts JOIN deals ON deals.company_id = contacts.company_id WHERE contacts.id = tasks.related_id AND deals.status = ? AND deals.created_at >= ?))
+			(tasks.related_type = ? AND EXISTS (SELECT 1 FROM deals WHERE deals.company_id = tasks.related_id AND deals.status = ? AND deals.created_at >= ? AND deals.deleted_at IS NULL))
+			OR (tasks.related_type = ? AND EXISTS (SELECT 1 FROM leads JOIN deals ON deals.company_id = leads.company_id AND deals.deleted_at IS NULL WHERE leads.id = tasks.related_id AND leads.deleted_at IS NULL AND deals.status = ? AND deals.created_at >= ?))
+			OR (tasks.related_type = ? AND EXISTS (SELECT 1 FROM contacts JOIN deals ON deals.company_id = contacts.company_id AND deals.deleted_at IS NULL WHERE contacts.id = tasks.related_id AND contacts.deleted_at IS NULL AND deals.status = ? AND deals.created_at >= ?))
 		)`,
 			models.RelatedTypeCompany, models.DealStatusWon, campaign.CreatedAt,
 			models.RelatedTypeLead, models.DealStatusWon, campaign.CreatedAt,

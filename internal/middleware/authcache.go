@@ -3,6 +3,8 @@ package middleware
 import (
 	"sync"
 	"time"
+
+	"github.com/igeargeek/sales-system-api/internal/models"
 )
 
 // authCacheTTL bounds how stale a cached authState can get across instances
@@ -16,14 +18,17 @@ const authCacheTTL = 30 * time.Second
 // authState is the per-user data RequireAuth needs to decide whether an
 // otherwise-valid JWT should still be honored: an account deactivated after
 // the token was issued, or a token issued before the holder's most recent
-// logout/forced-logout (see TokenVersion on models.User).
+// logout/forced-logout (see TokenVersion on models.User). role is the
+// account's current role, which RequireAuth trusts over the JWT's own role
+// claim so a demotion takes effect without waiting for the token to expire.
 type authState struct {
 	isActive     bool
 	tokenVersion int
+	role         models.Role
 	expiresAt    time.Time
 }
 
-// authCache avoids a `SELECT is_active, token_version` round trip on every
+// authCache avoids a `SELECT is_active, token_version, role` round trip on every
 // single authenticated request. Keyed by plain userID — see mustChangeCache's
 // doc for why that's fine in production but needs ResetForTests in the
 // integration suite (RESTART IDENTITY reuses IDs across tests).
@@ -41,17 +46,14 @@ func authCacheGet(userID uint) (authState, bool) {
 	return entry, true
 }
 
-func authCacheSet(userID uint, isActive bool, tokenVersion int) {
-	authCache.Store(userID, authState{
-		isActive:     isActive,
-		tokenVersion: tokenVersion,
-		expiresAt:    time.Now().Add(authCacheTTL),
-	})
+func authCacheSet(userID uint, state authState) {
+	state.expiresAt = time.Now().Add(authCacheTTL)
+	authCache.Store(userID, state)
 }
 
 // InvalidateAuthCache drops any cached auth state for a user — call this
-// wherever is_active or token_version is written (deactivation, deletion,
-// logout, forced logout) so the next request re-reads the DB instead of a
+// wherever is_active, token_version or role is written (deactivation,
+// deletion, logout, role change, password change/reset) so the next request re-reads the DB instead of a
 // stale cached value. Safe to call even if nothing was ever cached.
 func InvalidateAuthCache(userID uint) {
 	authCache.Delete(userID)

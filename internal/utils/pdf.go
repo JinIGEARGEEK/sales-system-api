@@ -2,11 +2,65 @@ package utils
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/go-pdf/fpdf"
 
 	"github.com/igeargeek/sales-system-api/internal/models"
 )
+
+// HeadOfficeBranchCode is the branch_code that means head office on a Thai
+// tax document.
+const HeadOfficeBranchCode = "00000"
+
+// CompanyPartyLines returns the registered-party lines Quote and Contract
+// PDFs print under the company name: the address with the postal code
+// appended, and the tax ID with its branch, since a full tax invoice must
+// say which branch it's for. Without a tax ID the branch prints on its own
+// line. Blank fields are skipped. The branch prints the way Thai tax
+// documents word it ("สำนักงานใหญ่" / "สาขาที่ 00001") — the PDFs embed the
+// Thai-capable PDFFont, so it renders — while the field labels stay English
+// to match the rest of the document.
+func CompanyPartyLines(company models.Company) []string {
+	var lines []string
+	if address := strings.TrimSpace(DerefString(company.Address) + " " + DerefString(company.PostalCode)); address != "" {
+		lines = append(lines, "Address: "+address)
+	}
+	taxID, branch := DerefString(company.TaxID), branchLabel(DerefString(company.BranchCode))
+	switch {
+	case taxID != "" && branch != "":
+		lines = append(lines, fmt.Sprintf("Tax ID: %s (%s)", taxID, branch))
+	case taxID != "":
+		lines = append(lines, "Tax ID: "+taxID)
+	case branch != "":
+		lines = append(lines, "Branch: "+branch)
+	}
+	return lines
+}
+
+// RenderPartyBlock prints the party heading (e.g. "Party: <legal name>")
+// and CompanyPartyLines under it, one 6mm line each, wrapping at the right
+// margin: a full Thai registered address plus postal code easily runs past
+// one A4 line, and a plain Cell clipped it mid-address. Caller sets the font.
+func RenderPartyBlock(pdf *fpdf.Fpdf, heading string, company models.Company) {
+	for _, line := range append([]string{heading}, CompanyPartyLines(company)...) {
+		pdf.MultiCell(0, 6, line, "", "L", false)
+	}
+}
+
+// branchLabel names a branch code the way a Thai tax document does:
+// "สำนักงานใหญ่" (head office) for 00000, else "สาขาที่ 00001". Blank for no
+// code.
+func branchLabel(code string) string {
+	switch code {
+	case "":
+		return ""
+	case HeadOfficeBranchCode:
+		return "สำนักงานใหญ่"
+	default:
+		return "สาขาที่ " + code
+	}
+}
 
 // RenderLineItemsTable draws the Description/Qty/Unit Price/Total header row,
 // one row per item, and a Grand Total row — used by Contract's PDF export
@@ -32,7 +86,7 @@ func RenderQuoteItemsTable(pdf *fpdf.Fpdf, items []models.QuoteItem) float64 {
 
 func renderItemsTable(pdf *fpdf.Fpdf, items []models.QuoteItem, showDiscount bool, totalLabel string) float64 {
 	descColWidth := 90.0
-	pdf.SetFont("Arial", "B", 10)
+	pdf.SetFont(PDFFont, "B", 10)
 	pdf.CellFormat(descColWidth, 8, "Description", "1", 0, "L", false, 0, "")
 	pdf.CellFormat(20, 8, "Qty", "1", 0, "R", false, 0, "")
 	pdf.CellFormat(30, 8, "Unit Price", "1", 0, "R", false, 0, "")
@@ -42,13 +96,16 @@ func renderItemsTable(pdf *fpdf.Fpdf, items []models.QuoteItem, showDiscount boo
 	}
 	pdf.CellFormat(30, 8, "Total", "1", 1, "R", false, 0, "")
 
-	pdf.SetFont("Arial", "", 10)
+	pdf.SetFont(PDFFont, "", 10)
 	const lineHeight = 5.0
 	var grandTotal float64
 	for _, item := range items {
-		lineTotal := item.Qty * item.Price
-		if showDiscount && item.DiscountPercent > 0 {
-			lineTotal *= 1 - item.DiscountPercent/100
+		// Rounded per line (QuoteLineTotal), the same figures
+		// ComputeQuoteTotals sums, so the printed lines add up to the
+		// printed subtotal.
+		lineTotal := RoundSatang(item.Qty * item.Price)
+		if showDiscount {
+			lineTotal = QuoteLineTotal(item)
 		}
 		grandTotal += lineTotal
 
@@ -74,7 +131,8 @@ func renderItemsTable(pdf *fpdf.Fpdf, items []models.QuoteItem, showDiscount boo
 		}
 		pdf.CellFormat(30, rowHeight, fmt.Sprintf("%.2f", lineTotal), "1", 1, "R", false, 0, "")
 	}
-	pdf.SetFont("Arial", "B", 10)
+	grandTotal = RoundSatang(grandTotal)
+	pdf.SetFont(PDFFont, "B", 10)
 	labelWidth := 150.0
 	if showDiscount {
 		labelWidth = 165.0

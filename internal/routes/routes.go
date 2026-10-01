@@ -2,7 +2,6 @@ package routes
 
 import (
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -10,33 +9,13 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/igeargeek/sales-system-api/docs"
+	"github.com/igeargeek/sales-system-api/internal/clientip"
 	"github.com/igeargeek/sales-system-api/internal/config"
 	"github.com/igeargeek/sales-system-api/internal/handlers"
 	"github.com/igeargeek/sales-system-api/internal/middleware"
 	"github.com/igeargeek/sales-system-api/internal/models"
 	"github.com/igeargeek/sales-system-api/internal/utils"
 )
-
-// clientIP resolves the real client address for rate-limiting purposes. This
-// app's only deployment target is Railway (railway.toml/Dockerfile), which
-// always sits in front as a reverse proxy and sets X-Forwarded-For to the
-// actual client IP on every inbound request — c.IP() alone would return
-// Railway's own edge address for every request in that setup, collapsing all
-// users onto one shared rate-limit bucket (see loginLimiter below) instead of
-// limiting each caller independently. Falls back to c.IP() when the header is
-// absent (local dev, docker-compose, or any direct, non-proxied connection).
-// Take the leftmost hop — Railway's edge sets/overwrites this header itself
-// rather than trusting a client-supplied one, so the leftmost entry is the
-// original caller even if further proxies appended their own hops after it.
-func clientIP(c *fiber.Ctx) string {
-	if xff := c.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.IndexByte(xff, ','); idx != -1 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return strings.TrimSpace(xff)
-	}
-	return c.IP()
-}
 
 // swaggerUIHTML renders swagger-ui-dist (CDN-hosted, not a Go dependency)
 // against the embedded /swagger/doc.json — see docs.JSON's doc for why this
@@ -58,8 +37,9 @@ const swaggerUIHTML = `<!DOCTYPE html>
 
 // Setup registers every route under /api/v1 — api-system-spec.md. storage
 // backs Quote/Contract/Attachment uploads and the /uploads download route —
-// see biz_spec/s3-migration-plan.md and utils.Storage.
-func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storage) {
+// see biz_spec/s3-migration-plan.md and utils.Storage. proxies keys the
+// login rate limiter (see internal/clientip).
+func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storage, proxies *clientip.Resolver) {
 	authH := handlers.NewAuthHandler(db, cfg)
 	userH := handlers.NewUserHandler(db)
 	leadH := handlers.NewLeadHandler(db)
@@ -128,11 +108,13 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// Auth — POST /auth/login is the only unauthenticated route, so it's the
 	// only one a brute-force credential-stuffing attempt could hit without a
 	// token at all. Rate-limit by IP: generous enough for a mistyped password
-	// but not for scripted guessing.
+	// but not for scripted guessing. Behind Railway's edge proxy the socket
+	// peer is the proxy, so the key comes from X-Forwarded-For — read only
+	// from TRUSTED_PROXIES peers, right to left (see internal/clientip).
 	loginLimiter := limiter.New(limiter.Config{
 		Max:          10,
 		Expiration:   1 * time.Minute,
-		KeyGenerator: clientIP,
+		KeyGenerator: proxies.ClientIP,
 		LimitReached: func(c *fiber.Ctx) error {
 			return utils.ErrorResponse(c, fiber.StatusTooManyRequests, "TOO_MANY_REQUESTS", "Too many login attempts — try again shortly")
 		},
@@ -153,7 +135,11 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// same auth gate in front of a download regardless of where the bytes
 	// actually live, matching the "proxy, not presigned URLs" design in
 	// biz_spec/s3-migration-plan.md.
-	app.Use("/uploads", middleware.RequireAuth(cfg, db))
+	//
+	// RequirePasswordChanged too, same as `authed` below — otherwise an
+	// account still on an Admin-assigned password could download documents
+	// it can't reach through any /api/v1 route yet.
+	app.Use("/uploads", middleware.RequireAuth(cfg, db), middleware.RequirePasswordChanged(db))
 	app.Get("/uploads/:key", func(c *fiber.Ctx) error {
 		f, err := storage.Open(c.Params("key"))
 		if err != nil {
@@ -227,13 +213,19 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// would).
 	idempotency := middleware.RequireIdempotency(db)
 
-	openCompanies := open.Group("/companies")
+	// Sales-pipeline roles — every role but Production (Marketing has Sales
+	// Rep parity, feature-spec.md FR-CRM-123). Declared ahead of the Open API
+	// so an API key owned by a Production user gets the same 403s on
+	// Companies/Contacts/Leads/Prospects/Deals as the staff routes.
+	salesPipelineRoles := middleware.RequireRoles(models.SalesPipelineRoles...)
+
+	openCompanies := open.Group("/companies", salesPipelineRoles)
 	openCompanies.Get("/", companyH.List)
 	openCompanies.Post("/", idempotency, companyH.Create)
 	openCompanies.Get("/:id", companyH.Get)
 	openCompanies.Put("/:id", companyH.Update)
 
-	openContacts := open.Group("/contacts")
+	openContacts := open.Group("/contacts", salesPipelineRoles)
 	openContacts.Get("/", contactH.List)
 	openContacts.Post("/", idempotency, contactH.Create)
 	openContacts.Get("/:id", contactH.Get)
@@ -262,27 +254,18 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// Prospects — full List/Create/Get/Update already exist top-level;
 	// reused as-is (same CanWrite ownership rule the staff /prospects routes
 	// enforce, evaluated against the API key's owner_user_id/role).
-	openProspects := open.Group("/prospects")
+	openProspects := open.Group("/prospects", salesPipelineRoles)
 	openProspects.Get("/", prospectH.List)
 	openProspects.Post("/", idempotency, prospectH.Create)
 	openProspects.Get("/:id", prospectH.Get)
 	openProspects.Put("/:id", prospectH.Update)
 
 	// Leads — same treatment as Prospects above.
-	openLeads := open.Group("/leads")
+	openLeads := open.Group("/leads", salesPipelineRoles)
 	openLeads.Get("/", leadH.List)
 	openLeads.Post("/", idempotency, leadH.Create)
 	openLeads.Get("/:id", leadH.Get)
 	openLeads.Put("/:id", leadH.Update)
-
-	// Sales-pipeline roles — the Lead/Deal gate: Admin, Sales Rep, Sales
-	// Manager and Marketing. **2026-09-23**: Marketing joined this set (full
-	// Sales Rep parity on Leads/Deals, alongside the Overview Pipeline page —
-	// feature-spec.md FR-CRM-123), reversing spec §1.7's earlier "Marketing
-	// has no access to Leads/Deals" rule. Production stays out, which is what
-	// this gate still blocks. Declared here, ahead of `authed`, so the Open
-	// API's Deal route below shares it with the staff /deals group.
-	salesPipelineRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleSalesRep, models.RoleSalesManager, models.RoleMarketing)
 
 	// Deal payment schedules — read-only, the one Deal sub-resource exposed
 	// here, so an integration can follow a Project's deal_id to its planned
@@ -350,7 +333,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	// of the Lead hand-off the same way they work Leads/Deals); Marketing
 	// owns it day-to-day. Bulk/trash/restore stay on the existing
 	// Admin/Sales-Manager-only bulkRoles, same as Leads.
-	prospectRoles := middleware.RequireRoles(models.RoleAdmin, models.RoleMarketing, models.RoleSalesManager, models.RoleSalesRep)
+	prospectRoles := middleware.RequireRoles(models.SalesPipelineRoles...)
 	prospects := authed.Group("/prospects", prospectRoles)
 	prospects.Get("/", prospectH.List)
 	prospects.Post("/", prospectH.Create)
@@ -369,8 +352,10 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	prospects.Post("/:id/convert", prospectH.Convert)
 	prospects.Post("/:id/restore", bulkRoles, prospectH.Restore)
 
-	// Companies
-	companies := authed.Group("/companies")
+	// Companies — salesPipelineRoles (Production has no access, spec §1.7;
+	// its Projects page reads company_name off GET /projects instead). Delete
+	// is Admin/Sales Manager, like trash/restore/export.
+	companies := authed.Group("/companies", salesPipelineRoles)
 	companies.Get("/", companyH.List)
 	companies.Post("/", companyH.Create)
 	companies.Post("/import", importH.ImportCompanies)
@@ -379,15 +364,16 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	companies.Get("/export", bulkRoles, exportH.Companies)
 	companies.Get("/:id", companyH.Get)
 	companies.Put("/:id", companyH.Update)
-	companies.Delete("/:id", companyH.Delete)
+	companies.Delete("/:id", bulkRoles, companyH.Delete)
 	companies.Post("/:id/restore", bulkRoles, companyH.Restore)
+	companies.Post("/:id/merge", bulkRoles, companyH.Merge)
 	companies.Get("/:companyId/products", productH.ListForCompany)
 	companies.Post("/:companyId/products", productH.AddForCompany)
 	companies.Get("/:companyId/projects", projectH.ListForCompany)
-	companies.Post("/:companyId/projects", salesPipelineRoles, projectH.Create)
+	companies.Post("/:companyId/projects", projectH.Create)
 
-	// Contacts
-	contacts := authed.Group("/contacts")
+	// Contacts — same gates as Companies.
+	contacts := authed.Group("/contacts", salesPipelineRoles)
 	contacts.Get("/", contactH.List)
 	contacts.Post("/", contactH.Create)
 	contacts.Post("/import", importH.ImportContacts)
@@ -396,8 +382,9 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	contacts.Get("/export", bulkRoles, exportH.Contacts)
 	contacts.Get("/:id", contactH.Get)
 	contacts.Put("/:id", contactH.Update)
-	contacts.Delete("/:id", contactH.Delete)
+	contacts.Delete("/:id", bulkRoles, contactH.Delete)
 	contacts.Post("/:id/restore", bulkRoles, contactH.Restore)
+	contacts.Post("/:id/merge", bulkRoles, contactH.Merge)
 
 	// Deals — salesPipelineRoles only (Admin/Sales Rep/Sales Manager/Marketing
 	// since 2026-09-23; Production has no access, spec §1.7). Every
@@ -437,9 +424,11 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	activities.Post("/", activityH.Create)
 	activities.Delete("/:id", activityH.Delete)
 
-	// Attachments — Sales/Admin can upload (not Production), any authenticated
-	// role can list; Delete's own-uploader-or-manager check is field-level
-	// inside the handler (mirrors Activity's CanWrite pattern).
+	// Attachments — Sales/Admin can upload (not Production). List requires a
+	// related_type+related_id and checks the caller can read that record, and
+	// Create that they can write it (attachmentParentAccess); Delete's
+	// own-uploader-or-manager check is field-level inside the handler
+	// (mirrors Activity's CanWrite pattern).
 	attachments := authed.Group("/attachments")
 	attachments.Get("/", attachmentH.List)
 	attachments.Post("/", salesPipelineRoles, attachmentH.Create)
@@ -463,16 +452,25 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	quoteTemplates.Post("/", quoteTemplateH.Create)
 	quoteTemplates.Delete("/:id", quoteTemplateH.Delete)
 
-	// Quotes / Payments / Contracts (top-level, non-nested routes)
-	authed.Put("/quotes/:id", quoteH.Update)
-	authed.Delete("/quotes/:id", quoteH.Delete)
-	authed.Get("/quotes/:id/export-pdf", quoteH.ExportPDF)
-	authed.Delete("/payments/:id", paymentH.Delete)
-	authed.Put("/payment-installments/:id", paymentInstallmentH.Update)
-	authed.Delete("/payment-installments/:id", paymentInstallmentH.Delete)
-	authed.Put("/contracts/:id", contractH.Update)
-	authed.Post("/contracts/:id/upload", contractH.Upload)
-	authed.Get("/contracts/:id/export-pdf", contractH.ExportPDF)
+	// Quotes / Payments / Contracts (top-level, non-nested routes) — the same
+	// salesPipelineRoles gate as the /deals sub-resources they belong to
+	// (Production has no Deal access). Search before "/:id".
+	authed.Get("/quotes", salesPipelineRoles, quoteH.Search)
+	authed.Get("/quotes/:id", salesPipelineRoles, quoteH.Get)
+	authed.Put("/quotes/:id", salesPipelineRoles, quoteH.Update)
+	authed.Delete("/quotes/:id", salesPipelineRoles, quoteH.Delete)
+	authed.Get("/quotes/:id/export-pdf", salesPipelineRoles, quoteH.ExportPDF)
+	authed.Post("/quotes/:id/duplicate", salesPipelineRoles, quoteH.Duplicate)
+	// Payments CSV — Admin/Sales Manager, like the other exports. Before
+	// "/payments/:id".
+	authed.Get("/payments/export", bulkRoles, exportH.Payments)
+	authed.Put("/payments/:id", salesPipelineRoles, paymentH.Update)
+	authed.Delete("/payments/:id", salesPipelineRoles, paymentH.Delete)
+	authed.Put("/payment-installments/:id", salesPipelineRoles, paymentInstallmentH.Update)
+	authed.Delete("/payment-installments/:id", salesPipelineRoles, paymentInstallmentH.Delete)
+	authed.Put("/contracts/:id", salesPipelineRoles, contractH.Update)
+	authed.Post("/contracts/:id/upload", salesPipelineRoles, contractH.Upload)
+	authed.Get("/contracts/:id/export-pdf", salesPipelineRoles, contractH.ExportPDF)
 
 	// Tasks
 	tasks := authed.Group("/tasks")
@@ -515,8 +513,8 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	products.Patch("/:id", adminOnly, productH.Update)
 	products.Patch("/:id/deactivate", adminOnly, productH.Deactivate)
 
-	// Customer-Product link — any authenticated (mirrors AddForCompany's access level).
-	authed.Patch("/customer-products/:id", productH.UpdateCustomerProduct)
+	// Customer-Product link — salesPipelineRoles, same as AddForCompany.
+	authed.Patch("/customer-products/:id", salesPipelineRoles, productH.UpdateCustomerProduct)
 
 	// Projects — field-level RBAC enforced inside the handler.
 	authed.Get("/projects", projectH.List)
@@ -527,6 +525,8 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	reports := authed.Group("/reports", middleware.RequireRoles(models.RoleAdmin, models.RoleSalesManager))
 	reports.Get("/lead-source-conversion", reportH.LeadSourceConversion)
 	reports.Get("/lead-source-conversion/export", reportH.LeadSourceConversionExport)
+	reports.Get("/source-performance", reportH.SourcePerformance)
+	reports.Get("/source-performance/export", reportH.SourcePerformanceExport)
 	reports.Get("/top-referrers", reportH.TopReferrers)
 	reports.Get("/top-referrers/export", reportH.TopReferrersExport)
 	reports.Get("/customers-by-product-status", reportH.CustomersByProductStatus)

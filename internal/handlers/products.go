@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -86,7 +85,9 @@ func (h *ProductHandler) Create(c *fiber.Ctx) error {
 	}
 	product.CreatedBy = &actorID
 	product.UpdatedBy = &actorID
-	if err := h.DB.Create(&product).Error; err != nil {
+	// CreateKeepingFalse: IsActive is DEFAULT true, which a plain Create
+	// would apply over an explicit false.
+	if err := utils.CreateKeepingFalse(h.DB, &product); err != nil {
 		return utils.Internal(c, "Failed to create product")
 	}
 	return utils.Created(c, product)
@@ -228,11 +229,72 @@ type customerProductForm struct {
 	StartDate    *string                      `json:"start_date"`
 	EndDate      *string                      `json:"end_date"`
 	SourceDealID *uint                        `json:"source_deal_id"`
+	RenewalDate  *string                      `json:"renewal_date"`
+	BillingCycle *models.BillingCycle         `json:"billing_cycle"`
+	Price        *float64                     `json:"price"`
+}
+
+// applyCustomerProductEndDate parses end_date onto record when the body had
+// the key: null/"" clears it, a bad value is a 422 (written here; returns
+// false). Unlike renewal_date this column is a timestamp, and the frontend
+// sends the picked day's local midnight as a UTC instant (toISOString), so
+// an RFC 3339 value is stored as that instant — reading its UTC calendar
+// day would move it a day earlier. A bare YYYY-MM-DD is server-local
+// midnight (parseTimeBound).
+func applyCustomerProductEndDate(c *fiber.Ctx, record *models.CustomerProduct, endDate *string, present bool) bool {
+	if !present {
+		return true
+	}
+	if endDate == nil || *endDate == "" {
+		record.EndDate = nil
+		return true
+	}
+	t, err := parseTimeBound(*endDate)
+	if err != nil {
+		_ = utils.ValidationError(c, "end_date is invalid", map[string][]string{"end_date": {"must be a YYYY-MM-DD date or an RFC 3339 timestamp"}})
+		return false
+	}
+	record.EndDate = &t
+	return true
+}
+
+// applyRenewalFields validates and writes renewal_date/billing_cycle/price —
+// shared by AddForCompany and UpdateCustomerProduct. present reports which
+// keys the body actually contained (Update merges; Create passes every key
+// as present). An explicit null or "" clears renewal_date/billing_cycle, and
+// null clears price. Writes the 422 itself and returns false on failure.
+func applyRenewalFields(c *fiber.Ctx, record *models.CustomerProduct, renewalDate *string, billingCycle *models.BillingCycle, price *float64, present func(string) bool) bool {
+	if present("renewal_date") {
+		d, ok := parseOptionalCalendarDate(c, "renewal_date", renewalDate)
+		if !ok {
+			return false
+		}
+		record.RenewalDate = d
+	}
+	if present("billing_cycle") {
+		if billingCycle == nil || *billingCycle == "" {
+			record.BillingCycle = nil
+		} else if !models.IsValidBillingCycle(*billingCycle) {
+			_ = utils.ValidationError(c, "billing_cycle is invalid", map[string][]string{"billing_cycle": {"must be monthly, yearly or one_time"}})
+			return false
+		} else {
+			bc := *billingCycle
+			record.BillingCycle = &bc
+		}
+	}
+	if present("price") {
+		if price != nil && *price < 0 {
+			_ = utils.ValidationError(c, "price must be non-negative", map[string][]string{"price": {"must be >= 0"}})
+			return false
+		}
+		record.Price = price
+	}
+	return true
 }
 
 // AddForCompany godoc
 // @Summary Add/link a Product to a Company
-// @Description Manually adds a Customer-Product record (a Product linked to a Company as a customer), or changes its status, independent of a Deal. FR-CRM-065. source_deal_id, if given, must reference a Deal belonging to this Company. start_date defaults to now when omitted; status defaults to "Interested".
+// @Description Manually adds a Customer-Product record (a Product linked to a Company as a customer), or changes its status, independent of a Deal. FR-CRM-065. source_deal_id, if given, must reference a Deal belonging to this Company. start_date defaults to now when omitted; end_date is optional (RFC 3339 or YYYY-MM-DD, 422 if unparseable); status defaults to "Interested". Optional renewal fields: renewal_date (YYYY-MM-DD or RFC 3339; stored as a date), billing_cycle (monthly|yearly|one_time), price (>= 0) — renewal_date drives the customer_product_renewal notification rule.
 // @Tags products
 // @Security BearerAuth
 // @Accept json
@@ -292,6 +354,12 @@ func (h *ProductHandler) AddForCompany(c *fiber.Ctx) error {
 	} else {
 		return utils.ValidationError(c, "start_date is invalid", map[string][]string{"start_date": {"invalid"}})
 	}
+	if !applyCustomerProductEndDate(c, &record, form.EndDate, true) {
+		return nil
+	}
+	if !applyRenewalFields(c, &record, form.RenewalDate, form.BillingCycle, form.Price, func(string) bool { return true }) {
+		return nil
+	}
 	record.CreatedBy = &actorID
 	record.UpdatedBy = &actorID
 	if err := h.DB.Create(&record).Error; err != nil {
@@ -301,13 +369,16 @@ func (h *ProductHandler) AddForCompany(c *fiber.Ctx) error {
 }
 
 type customerProductUpdateForm struct {
-	Status  models.CustomerProductStatus `json:"status"`
-	EndDate *string                      `json:"end_date"`
+	Status       models.CustomerProductStatus `json:"status"`
+	EndDate      *string                      `json:"end_date"`
+	RenewalDate  *string                      `json:"renewal_date"`
+	BillingCycle *models.BillingCycle         `json:"billing_cycle"`
+	Price        *float64                     `json:"price"`
 }
 
 // UpdateCustomerProduct godoc
 // @Summary Update a Customer-Product's status
-// @Description Updates a Customer-Product record — the Company/Product link created via AddForCompany (or auto-created when a Deal is won, FR-CRM-064). company_id/product_id are immutable after creation; only status (and end_date, e.g. when moving to Churned) can change. Writes an audit-log entry when status changes (FR-CRM-082).
+// @Description Updates a Customer-Product record — the Company/Product link created via AddForCompany (or auto-created when a Deal is won, FR-CRM-064). company_id/product_id are immutable after creation; status, end_date (e.g. when moving to Churned; RFC 3339 timestamp stored as that instant, or YYYY-MM-DD = server-local midnight; null clears; anything else is a 422) and the renewal fields (renewal_date, billing_cycle, price — partial merge: only keys present change, null clears) can change. Writes an audit-log entry when status changes (FR-CRM-082).
 // @Tags products
 // @Security BearerAuth
 // @Accept json
@@ -316,6 +387,7 @@ type customerProductUpdateForm struct {
 // @Param body body customerProductUpdateForm true "Fields to update"
 // @Success 200 {object} models.CustomerProduct
 // @Failure 400 {object} map[string]interface{} "Invalid body or invalid status"
+// @Failure 422 {object} map[string]interface{} "Invalid end_date, renewal_date, billing_cycle or price"
 // @Failure 404 {object} map[string]interface{} "Customer product not found"
 // @Router /customer-products/{id} [patch]
 func (h *ProductHandler) UpdateCustomerProduct(c *fiber.Ctx) error {
@@ -325,8 +397,8 @@ func (h *ProductHandler) UpdateCustomerProduct(c *fiber.Ctx) error {
 	}
 	oldStatus := record.Status
 
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(c.Body(), &raw); err != nil {
+	raw, ok := bodyKeys(c)
+	if !ok {
 		return utils.BadRequest(c, "Invalid request body")
 	}
 	var form customerProductUpdateForm
@@ -340,12 +412,12 @@ func (h *ProductHandler) UpdateCustomerProduct(c *fiber.Ctx) error {
 	if form.Status != "" {
 		record.Status = form.Status
 	}
-	if _, ok := raw["end_date"]; ok {
-		if form.EndDate == nil {
-			record.EndDate = nil
-		} else if parsed, err := time.Parse(time.RFC3339, *form.EndDate); err == nil {
-			record.EndDate = &parsed
-		}
+	if !applyCustomerProductEndDate(c, &record, form.EndDate, raw.has("end_date")) {
+		return nil
+	}
+
+	if !applyRenewalFields(c, &record, form.RenewalDate, form.BillingCycle, form.Price, raw.has) {
+		return nil
 	}
 
 	actorID := middleware.CurrentUserID(c)

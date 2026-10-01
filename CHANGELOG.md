@@ -4,6 +4,286 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## Unreleased — Review follow-ups
+
+**CSV exports past 500 rows.**
+- **Fixed:** the companies, contacts, deals, products and projects exports skipped and repeated rows once they had more than one 500-row page. The later pages used `FindInBatches`, which pages by id and kept the first page's offset, while the export sorts by `created_at`. Exports now page with LIMIT/OFFSET in their own order, with an `id` tie-breaker. Regression-guarded: `TestExport_PagesNeitherSkipNorRepeatRows`.
+
+**Task owners, reassign audit, contract gate.**
+- `GET /team-members` rows now include `role`, so assignee pickers can leave out Production users.
+- Task `assigned_to` must be an active user in a sales-pipeline role (Admin/Sales Rep/Sales Manager/Marketing), else `422` on field `assigned_to`. This applies to `POST /tasks`, `PATCH /tasks/bulk-reassign` and `POST /campaigns/:id/tasks`, and to `PATCH /tasks/:id` only when `assigned_to` changes (so a task whose owner was deactivated can still be edited). `null` is still allowed. Production can't own Tasks: the spec limits it to Projects, and moving a user to Production already hands their pending Tasks to someone else.
+- Reassigning a deactivated, deleted or Production-bound user's records (`reassign_to` on `PUT /users/:id`, `DELETE /users/:id`, `PATCH /users/bulk-deactivate`) now also writes a `deal`/`reassigned` audit row for each moved Deal (before/after `assigned_to`, same as `PATCH /deals/:id/reassign`), in the same transaction and in one batched insert. The `user`/`records_reassigned` summary row is unchanged. Leads, Prospects and Tasks get no per-record row, since they have no single-record reassign audit anywhere else.
+- When "require a signed contract before Won" is on, a contract now counts only if it is stored as `signed` **and** has a `signed_file_url` and `signed_date` (set by `POST /contracts/:id/upload`). Older contracts marked `signed` by hand with no file no longer count (accepted by the product owner).
+- No change needed to `computeOutstandingRow`: it already uses `utils.DealReceivable`, and no duplicate receivable code is left.
+
+**Frontend:** task assignee pickers shouldn't offer Production or inactive users, and should show the `assigned_to` `422`. Deals whose only "signed" contract has no uploaded file now get `422` `fields.stage: ["requires_signed_contract"]` when moved to Won with the gate on. Upload the signed file to fix this.
+
+Regression-guarded: `tests/task_assignee_test.go`, `TestUserBulkDeactivate_ReassignAuditsEveryDeal` and new checks in `TestUserDeactivate_ReassignTo`, `TestUpdateStage_LegacySignedContractWithoutFileDoesNotSatisfyGate`.
+
+**Deal value follows the Accepted quote**
+- New nullable `deals.value_quote_id` (FK `quotes`, `ON DELETE SET NULL`), JSON `value_quote_id`. Single-Deal responses (`GET`/`PUT /deals/:id`, also `PATCH /deals/:id/stage`, `PATCH /deals/:id/reassign`, `POST /deals/:id/restore`) add read-only `value_quote_number` (string or null). Lists don't include it.
+- When a quote with priced items (subtotal > 0) becomes Accepted (created as `accepted`, or `PUT /quotes/:id` to `accepted`), the same transaction sets the Deal's `value` to the quote's pre-VAT taxable amount rounded to satang (revenue is the taxable amount, spec §7.4) and `value_quote_id` to the quote. It writes a `deal` audit row `value_synced`: before `{value, value_quote_id}`, after `{value, value_quote_id, quote_number}`. An Accepted quote with no priced items (an uploaded PDF) changes nothing.
+- When that quote is rejected, `value_quote_id` is cleared and `value` stays as it is. Audit: `value_unsynced`, before `{value, value_quote_id, quote_number}`, after `{value, value_quote_id: null}`. Only drafts can be deleted, so a synced quote can't be deleted through the API. If the row is ever removed, the FK clears the link.
+- While `value_quote_id` is set, `PUT /deals/:id` with a `value` that differs from the stored one (by more than `utils.MoneyEpsilon`) is `422` with `fields.value: ["synced_from_quote"]`, and the message names the quote number. Resending the stored value is fine. The check is repeated under the Deal row lock, so a quote accepted at the same moment can't be overwritten. A full-row Deal save never writes `value_quote_id` (GORM create-only field). Lead/Prospect convert is unchanged.
+- Boot backfill (runs once, `deal_value_quotes_backfill`): each non-deleted Deal whose latest Accepted quote has priced items is linked **only when its value already equals that quote's rounded taxable amount** (within `utils.MoneyEpsilon`). A Deal whose value differs is left unlinked and unchanged, and is only counted in the boot log, so the boot never rewrites revenue. No audit rows are written.
+
+**Payments export**
+- New `GET /payments/export`, Admin/Sales Manager only, the same gate as the other CSV exports. It uses the same CSV helpers: formula-injection guard and no BOM. Filename `payments-YYYYMMDD.csv`. Rows run oldest `paid_at` first.
+- Columns: Paid At (YYYY-MM-DD, server-local), Document Number, Deal ID, Deal, Company, Amount, WHT Amount, Total (amount + WHT), Method, Installment ID, Installment Due Date, Note, Created By.
+- Filters: `date_from`/`date_to` on `paid_at` (inclusive server-local days, `422` on a bad or reversed range), `deal_id`, `company_id`, `method` (`422` when invalid).
+- Leaves out soft-deleted Payments and Payments on soft-deleted Deals.
+
+**Frontend:**
+- Show the Deal value as synced (read-only, "from quote QT…" via `value_quote_number`) while `value_quote_id` is set, and handle the `synced_from_quote` 422 on `fields.value`. Refetch the Deal after accepting or rejecting a quote, since its `value` may have changed.
+- Add a payments CSV download for Admin/Sales Manager that passes the filters above.
+
+Regression-guarded: `tests/deal_value_sync_test.go`, `tests/payments_export_test.go`. Swagger regenerated.
+
+**Merge duplicate companies and contacts.**
+- New `POST /companies/:id/merge` and `POST /contacts/:id/merge`, body `{ "source_ids": [...] }` (1–20 ids). `:id` is the record that survives. Admin/Sales Manager only (`403` otherwise). `422` on `fields.source_ids` when the list is empty, over 20, contains the target, or repeats an id. `404` when the target or a source doesn't exist or is deleted, with the missing ids in the message.
+- One transaction. Target and sources are locked in id order, so concurrent merges wait for each other instead of deadlocking.
+- Every reference to a source moves to the target, soft-deleted rows included. For a Company: Contacts, Deals, Leads (`company_id` and `referred_by`), Prospects, Projects, Customer Products, company Activities/Attachments/Tasks, and dormant-company notification logs. For a Contact: Deals, contact Activities/Tasks, and Lead `referred_by`. Contacts can be merged across Companies; the target keeps its `company_id` and a moved Deal keeps its own Company.
+- The target keeps its non-empty fields. Empty ones take the first non-empty value from the sources, in `source_ids` order, and tags are unioned (lowercased, deduped). A source value for a field that identifies the record isn't copied if it differs from the target's; it's reported in `conflicts` instead. Those fields are Company `website` (by domain), `tax_id` and `branch_code`, and Contact `email` and `phone`. A Company merge keeps at most one Primary Contact.
+- Sources are soft-deleted, so they're in Trash and no longer count as duplicates for the `409 duplicate_of` check. Restoring one gives back a record with nothing attached. A Company source's derived domain is cleared, so restoring it can't hit the unique domain index.
+- Audit: `merged` on the target (`before` snapshot; `after` has `source_ids`, `moved`, `filled`, `conflicts`) and `merged_into` on each source (`after.target_id`).
+- Response `200 { data: { target, moved: { <table>: n, ..., total }, filled: [field], conflicts: [{ field, source_id, value }] } }`.
+- The dormant-company rule now skips soft-deleted Companies. It read `companies` without the soft-delete filter, so a deleted or merged Company could still raise "Company gone quiet".
+
+**Frontend:** the natural entry point is the `409` duplicate envelope (`error.duplicate_of`) on Contact create, plus a "Merge into…" action on the Company/Contact detail page, shown to Admin/Sales Manager only. Show a confirmation with the list of sources. Afterwards, show `conflicts` (values that were not kept) and `moved.total`, then navigate to the target. Merged sources appear in Trash. Warn that restoring one brings back an empty record.
+
+Regression-guarded: `tests/merge_test.go`, `TestCompanyDormantRule_SkipsDeletedCompany`. Swagger regenerated.
+
+## 2026-10-01 — Pipeline coverage and forecast
+
+`GET /dashboard/summary` (spec §9) now counts coverage and the forecast trend by when open Deals are expected to close. Days are server-local (`calendar.ParseLocalDay`, `calendar.Today`, new `calendar.QuarterStart`).
+
+- **`pipeline_coverage_ratio` is this quarter's pipeline over this quarter's target.** The numerator is open Deals with `expected_close_date` in the current calendar quarter (new field `quarter_pipeline_value`), including ones earlier in the quarter that are now overdue. It used to be all open pipeline, including Deals past their close date and Deals due in later quarters. Deals with no `expected_close_date` are left out.
+- **New `overdue_pipeline_value` / `overdue_pipeline_count`**: open Deals whose `expected_close_date` is before today.
+- **New `undated_pipeline_value` / `undated_pipeline_count`**: open Deals with no `expected_close_date` (or one that isn't a readable date), so the pipeline coverage leaves out is still shown.
+- **`forecast_trend` keeps overdue Deals.** An open Deal past its close date goes into the current month's point instead of being dropped. Each point gains `overdue`: the part of its `value` from overdue Deals (`0` on every point but the first).
+- **`forecast_trend` applies the dashboard filters** (`business_unit`, `business_unit_item`, `channel`, `assigned_to`, `company_tag`). It used to ignore them all.
+- The new figures and `forecast_trend` don't apply the date window (`date_from`/`date_to`/`period`, which counts by `created_at`). They're defined by close date, and the window would drop an older Deal still due this quarter. Existing fields keep their names. `open_pipeline_value` is unchanged.
+
+**Frontend:** new fields on `GET /dashboard/summary`: `quarter_pipeline_value` (coverage numerator), `overdue_pipeline_value`, `overdue_pipeline_count`, `undated_pipeline_value`, `undated_pipeline_count`, and `overdue` on each `forecast_trend` point. Coverage numbers will usually drop. Show the overdue and undated amounts next to the coverage card, and the current month's `overdue` on the forecast chart (it's part of that month's `value`, not extra).
+
+Regression-guarded: `tests/dashboard_coverage_forecast_test.go`, `TestQuarterStart`. Swagger regenerated.
+
+## 2026-10-01 — Quote search; `GET /quotes/:id` registered
+
+- **New `GET /quotes`** (`search`, `page`, `per_page`) for the frontend's global search: matches quote `number`, `reference_number` or the Deal title (case-insensitive), newest first, in the `GET /deals` envelope. Rows are the Quote plus `deal_title`; quotes on soft-deleted Deals are left out. Sales-pipeline roles only (Production `403`), no per-rep scoping (same as `GET /deals`).
+- **Fixed: `GET /quotes/:id` was never registered.** The spec listed it and the frontend's full-page Quote editor calls it, but every request was a `404`. It now returns the Quote (effective status) plus `deal_title`. Sales-pipeline roles only; `404` for a missing Quote or a soft-deleted Deal.
+
+Regression-guarded: `tests/quote_search_test.go`. Swagger regenerated.
+
+## 2026-10-01 — Review round 2
+
+**Access.**
+- Production is now `403` on every `/companies*` and `/contacts*` route (including `/companies/:companyId/products|projects` and `PATCH /customer-products/:id`) and on the top-level `/quotes/:id*`, `/payments/:id`, `/payment-installments/:id` and `/contracts/:id*` routes, including both `export-pdf` (spec §1.7). Its Projects page is unaffected: `GET /projects` already returns `company_name`. **Frontend:** hide the Projects page's "View company" action for Production.
+- Marketing keeps Sales Rep access to all of the above.
+- `DELETE /companies/:id` and `DELETE /contacts/:id` are Admin/Sales Manager only (`403` for Sales Rep/Marketing), like trash/restore. **Frontend:** hide the delete action for other roles.
+- `DELETE /companies/:id` returns `409` while the Company has an open or Won Deal that isn't deleted.
+- Single Company/Contact delete and restore write `company`/`contact` audit entries (`deleted`, `restored`).
+- The Open API `/open/companies`, `/open/contacts`, `/open/leads` and `/open/prospects` routes are `403` for a key owned by a Production user, like `/open/deals`. `/open/projects` and `/open/products` are unchanged.
+
+**Users and ownership.**
+- Deactivating a user (`PUT /users/:id` with `status: "inactive"`, `PATCH /users/bulk-deactivate`), deleting one (`DELETE /users/:id`), or moving one to a role that can't own pipeline records (Production) accepts an optional `reassign_to`: an active Admin/Sales Rep/Sales Manager/Marketing user, not one of the users being removed (`422` on field `reassign_to` otherwise). Their open Deals (status `open`), Leads and Prospects (not converted or disqualified) and pending Tasks move to that user in the same transaction, with one `records_reassigned` audit row per user giving the counts. Closed records keep their owner. On `DELETE`, `reassign_to` can be a query param or a JSON body.
+- Those responses now report `open_records` (`{deals, leads, prospects, tasks, total}` still owned), and `reassigned` (same counts plus `user_id`, `reassign_to`) when `reassign_to` was given, so the UI can offer a reassign. **`DELETE /users/:id` and `PATCH /users/bulk-deactivate` now return `200` with a body instead of `204`.** `PUT` adds the two fields to the user object. Bulk returns arrays: `open_records` per listed user (with `user_id`) and `reassigned` per user that had records moved. `bulk-activate` still returns `204`.
+- An Admin can't change their own role or deactivate or delete themselves (`422`, on field `role`/`status`/`id`/`ids`). Nobody can demote, deactivate or delete the last active Admin (`409`). The check locks the active Admin rows, so two Admins removing each other at the same time can't both succeed.
+- `PUT /users/:id` writes `role_changed` and `activated`/`deactivated` audit rows (bulk was already audited).
+- Deal `assigned_to` must be an active user in a sales-pipeline role (`422` on field `assigned_to`) on `POST /deals` (and Lead Convert, which shares the check), `PATCH /deals/:id/reassign`, and the deal/lead/prospect `bulk-reassign`. `PUT /deals/:id` checks it only when it changes, so a deal whose owner was deactivated can still be edited.
+- On `PUT /deals/:id` a Sales Rep or Marketing user can keep their deal or claim an unassigned one, but not unassign it or give it to someone else (`403`).
+- `PUT /deals/:id` audits `value`/`company_id` changes (`updated`) and `assigned_to` changes (`reassigned`, the same shape as `PATCH /deals/:id/reassign`, so Sales Managers see them), with before/after.
+
+**Quote and contract lifecycle.**
+- Supersedes the 2026-10-01 Accepted-quote pricing lock: an Accepted or Rejected quote is now fully read-only, so any change other than an allowed status move is `409` (it was a `422` with `fields` code `accepted_locked` for pricing fields only). Nothing in the frontend read `accepted_locked`.
+- Quote status moves follow a fixed table (`models.CanTransitionQuoteStatus`): draft → sent/accepted/rejected, sent → draft/accepted/rejected, accepted → rejected, rejected → nothing. A Sent quote past its validity date (shown as `expired`) can't be accepted; move it back to draft with a new `validity_date`, or duplicate it. Anything else is `409`.
+- An Accepted or Rejected quote is read-only: a `PUT` that would change any field other than `status` is `409`. Resending the stored values, or sending only `{"status": "rejected"}`, is fine.
+- One Accepted quote per Deal. Accepting (or creating as accepted) while another quote of the Deal is Accepted is `409` naming that quote's number; reject it first. The Deal row is locked, so two concurrent accepts can't both win. Every quote save also re-checks the stored status under a row lock, so a stale full-row `PUT` can't overwrite a concurrent status change (`409`, reload).
+- `DELETE /quotes/:id` only deletes drafts (`409` otherwise).
+- `POST /quotes/:id/duplicate` sets the new `revision_of_id` (the chain's root quote, FK, `ON DELETE SET NULL`) and `revision_no` (chain max + 1; `0` on an original). The original is not changed.
+- Quote Create/Update return `422` with `error.fields` for: item `qty` ≤ 0, `price` < 0, `discount_percent` outside 0–100 (keys `items[i].qty` etc.), `discount_total` above the items' subtotal, `wht_rate` outside 0–100, and an `issue_date`/`validity_date` that isn't a date.
+- A contract becomes `signed` through `POST /contracts/:id/upload`. Create with `status: "signed"` is `422`, and so is `PUT` unless the contract already has a signed file and `signed_date`.
+- A contract whose stored status is `signed` is locked: any `status`/`quote_id`/`end_date` change is `409`, and a second signed upload is `409`. Further files go on as Attachments. A signed contract past its `end_date` stays locked.
+- Quote and contract status changes write a `status_changed` audit entry (`entity_type` `quote`/`contract`, before/after `status`).
+
+Regression-guarded: `tests/quote_lifecycle_test.go`, `tests/contract_lock_test.go`.
+
+**Duplicates, convert and import.**
+- `POST /leads`, `POST /prospects` and `POST /contacts` return `409` when a non-deleted record of the same kind has the same email (case-insensitive) or phone (digits only, `+66` read as a leading `0`; `utils.NormalizePhone`). The body is the usual `CONFLICT` envelope plus `error.fields` (`{"email": ["duplicate"]}` and/or `{"phone": ["duplicate"]}`) and `error.duplicate_of` (matching ids, at most 10). **The frontend should show the match and offer to resend with `?allow_duplicate=true`**, which skips the check. Contacts are checked across all Companies. Updates are not checked.
+- Lead and Prospect Create/Update: `assigned_to` must be an active user in a sales-pipeline role (`422` on `assigned_to`, `validateAssignee`). Update only checks an owner that changed, so resending a since-deactivated owner still saves.
+- Both convert endpoints reuse a Contact already in the target Company with the same email (case-insensitive) instead of always creating one. A Company they create is never nameless: new optional body field `company_name`, else the source record's soft-deleted Company's name, else the Lead/Prospect's name. With none of those it's a `422` asking for `company_id` or `company_name`.
+- `POST /contacts/import` matches on lower(email) **within the row's Company** only, so a Contact is never moved to another Company (a same-email row for another Company creates a new Contact). An empty phone/role_title cell keeps the stored value. A `company_id` that names no Company is a `422` before anything is written.
+- Both imports save each row under a savepoint. A row Postgres rejected used to abort the transaction, so every later row failed and the import was a `500`. Now that row is reported in `errors` and skipped. A row with a NUL byte is skipped while parsing, since it failed the batched lookup query for the whole file.
+
+Regression-guarded: `tests/duplicate_detection_test.go`, new cases in `tests/import_test.go` and `tests/lead_company_test.go`, `internal/utils/contact_match_test.go`.
+
+**Won deals and payments.**
+- A Won Deal with money attached (a non-deleted Payment, any Payment Installment, or a Contract stored as `signed`) is protected. `DELETE /deals/:id` and any move out of Won (`PUT /deals/:id` or `PATCH /deals/:id/stage`, to an open stage or Lost) are `409` with `error.code` `WON_DEAL_PROTECTED` for anyone but Admin/Sales Manager. A manager must pass `?reason=` (query string, max 500 chars). Without it the answer is `409` `REASON_REQUIRED`, so the frontend can ask for a reason and retry.
+- **`PATCH /deals/bulk-archive` now returns `200 { archived: [...], skipped: [{ id, reason: "won_deal_with_money" }] }`** (was `204`). Protected Deals are skipped, not archived, and the rest of the batch still goes through. Lead/Prospect bulk archive is unchanged (`204`).
+- Audit log: a Deal `DELETE` writes `deleted` (with the manager's `reason` when forced) and Restore writes `restored`. A forced un-win writes `won_reversed` with the reason, on top of the usual `stage_changed`.
+- `PATCH /deals/:id/stage` into a Lost stage requires `lost_reason` (`422`, `fields.lost_reason`), like `PUT`. A Deal that is already Lost with a stored reason can still be repositioned without one.
+- Payments are soft-deleted now (`AuditedModel`; AutoMigrate adds `deleted_at`/`created_by`/`updated_by`/`deleted_by`). A deleted Payment drops out of the Payments list and totals, installment statuses, the outstanding-balance report and the payment-installment rule, all through GORM's default scope.
+- Payment Create/Update/Delete write `payment` audit entries (`created`/`updated`/`deleted`, before/after). Payment-installment Update/Delete write `payment_installment` entries.
+- New payment checks:
+  - Create on a Lost Deal is `422` (`fields.deal_id`).
+  - `paid_at` later than today (server-local) is `422` (`fields.paid_at`).
+  - A non-empty `document_number` already used by another non-deleted Payment, on any Deal, is `409`. Update only checks this when the number changes.
+  - If cash + WHT would pass the Deal's receivable (the Outstanding Balance rule: latest Accepted Quote incl. VAT when it has priced items, else Deal value) by more than `utils.MoneyEpsilon`, the request is `422` `fields.amount: ["exceeds_receivable"]` unless the body sends `allow_overpayment: true`. Update only checks this when the payment's own cash + WHT goes up.
+  - Saves lock the Deal row, so concurrent payments are checked one at a time.
+- Deleting an installment also unlinks deleted Payments that pointed at it.
+- `utils.ErrBulkSkip` lets a `BulkUpdate` apply leave one row alone without failing the batch.
+
+Regression-guarded: `tests/won_deal_protection_test.go`, `tests/payment_guards_test.go`. Swagger annotations updated; regenerate `docs/` after merging.
+
+## 2026-10-01 — Quote money fixes: tax-inclusive VAT, satang rounding, Accepted lock, schedule cap
+
+- **Tax-inclusive quotes no longer charge VAT twice.** With `price_type: "incl_tax"` and VAT on, `ComputeQuoteTotals` backs VAT out of the prices (taxable = net × 100/107, VAT = net − taxable) instead of adding 7% on top. Affects the quote PDF, the Outstanding Balance receivable and expiring-soon `total_value`. `excl_tax` and VAT-off quotes are unchanged. WHT stays on the pre-VAT amount.
+- **Totals round to satang at every step** (line, subtotal, net, taxable, VAT, WHT; grand total from the rounded parts), half up like the frontend, so the PDF's printed lines add up exactly. A receivable can move by a satang.
+- **Accepted quotes' pricing is locked.** `PUT /quotes/:id` on a stored-Accepted quote returns `422` (`accepted_locked`) for a change to items, price type, VAT/WHT or discount. Same values resent, status changes and text fields still work.
+- **Generated payment schedules can't exceed the receivable.** `POST /deals/:dealId/payment-installments/bulk` returns `422` (`exceeds_receivable`) when existing + new installments would total more than the Deal's receivable (skipped when it's 0).
+- **`Deal.won_at`** (new nullable, indexed column): when the Deal became Won. A `BeforeSave` hook on `Deal` sets it on the way into status `won` (Kanban stage move, `PUT`, create, Lead convert), keeps it on later re-saves, and clears it when the Deal reopens or is lost. On boot, `database.BackfillDealWonAt` fills it for won Deals that don't have one (from `stage_entered_at`, else `updated_at`) and clears it on Deals that aren't won. It only touches rows that are out of step, so it runs again on every boot.
+- **`GET /dashboard/summary`**: `won_value`, `win_rate`, the Won/Lost bars in `stage_breakdown`, and the won/lost numbers in `industry_breakdown` and `team_performance` now count Deals **won or lost inside the window**: won by `won_at`, lost by `stage_entered_at`. Before, they counted Deals created in the window. `revenue_trend` and `annual_revenue_trend` now bucket by `won_at`. Open-pipeline figures still go by `created_at`. `avg_deal_size` is now the average of Deals won in the window (FR-CRM-057), not of every Deal. New fields: `deals_count` (Deals matching the filters) and `total_deals_count`.
+- **`GET /reports/win-loss-reasons`** (and its CSV export): the date range now filters on when the Deal closed, not on `created_at`.
+- **`PipelineStage.default_probability`** (read-only, on every `/admin/pipeline-stages` response): the probability a Deal gets in that stage when none is sent (`utils.DefaultProbabilityFor`). The frontend uses this in place of its own table.
+- **`Contract.effective_status`** (read-only, on every contract response): `expired` once a `signed` contract's `end_date` has passed, using the server-local day. `status` stays `signed`, so the signed-contract Won gate still counts the contract.
+
+## 2026-09-28 — Review pass: sessions, access, deal states, report dates, deploy hardening
+
+Fixes from a full review of auth, handlers, reports and infrastructure.
+
+**Sessions and access.**
+- The caller's role now comes from the DB on every request (cached with `is_active`/`token_version`), not the login token's claim. A role change, Admin password reset, deactivation (single or bulk) or delete bumps `token_version`, so the user's existing tokens stop working immediately.
+- `POST /auth/change-password` also revokes the caller's older tokens and returns a fresh one in `data.access_token`. **The frontend must store it**, or the user is signed out after changing their password.
+- `POST`/`PUT /users` return `422` for an empty or unknown `role`. Creating a user with `status: "inactive"` now really stores them inactive.
+- Login checks the password before reporting "Account is inactive".
+- `GET /attachments` requires `related_type` + `related_id` (`422`) and checks access to the parent record. Deal, quote and prospect attachments are `403` for Production, and a missing parent is `404`. `POST /attachments` checks the parent exists and the caller may write to it (`404`/`403`) before storing a file. `external_url` must be http(s). `/uploads/:key` now also requires a changed password.
+- The login rate limit keys on the real client: `X-Forwarded-For` is only read from `TRUSTED_PROXIES` peers, right to left, so a client-sent value can't pick a fresh bucket.
+
+**Explicit `false` on Create.** Products, quote templates, option-list items, pipeline/prospect stages and lead scoring criteria now keep `is_active`/`vat_enabled: false` (`utils.CreateKeepingFalse`), like users above.
+
+**Deals, Leads, Prospects.**
+- Moving a Won/Lost deal to an open stage (Kanban `PATCH /deals/:id/stage` or `PUT`) sets status `open` and clears `lost_reason`. A `PUT` that omits `stage`/`status` keeps the stored values instead of blanking them.
+- `POST /leads/:id/convert` runs Deal Create's checks: value/date, stage/channel/business unit, `lost_reason` for Lost (new optional `deal.lost_reason`), the signed-contract gate for Won, `CanWrite` on `assigned_to`. The status follows the stage.
+- Both convert endpoints lock the row, so a concurrent second convert is `409` instead of a duplicate Deal/Company/Contact. A missing explicit `company_id`/`contact_id` is `404` (was `500`); a contact from another Company is `422`.
+- Lead `status` must be New/Contacted/Qualified/Disqualified (`422`; over 16 chars was a `500`). A Lead or Prospect `PUT` without `status` keeps it.
+- Searched Lead/Prospect lists keep their sort order (they had no `ORDER BY` with the Company join).
+
+**Reports and dates.**
+- `date_from`/`date_to` on the lead/prospect source-conversion, top-referrers, win/loss, sales-cycle, dashboard summary, lead/prospect summaries and `/audit-log` (and their CSV exports) are inclusive server-local days (`utils.ParseDateRange`). They were UTC midnight, which dropped 00:00–07:00 Bangkok and most of the last day. A malformed or reversed range is `422`, with the same message everywhere (`/pipeline/overview` included, which had its own wording). `from`/`to` are accepted as aliases wherever `date_from`/`date_to` are.
+- A Sent quote stays `sent` through its whole validity date and shows `expired` from the next local day. The same applies to expiring-soon and the `quote` notification rule. Expiring-soon `total_value` is now the grand total (discounts, VAT, WHT).
+- Dashboard trends no longer repeat or skip a month on the 29th–31st, and bucket months at Bangkok midnight.
+- `sort=company_name` with filters on `/deals` and `/contacts` returned `500` ("ambiguous column"). Filter columns are now table-qualified, with an id tie-breaker.
+- Top referrers, customers-by-product-status, campaign progress and the `has_won_deal` filter ignore soft-deleted rows.
+- **Sales cycle never worked:** the audit JSON was never scanned, so `by_stage` was empty and `avg_sales_cycle_days` 0 (also on the dashboard). It now returns real figures and narrows audit rows in SQL.
+
+**Deploy and background jobs.**
+- `internal/server.New` builds the app for both `main` and the tests (error handler, recover, body limit), so the test suite exercises the production stack.
+- The body limit is 11 MB (the 10 MB upload limit was unreachable behind Fiber's default 4 MB), with 2-minute read/write/idle timeouts.
+- The Dockerfile creates a writable `/app/uploads`; local-storage uploads failed with "permission denied" as the non-root user.
+- Graceful shutdown on SIGTERM (20s drain, jobs stopped via context). Every job tick recovers from panics. `railway.toml`: restart `ALWAYS`, `drainingSeconds = 30`.
+- `/health` pings the DB (`503` when unreachable).
+- The DB pool is bounded (`DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`, `DB_CONN_MAX_LIFETIME`, `DB_CONN_MAX_IDLE_TIME`).
+- Boot migrations, backfills and seeds run under a Postgres advisory lock, so replicas booting together don't race. The tag-lowercasing and `previous_stage` backfills no longer rewrite or scan every row on each boot.
+- Task due reminders claim each task before emailing (at most once across instances). A deleted, inactive or email-less assignee is stamped rather than retried every 15 minutes.
+- Forecast snapshots skip the day on a query error (instead of writing zeros), use the local date, and retry hourly.
+- The seeded Admin uses `ADMIN_INITIAL_PASSWORD` if set. Otherwise the generated password is printed once to stderr outside development.
+- CI builds the Docker image, boots it against Postgres, and checks `/health` and a clean stop.
+- `TEST_DB_NAME` overrides the test database.
+- A negative or malformed `JWT_EXPIRY_HOURS` now falls back to 720 with a log line (a negative value was accepted before).
+
+**New env vars:** `TRUSTED_PROXIES` (on Railway defaults to the private ranges; elsewhere trusts nothing), `ADMIN_INITIAL_PASSWORD`, `DB_MAX_OPEN_CONNS`, `DB_MAX_IDLE_CONNS`, `DB_CONN_MAX_LIFETIME`, `DB_CONN_MAX_IDLE_TIME`.
+
+**Cleanup.**
+- Calendar-day helpers live in a new leaf package `internal/calendar` (`Day`, `LocalDay`, `Today`, `DaysUntil`, `LocalDaysBetween`, `Parse`, `ParseLocalDay`, `ParseLocalMidnight`), so `models` uses them instead of its own copy. `utils` keeps `DateRange`/`ParseDateRange`, which now returns a `*utils.DateRangeError`. `reportError` is the only place that writes the date-range 422.
+- `Quote.ExpiresWithin` is shared by the expiring-soon report and the quote rule. `models.ParseValidityDate` is removed.
+- Deal status from stage is decided in one place: one `utils.LookupStageFlags` query (replacing `IsWonStage`/`IsLostStage`) and `resolveDealStatus`, used by Create, Update, the Kanban move and Lead Convert. Deal Create and Lead Convert share `validateNewDealForm`.
+- Leads and Prospects share `applyLeadLikeSort`. One `bumpTokenVersion` (`UPDATE … RETURNING`) handles every session revocation.
+- `models.SalesPipelineRoles`, `IsValidRole`, `IsValidLeadStatus` and `utils.MinPasswordLength` replace hand-copied lists and constants.
+- Attachment access is table-driven, and a Quote's owner is resolved in one query.
+- `TRUSTED_PROXIES` is parsed once in `main` and passed to `server.New`/`routes.Setup`. One `database.AdvisoryLock` serves both boot and the tests. Pool defaults are `config.Default*` constants.
+- Tests pin `time.Local` once per package in `TestMain`, and share `listIDs`.
+
+Regression-guarded: `tests/{session_invalidation,attachment_access,review_pass_deals,reports_date_range,quote_validity,dashboard_local_month,company_name_sort,reports_soft_delete,boot_backfill,server_config}_test.go`, `internal/notifier/hardening_test.go`, `internal/clientip`, `internal/calendar`, `internal/utils/date_range_test.go`, `internal/models/quote_expiry_test.go`, `internal/handlers/dashboard_trend_internal_test.go`. Swagger regenerated.
+
+## 2026-09-27 — Post-release fixes: receivables, installment alerts, dates, PDFs
+
+Fixes found reviewing the release below, plus the cleanup around them.
+
+**Fixed.**
+- Outstanding balance: an Accepted quote with no priced items (an uploaded PDF whose extraction failed) made the receivable 0, so an unpaid Won Deal vanished from the report. Such a quote now falls back to the Deal value (`receivable_source: "deal_value"`).
+- Installments: cash + WHT summing a hair under the amount left an installment partial/overdue (and fired a High "Overdue payment" Task). Paid now allows 0.005 baht (`utils.MoneyEpsilon`, also the report's threshold).
+- Installments are overdue from the calendar day after `due_date`, not on the due date itself — matching `days_overdue`/`aging_bucket`.
+- `payment_installment` rule: the due-soon firing used up the only dedupe key, so the overdue alert never came. It now fires once per state (`context` `due_soon`/`overdue`); a one-time migration (`BackfillInstallmentAlertContexts`) re-keys existing log rows so nothing re-alerts on deploy.
+- Rule Tasks/emails went to deactivated owners. An inactive owner now counts as no owner (logged only if someone else, e.g. managers, was alerted).
+- Notification-rule Create wrote explicit `false` flags in a second, untransacted statement, so a failure could leave the rule active after a 500. Now one transaction (`utils.CreateKeepingFalse`, also used for a quote's `vat_enabled`).
+- Bare `YYYY-MM-DD` for `updated_since`/`due_from`/`due_before` was UTC midnight (07:00 Bangkok); now server-local midnight.
+- Customer-product `end_date`: an unparseable value is a `422` (was silently dropped with a `200`), and Create applies it (was ignored). RFC 3339 is stored as sent; a bare date is local midnight.
+- Quote/Contract PDFs wrap long party lines (e.g. a full Thai address) instead of clipping them.
+
+**Behaviour changes.** Alert titles ("Deal idle N days") count local calendar days. Renewal/contract-expiry checkers filter their window in SQL. Every rule checker takes the tick's `now`.
+
+**Cleanup.** One set of calendar-day helpers (`utils.DaysUntil`/`LocalDaysBetween`; `DaysOverdue` and `notifier.daysSince` removed), one body-key helper (`bodyKeys`/`bodyHas`), `parseOptionalCalendarDate`, pointer helpers in `utils/ptr.go`; removed `recordNotified`, `fireRule`'s unused result and `utils.ComputeInstallmentStatuses`. Swagger now documents `/admin/notification-rules`.
+
+Regression-guarded: `internal/handlers/{receivables,filters}_internal_test.go`, `internal/utils/{payment_schedule,pdf}_test.go`, `internal/notifier/{payment_installment_rule,rule_tasks}_test.go`, `tests/{create_keeping_false,installment_alert_context_migration}_test.go`, `TestCustomerProduct_EndDate`.
+
+## 2026-09-27 — In-app alerts without SMTP, payment tax fields, receivables, renewals, Thai PDFs
+
+The company runs without SMTP, so alerts now arrive in-app, and payments carry what Thai accounting needs.
+
+**Email-free operation.** With `SMTP_HOST` unset the server logs "email is disabled" once at startup (`utils.LogMailStatus`) and `SendMail` no-ops silently — no per-recipient log line every 15 minutes, no errors. Tickers still do their in-app work. `POST /admin/weekly-digest/test` still `422`s without SMTP, on purpose.
+
+**Rules create Tasks.** A `NotificationRule` firing also creates a Task for the owner (new `create_task`, default `true`, existing rules migrated to `true`): due today, `high` for an overdue installment else `medium`, related to the Deal (deal/quote/contract/installment/contract_expiry), Company (company, customer_product_renewal) or Prospect. Deduped by the `NotificationLog` insert (`ON CONFLICT DO NOTHING`, same transaction as the Task). Rule Tasks are pre-stamped `notified_at`. Rule Create now keeps an explicit `is_active`/`create_task` `false`.
+
+**Renewals.** `CustomerProduct` gains `renewal_date` (date), `billing_cycle` (`monthly|yearly|one_time`), `price`; `Contract` gains `end_date` (date). New rule types `customer_product_renewal` and `contract_expiry` fire from `threshold_days` before the date to 30 days after, once per date value; one of each is seeded active (30 days) at boot if none of that type exists.
+
+**Payments.** `wht_amount`, `wht_certificate_received` (50 ทวิ), `document_number` (FlowAccount receipt/tax invoice no.), `installment_id` (same Deal). New `PUT /payments/:id` (partial merge). List adds `total_wht`, `total_settled`. Installment status: linked payments settle their own installment first, the rest waterfalls as before; cash + WHT both count.
+
+**Outstanding balance.** Receivable = latest Accepted Quote's taxable + VAT (before WHT), else `deals.value`; outstanding = receivable − (paid + WHT). New fields `receivable_amount`, `receivable_source`, `wht_amount`, `oldest_overdue_due_date`, `days_overdue`, `aging_bucket`; CSV appends matching columns.
+
+**Source performance.** `GET /reports/source-performance` (+ `/export`): leads → qualified → Won Deals/value → `win_rate` per lead source, attributed through the Lead rather than `deals.channel`; lead-less Won Deals in `direct_*`.
+
+**Duplicate quote.** `POST /quotes/:id/duplicate` → new Draft with a fresh number, `issue_date` today, validity recomputed from the original's term. Fixed: `vat_enabled: false` on quote create/upload was stored as `true`.
+
+**Thai PDFs.** Quote/Contract PDFs embed Sarabun (SIL OFL, `internal/utils/fonts/`), so Thai renders; branch prints as สำนักงานใหญ่ / สาขาที่ 00001.
+
+Regression-guarded: `tests/in_app_alerts_payment_tax_test.go`, `internal/notifier/rule_tasks_test.go`, `internal/handlers/receivables_internal_test.go`, `internal/utils/{mailer,payment_schedule,pdf}_test.go`. Swagger regenerated.
+
+## 2026-09-27 — Company tax ID matching: normalization, tax ID + branch dedupe, `updated_since`
+
+Follow-ups so the accounting sync can match Companies reliably.
+
+**Tax IDs are normalized.** Create/Update store `tax_id` with every space and dash removed (`utils.NormalizeTaxID`, Unicode-aware, so a pasted non-breaking space or en dash counts), and a value with nothing left becomes `null`. `?tax_id=` is normalized the same way, so `0-1055-55555-55-5` finds `0105555555555`; one that normalizes to nothing (`-`, a space) matches no Company rather than silently dropping the filter and returning them all. Existing rows are rewritten on boot by `database.NormalizeCompanyTaxIDs`. It includes soft-deleted rows, uses `UpdateColumn` so `updated_at` doesn't move, and only loads rows that aren't plain digits already, so re-running it is cheap.
+
+**Tax ID + branch dedupe.** Create/Update return `409 CONFLICT` when another Company has the same `tax_id` + `branch_code`. A `null` branch only matches another `null`, and a Company without a `tax_id` is never checked. On Update it runs only when the pair changes, so rows that already shared a pair can still be edited. It's an app-level check with no unique index, because existing data may hold duplicates the index couldn't be built over; integrations still look up before creating.
+
+**Validation writes last.** `validateCompanyForm` now runs every check, the two duplicate checks included, before `industry` auto-registration. Before this, a request rejected with `409` for a duplicate website had already added its new industry option. It also takes the current Company, so the Update-only rule "omitted `branch_code`/`postal_code` keep their value" lives next to the other checks instead of in the handler.
+
+**Incremental sync.** `GET /companies` (so also `/open/companies` and `/companies/export`) gains `updated_since` (inclusive; RFC 3339 or `YYYY-MM-DD`; `422` if unparseable), and `sort` accepts `updated_at`.
+
+**Search covers tax IDs.** `?search=` also matches `tax_id`, with the term's spaces/dashes dropped. A term with nothing left after that ("-") skips the tax ID column rather than matching every row.
+
+**PDFs.** Quote and Contract PDFs append `postal_code` to the address line and print the branch with the tax ID ("Tax ID: 0105555555555 (สำนักงานใหญ่)", "(สาขาที่ 00001)", the wording on Thai tax documents). Both now share `utils.CompanyPartyLines` instead of duplicating the block, and `handlers.derefStr` is replaced by the shared `utils.DerefString`.
+
+**Swagger.** `docs/swagger.json`/`.yaml` are regenerated, which also picks up earlier annotation changes never regenerated. Company Create/Update now document their `409`/`422` responses (the old `400` note wrongly listed a missing name, which is a `422`). `cmd/api/main.go` now defines the `ApiKeyAuth` (`X-API-Key`) scheme the Open API routes were already tagged with. `docs/embed.go`'s regen steps note to delete the `docs/docs.go` swag also writes.
+
+Regression-guarded: `tests/company_tax_id_test.go`, `TestNormalizeTaxID` and `TestCompanyPartyLines` (`internal/utils`). Spec: `api-system-spec.md` §4, §7.4, §8.1. Guide: `docs/OPEN_API_GUIDE.md` intro, §6, §12b, §13.
+
+## 2026-09-27 — Company `branch_code`/`postal_code`, exact `tax_id` filter
+
+Requested by the IGG Finance accounting integration, which identifies a customer by its 13-digit tax ID plus branch number, and needs the buyer's branch on full tax invoices.
+
+**New Company fields** `branch_code` and `postal_code` (string | null, both returned on List/Get and accepted on Create/Update, staff and Open API). Each must be exactly 5 digits when set (`422` otherwise). Values are trimmed, and blank is stored as `null`.
+
+**Update keeps them when omitted.** `PUT /companies/:id` is otherwise a full replace, but the staff Company form and earlier integrations don't send these fields yet, so a body without the key leaves the saved value alone. Explicit `null` or `""` clears it. This is the same rule `stale_days` uses on the stage config resources.
+
+**New list filters** `tax_id` and `branch_code` on `GET /companies` (and so `/open/companies` and `/companies/export`): exact match, surrounding spaces ignored. `companies.tax_id` is now indexed. There is still no dedupe on `tax_id`, since one tax ID can have several branches. Integrations look up before creating.
+
+The Companies CSV export gains `Branch Code` and `Postal Code` columns after `Tax ID`.
+
+The 5-digit checks run before `industry` auto-registration, so a request rejected for a bad code doesn't leave a new industry option behind.
+
+Regression-guarded: `TestOpenAPI_CompanyTaxIDBranchCodeFilter`, `TestOpenAPI_CompanyBranchPostalCodes` (`tests/open_api_test.go`), `TestExport_CompaniesIncludesBranchAndPostalCode` (`tests/export_test.go`). Spec: `api-system-spec.md` §4. Guide: `docs/OPEN_API_GUIDE.md` §6, §12b, §13.
+
 ## 2026-09-25 — Server-side paging filters for Tasks/Activities; audit-log `action` filter
 
 The frontend's Tasks and Activities list pages used to load one capped page (`per_page=1000`, which `utils.Pagination` silently reset to 20, and `per_page=200`) and filter/page it client-side. They now page server-side, so the list endpoints gained the filters those pages need. Existing callers are unaffected: every addition is opt-in.

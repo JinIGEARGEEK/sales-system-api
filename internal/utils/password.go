@@ -5,6 +5,10 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// MinPasswordLength is the shortest password a user may set for themselves
+// (POST /auth/change-password) or the initial Admin may be seeded with.
+const MinPasswordLength = 8
+
 // NewTempPassword generates a random password for Admin-created accounts that
 // don't specify one; the account holder is expected to reset it via a future
 // forgot-password flow (out of scope for this spec).

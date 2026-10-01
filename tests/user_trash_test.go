@@ -21,7 +21,7 @@ func TestUserTrashRestore(t *testing.T) {
 
 	deleteReq := testutil.AuthRequest(t, http.MethodDelete, "/api/v1/users/"+itoa(target.ID), nil, admin.ID, admin.Role)
 	resp := doJSON(t, app, deleteReq, nil)
-	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	getReq := testutil.AuthRequest(t, http.MethodGet, "/api/v1/users/"+itoa(target.ID), nil, admin.ID, admin.Role)
 	resp = doJSON(t, app, getReq, nil)

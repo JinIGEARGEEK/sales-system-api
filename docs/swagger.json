@@ -788,6 +788,185 @@
                 }
             }
         },
+        "/admin/notification-rules": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Every workflow notification rule, active and inactive, ordered by id. FR-CRM-100/101/102.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/notification-rules"
+                ],
+                "summary": "List notification rules (Admin only)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.NotificationRule"
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "name, entity_type (deal|quote|contract|prospect|company|payment_installment|customer_product_renewal|contract_expiry), threshold_days (\u003e 0) and recipient_role (owner|owner_and_managers) are required. is_active and create_task are optional and default to true; an explicit false is kept. create_task makes each firing also create a Task for the record's active owner (the in-app alert; the only one when SMTP is off).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/notification-rules"
+                ],
+                "summary": "Create a notification rule (Admin only)",
+                "parameters": [
+                    {
+                        "description": "Rule fields",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.notificationRuleForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.NotificationRule"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request body",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Missing/invalid field, or rule name already in use",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/notification-rules/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Sets is_active false; the row and its notification log are kept.",
+                "tags": [
+                    "admin/notification-rules"
+                ],
+                "summary": "Deactivate a notification rule (Admin only)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Rule ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Notification rule not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Despite PATCH, name/entity_type/threshold_days/recipient_role are validated as on Create and always replaced; is_active and create_task keep their stored value when omitted.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin/notification-rules"
+                ],
+                "summary": "Update a notification rule (Admin only)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Rule ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Rule fields",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.notificationRuleForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.NotificationRule"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request body",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Notification rule not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Missing/invalid field",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/admin/pipeline-stages": {
             "get": {
                 "security": [
@@ -1655,6 +1834,130 @@
                 }
             }
         },
+        "/attachments": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns one record's attachments. related_type and related_id are both required, and the caller must be able to read that record (deal/quote/prospect: Admin/Sales Rep/Sales Manager/Marketing; lead/company/project: any authenticated role). Optional category filter.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "attachments"
+                ],
+                "summary": "List attachments for a record",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "lead, deal, company, project, quote, or prospect",
+                        "name": "related_type",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Related record ID",
+                        "name": "related_id",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by category",
+                        "name": "category",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Paginated attachment list (data, page, per_page, total)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Caller's role cannot read this record type",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Related record not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "related_type/related_id missing or invalid",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Two shapes: multipart `file` upload (related_type, related_id, category form fields), or a JSON body with `external_url` (http:// or https:// only) for a linked doc. Exactly one is accepted. The related record must exist and the caller must be allowed to edit it (a Sales Rep/Marketing user only on deals, quotes, leads, and prospects assigned to them or unassigned).",
+                "consumes": [
+                    "application/json",
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "attachments"
+                ],
+                "summary": "Create an attachment (Admin/Sales Rep/Sales Manager/Marketing)",
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Attachment"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid body, or unsupported file type",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Not authorized to attach to this record",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Related record not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Missing fields, unknown related_type, or external_url not http(s)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/audit-log": {
             "get": {
                 "security": [
@@ -1685,19 +1988,25 @@
                     },
                     {
                         "type": "string",
+                        "description": "Filter by action (e.g. stage_changed) — applies to all roles, narrowing within the role's visible slice",
+                        "name": "action",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
                         "description": "Filter by entity ID (e.g. a specific Deal ID) — applies to all roles",
                         "name": "entity_id",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "ISO date lower bound (YYYY-MM-DD), filters on created_at",
+                        "description": "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on created_at",
                         "name": "date_from",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "ISO date upper bound (YYYY-MM-DD), filters on created_at",
+                        "description": "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on created_at",
                         "name": "date_to",
                         "in": "query"
                     },
@@ -1728,6 +2037,13 @@
                             "additionalProperties": true
                         }
                     },
+                    "422": {
+                        "description": "Malformed date_from/date_to, or date_to before date_from",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
                     "500": {
                         "description": "Failed to list audit log",
                         "schema": {
@@ -1745,7 +2061,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Paginated, filterable Company list, each row annotated with last_activity_at (from any company-scoped Activity). Filters: status, tag, industry, search (name), stale_days, has_won_deal.",
+                "description": "Paginated, filterable Company list, each row annotated with last_activity_at (from any company-scoped Activity). Filters: status, tag, industry, search (name, website or tax ID), tax_id, branch_code, updated_since, stale_days, has_won_deal.",
                 "produces": [
                     "application/json"
                 ],
@@ -1774,8 +2090,26 @@
                     },
                     {
                         "type": "string",
-                        "description": "Search by name",
+                        "description": "Search by name, website or tax ID",
                         "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact tax_id match (spaces/dashes ignored)",
+                        "name": "tax_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact branch_code match",
+                        "name": "branch_code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Only companies updated at or after this RFC 3339 timestamp or YYYY-MM-DD date (server-local midnight)",
+                        "name": "updated_since",
                         "in": "query"
                     },
                     {
@@ -1792,7 +2126,7 @@
                     },
                     {
                         "type": "string",
-                        "description": "Sort field, prefix - for descending (created_at, name, industry)",
+                        "description": "Sort field, prefix - for descending (created_at, updated_at, name, industry)",
                         "name": "sort",
                         "in": "query"
                     },
@@ -1855,7 +2189,21 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid body or missing name",
+                        "description": "Invalid body (e.g. a field sent as the wrong JSON type)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Another Company has this website's domain, or this tax_id + branch_code",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Missing name, invalid website, branch_code/postal_code not 5 digits, or an inactive size/revenue_size",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -1903,7 +2251,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Uploads a CSV file (header row skipped, up to 10MB / 5000 data rows) with columns name,industry,size,website — name is required per row. Dedupes primarily by normalized website domain, falling back to a case-insensitive/whitespace-trimmed name match when either side has no website (FR-CRM-014): a match updates the existing Company, otherwise a new one is created. Runs as one all-or-nothing transaction; per-row failures are collected into the result rather than aborting the whole import.",
+                "description": "Uploads a CSV file (header row skipped, up to 10MB / 5000 data rows) with columns name,industry,size,website — name is required per row. Dedupes primarily by normalized website domain, falling back to a case-insensitive/whitespace-trimmed name match when either side has no website (FR-CRM-014): a match updates the existing Company, otherwise a new one is created. Runs in one transaction with a savepoint per row, so a row that fails to save is rolled back, reported in errors and skipped while the rest are imported.",
                 "consumes": [
                     "multipart/form-data"
                 ],
@@ -2023,7 +2371,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Manually adds a Customer-Product record (a Product linked to a Company as a customer), or changes its status, independent of a Deal. FR-CRM-065. source_deal_id, if given, must reference a Deal belonging to this Company. start_date defaults to now when omitted; status defaults to \"Interested\".",
+                "description": "Manually adds a Customer-Product record (a Product linked to a Company as a customer), or changes its status, independent of a Deal. FR-CRM-065. source_deal_id, if given, must reference a Deal belonging to this Company. start_date defaults to now when omitted; end_date is optional (RFC 3339 or YYYY-MM-DD, 422 if unparseable); status defaults to \"Interested\". Optional renewal fields: renewal_date (YYYY-MM-DD or RFC 3339; stored as a date), billing_cycle (monthly|yearly|one_time), price (\u003e= 0) — renewal_date drives the customer_product_renewal notification rule.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2217,7 +2565,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Updates a Company. size/revenue_size must each match an active configured option; industry is free text and auto-registers a new active /admin/industries option if needed; domain is re-derived from website.",
+                "description": "Updates a Company (full replace). size/revenue_size must each match an active configured option; industry is free text and auto-registers a new active /admin/industries option if needed; domain is re-derived from website. branch_code/postal_code are kept when omitted from the body; send null or \"\" to clear them.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2254,7 +2602,7 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid body or invalid option",
+                        "description": "Invalid body (e.g. a field sent as the wrong JSON type)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -2262,6 +2610,20 @@
                     },
                     "404": {
                         "description": "Company not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Another Company has this website's domain, or (when changed) this tax_id + branch_code",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Missing name, invalid website, branch_code/postal_code not 5 digits, or an inactive size/revenue_size",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -2275,7 +2637,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Soft-delete (AuditedModel) — recoverable via Restore/Trash below. Never a hard delete, since Deals/Contacts/Payments reference company_id.",
+                "description": "Soft-delete (AuditedModel) — recoverable via Restore/Trash below. Never a hard delete, since Deals/Contacts/Payments reference company_id. Admin/Sales Manager only; 409 while the Company has an open or Won Deal. Writes a company/deleted audit entry.",
                 "tags": [
                     "companies"
                 ],
@@ -2293,8 +2655,96 @@
                     "204": {
                         "description": "No Content"
                     },
+                    "403": {
+                        "description": "Not Admin/Sales Manager",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
                     "404": {
                         "description": "Company not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Company has open or Won deals",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/companies/{id}/merge": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Moves everything that references each source Company (contacts, deals, leads, prospects, projects, customer products, company activities/attachments/tasks, lead referrals, dormant-company notification logs) to the target :id, fills the target's empty fields from the sources (in source_ids order), unions tags, then soft-deletes the sources. A source website/tax_id/branch_code that differs from the target's is not copied and is listed in conflicts. Writes a company/merged audit row on the target and company/merged_into on each source. One transaction.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "companies"
+                ],
+                "summary": "Merge duplicate companies into this one (Admin/Sales Manager only)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Target Company ID (survives)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "1-20 source Company ids",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.mergeForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.mergeResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid body",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Not Admin/Sales Manager",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Target or a source doesn't exist or is deleted (message lists the ids)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "source_ids empty, over 20, contains the target, or has duplicates",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -2310,7 +2760,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Un-deletes a soft-deleted Company.",
+                "description": "Un-deletes a soft-deleted Company. Writes a company/restored audit entry.",
                 "produces": [
                     "application/json"
                 ],
@@ -2426,7 +2876,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a Contact. company_id and name are required; role_title must match an active configured job title (see /admin/job-titles).",
+                "description": "Creates a Contact. company_id and name are required; role_title must match an active configured job title (see /admin/job-titles). A contact whose email (case-insensitive) or phone (digits only, +66 read as 0) matches an existing contact, in any company, is a 409 unless allow_duplicate=true.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2446,6 +2896,12 @@
                         "schema": {
                             "$ref": "#/definitions/internal_handlers.contactForm"
                         }
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "true creates the contact even if another has the same email or phone",
+                        "name": "allow_duplicate",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -2457,6 +2913,13 @@
                     },
                     "400": {
                         "description": "Invalid body, missing fields, or invalid role_title",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Another contact has the same email or phone (error.fields, error.duplicate_of)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -2504,7 +2967,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Uploads a CSV file (header row skipped, up to 10MB / 5000 data rows) with columns company_id,name,email,phone,role_title — company_id and name are required per row. Dedupes by email per FR-CRM-014: an existing Contact with the same email is updated, otherwise a new one is created. Same all-or-nothing transaction treatment as ImportCompanies; per-row failures are collected into the result rather than aborting the whole import.",
+                "description": "Uploads a CSV file (header row skipped, up to 10MB / 5000 data rows) with columns company_id,name,email,phone,role_title — company_id and name are required per row, and every company_id must be an existing Company (422 before anything is imported). Dedupes by email per FR-CRM-014, case-insensitively and within the row's own Company: a match there is updated (name always; phone/role_title only when the CSV cell is non-empty), otherwise a new Contact is created — a Contact is never moved to another Company. Same savepoint-per-row treatment as ImportCompanies.",
                 "consumes": [
                     "multipart/form-data"
                 ],
@@ -2532,7 +2995,14 @@
                         }
                     },
                     "400": {
-                        "description": "Missing/invalid file, unsupported format (non-.csv), row limit exceeded, or invalid company_id",
+                        "description": "Missing/invalid file, unsupported format (non-.csv), or row limit exceeded",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "A company_id that doesn't name an existing Company",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -2686,7 +3156,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Soft-delete (AuditedModel) — recoverable via Restore/Trash below. Never a hard delete, since Deal/Activity/Task records reference contact_id.",
+                "description": "Soft-delete (AuditedModel) — recoverable via Restore/Trash below. Never a hard delete, since Deal/Activity/Task records reference contact_id. Admin/Sales Manager only. Writes a contact/deleted audit entry.",
                 "tags": [
                     "contacts"
                 ],
@@ -2704,8 +3174,89 @@
                     "204": {
                         "description": "No Content"
                     },
+                    "403": {
+                        "description": "Not Admin/Sales Manager",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
                     "404": {
                         "description": "Contact not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/contacts/{id}/merge": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Moves everything that references each source Contact (deals, contact activities/tasks, lead referrals) to the target :id, fills the target's empty fields from the sources (in source_ids order), unions tags, then soft-deletes the sources. Sources may belong to other Companies; the target keeps its company_id. A source email/phone that differs from the target's is not copied and is listed in conflicts. Writes a contact/merged audit row on the target and contact/merged_into on each source. One transaction.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "contacts"
+                ],
+                "summary": "Merge duplicate contacts into this one (Admin/Sales Manager only)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Target Contact ID (survives)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "1-20 source Contact ids",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.mergeForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.mergeResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid body",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Not Admin/Sales Manager",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Target or a source doesn't exist or is deleted (message lists the ids)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "source_ids empty, over 20, contains the target, or has duplicates",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -2721,7 +3272,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Un-deletes a soft-deleted Contact.",
+                "description": "Un-deletes a soft-deleted Contact. Writes a contact/restored audit entry.",
                 "produces": [
                     "application/json"
                 ],
@@ -2769,7 +3320,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Updates status and/or quote_id. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §8.1.",
+                "description": "Updates status, quote_id and/or end_date (YYYY-MM-DD; omitted keeps it, null clears it — drives the contract_expiry notification rule). status signed needs an uploaded signed document and signed_date (422 otherwise). A contract whose stored status is signed is locked: any change is a 409 (resending the stored values is not). Status changes are audited. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §8.1.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2821,6 +3372,20 @@
                     },
                     "404": {
                         "description": "Contract not found, or deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Contract is signed (locked)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Invalid field, or status signed without a signed document",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -2877,7 +3442,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Uploads the signed document, sets signed_file_url/signed_date, and sets status to Signed. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may upload. api-system-spec.md §8.1.",
+                "description": "Uploads the signed document, sets signed_file_url/signed_date, and sets status to Signed (audited). A contract already signed is a 409 — its signed document isn't replaced; add further files as Attachments. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may upload. api-system-spec.md §8.1.",
                 "consumes": [
                     "multipart/form-data"
                 ],
@@ -2932,6 +3497,13 @@
                             "additionalProperties": true
                         }
                     },
+                    "409": {
+                        "description": "Contract is already signed",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
                     "413": {
                         "description": "File exceeds 10MB limit",
                         "schema": {
@@ -2949,7 +3521,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Updates a Customer-Product record — the Company/Product link created via AddForCompany (or auto-created when a Deal is won, FR-CRM-064). company_id/product_id are immutable after creation; only status (and end_date, e.g. when moving to Churned) can change. Writes an audit-log entry when status changes (FR-CRM-082).",
+                "description": "Updates a Customer-Product record — the Company/Product link created via AddForCompany (or auto-created when a Deal is won, FR-CRM-064). company_id/product_id are immutable after creation; status, end_date (e.g. when moving to Churned; RFC 3339 timestamp stored as that instant, or YYYY-MM-DD = server-local midnight; null clears; anything else is a 422) and the renewal fields (renewal_date, billing_cycle, price — partial merge: only keys present change, null clears) can change. Writes an audit-log entry when status changes (FR-CRM-082).",
                 "consumes": [
                     "application/json"
                 ],
@@ -2994,6 +3566,13 @@
                     },
                     "404": {
                         "description": "Customer product not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Invalid end_date, renewal_date, billing_cycle or price",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -3045,7 +3624,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Aggregate sales metrics (pipeline value, win rate, trends, breakdowns, upsell opportunities). api-system-spec.md §9.",
+                "description": "Aggregate sales metrics (pipeline value, win rate, trends, breakdowns, upsell opportunities). api-system-spec.md §9.\npipeline_coverage_ratio = quarter_pipeline_value (open Deals expected to close in the current server-local quarter) / quarterly_sales_target.\noverdue_pipeline_value/overdue_pipeline_count: open Deals whose expected_close_date is before today. undated_pipeline_value/undated_pipeline_count: open Deals with no readable expected_close_date (not in coverage or forecast_trend).\nforecast_trend points are {label, value, overdue}: overdue open Deals are counted in the current month's value and also reported in its overdue (0 on later months).\nThe close-date figures (coverage, overdue, undated, forecast_trend) apply business_unit/business_unit_item/channel/assigned_to/company_tag but not the date window.",
                 "produces": [
                     "application/json"
                 ],
@@ -3056,13 +3635,13 @@
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "ISO date lower bound (YYYY-MM-DD), mutually exclusive with period",
+                        "description": "ISO date lower bound (YYYY-MM-DD, from server-local midnight), mutually exclusive with period",
                         "name": "date_from",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "ISO date upper bound (YYYY-MM-DD)",
+                        "description": "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day)",
                         "name": "date_to",
                         "in": "query"
                     },
@@ -3117,8 +3696,8 @@
                             "additionalProperties": true
                         }
                     },
-                    "400": {
-                        "description": "Invalid date_from/date_to",
+                    "422": {
+                        "description": "Malformed date_from/date_to, or date_to before date_from",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -3250,6 +3829,13 @@
                             "type": "object",
                             "additionalProperties": true
                         }
+                    },
+                    "422": {
+                        "description": "assigned_to is not an active sales-role user",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
                     }
                 }
             }
@@ -3261,7 +3847,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Soft-deletes every listed Deal (same as Delete), in one transaction, writing a bulk_archived audit entry per row.",
+                "description": "Soft-deletes every listed Deal (same as Delete), in one transaction, writing a bulk_archived audit entry per row. A Won Deal with money attached (a non-deleted Payment, any installment, or a signed Contract) is skipped and reported, not archived — delete it singly with a reason. Returns 200 { archived: id[], skipped: [{ id, reason: \"won_deal_with_money\" }] }.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3284,8 +3870,11 @@
                     }
                 ],
                 "responses": {
-                    "204": {
-                        "description": "No Content"
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.bulkArchiveResult"
+                        }
                     },
                     "400": {
                         "description": "Invalid request body, or ids is required",
@@ -3491,7 +4080,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a Contract on a Deal, optionally linked to a Quote (quote_id) for PDF line items. status defaults to draft. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §8.1.",
+                "description": "Creates a Contract on a Deal, optionally linked to a Quote (quote_id) for PDF line items, with an optional end_date (YYYY-MM-DD). status defaults to draft; signed is a 422 (a contract becomes signed by uploading the signed document). Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §8.1.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3547,6 +4136,13 @@
                             "type": "object",
                             "additionalProperties": true
                         }
+                    },
+                    "422": {
+                        "description": "Invalid status/quote_id/end_date, or status signed",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
                     }
                 }
             }
@@ -3556,16 +4152,19 @@
                 "security": [
                     {
                         "BearerAuth": []
+                    },
+                    {
+                        "ApiKeyAuth": []
                     }
                 ],
-                "description": "Returns each planned installment with its derived paid/partial/overdue/upcoming status (utils.ComputeInstallmentStatuses). Backs the Deal detail page's Payment Schedule section. api-system-spec.md §7.5a.",
+                "description": "Returns each planned installment with its derived paid/partial/overdue/upcoming status (utils.ComputeInstallmentStatusesFromPayments), ordered by due_date. Backs the Deal detail page's Payment Schedule section, and is also served read-only to API keys at /open/deals/{dealId}/payment-installments. Sales Rep/Marketing callers only see Deals assigned to them or unassigned; Admin/Sales Manager see every Deal. api-system-spec.md §7.5a.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "payment-installments"
                 ],
-                "summary": "List a deal's payment installment schedule (Admin/Sales Rep/Sales Manager)",
+                "summary": "List a deal's payment installment schedule (Admin/Sales Rep/Sales Manager/Marketing)",
                 "parameters": [
                     {
                         "type": "integer",
@@ -3583,6 +4182,20 @@
                             "items": {
                                 "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_utils.InstallmentStatus"
                             }
+                        }
+                    },
+                    "403": {
+                        "description": "Not authorized to read this deal's records",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     }
                 }
@@ -3660,7 +4273,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates every installment in one batch insert + one summary audit-log entry, instead of the caller looping N calls to Create — mirrors CampaignHandler.BulkCreateTasks's shape. The frontend computes the actual split (equal amounts, spaced dates); this endpoint only validates and inserts, same permissive per-row rules as the single-row Create. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create.",
+                "description": "Creates every installment in one batch insert + one summary audit-log entry, instead of the caller looping N calls to Create — mirrors CampaignHandler.BulkCreateTasks's shape. The frontend computes the actual split (equal amounts, spaced dates); this endpoint only validates and inserts, same per-row rules as the single-row Create. The whole batch is rejected (422, fields.installments [\"exceeds_receivable\"]) when the Deal's existing installments plus this batch would total more than its receivable — the Outstanding Balance rule: latest Accepted Quote's taxable amount + VAT when priced, else the Deal value; skipped when that receivable is 0. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3719,6 +4332,13 @@
                             "type": "object",
                             "additionalProperties": true
                         }
+                    },
+                    "422": {
+                        "description": "Empty or invalid installments, or the schedule would exceed the receivable (exceeds_receivable)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
                     }
                 }
             }
@@ -3730,7 +4350,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns installments for a Deal, plus a computed total_paid. Backs the Deal detail page's Payments tab. api-system-spec.md §7.5.",
+                "description": "Returns a Deal's recorded Payments (newest paid_at first; deleted ones excluded) plus totals: total_paid = Σ amount (cash received, unchanged meaning), total_wht = Σ wht_amount, total_settled = total_paid + total_wht (what the receivable is reduced by). Backs the Deal detail page's Payments tab. api-system-spec.md §7.5.",
                 "produces": [
                     "application/json"
                 ],
@@ -3749,7 +4369,7 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "{ payments: []models.Payment, total_paid: number }",
+                        "description": "{ payments: []models.Payment, total_paid: number, total_wht: number, total_settled: number }",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -3763,7 +4383,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a Payment installment on a Deal. amount must be \u003e 0; method must be a valid PaymentMethod; paid_at defaults to now if omitted. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §7.5.",
+                "description": "Records money received on a Deal. amount (cash received, net of WHT) must be \u003e 0; method must be a valid PaymentMethod; paid_at defaults to now. Optional: wht_amount (\u003e= 0, default 0 — withholding tax the customer deducted; counts as settled), wht_certificate_received (default false — the 50 ทวิ certificate), document_number (FlowAccount receipt/tax-invoice number, max 64 chars, blank = null), installment_id (a PaymentInstallment of the same Deal; that installment is settled first). paid_at may not be after today (server-local, 422). A Lost Deal takes no payments (422). A non-empty document_number already on another non-deleted Payment is 409. If the Deal's cash + WHT would then exceed its receivable (latest Accepted Quote's taxable amount + VAT when it has priced items, else the Deal value) by more than 0.005 it's a 422 on amount (\"exceeds_receivable\") unless allow_overpayment: true. Writes a payment created audit entry. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §7.5.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3800,7 +4420,7 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid request body, amount is required, or method is invalid",
+                        "description": "Invalid request body",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -3815,6 +4435,20 @@
                     },
                     "404": {
                         "description": "Deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "document_number already used by another payment",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "amount/method/paid_at/wht_amount/document_number/installment_id invalid, deal is Lost, or the payment exceeds the receivable",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -3865,7 +4499,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a line-item Quote on a Deal. number is always server-generated, not client-settable. Line items carrying a product_id have their description/price snapshotted from the current Product. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §7.4.",
+                "description": "Creates a line-item Quote on a Deal. number is always server-generated, not client-settable. Line items carrying a product_id have their description/price snapshotted from the current Product. Created as accepted with priced items, the Deal's value becomes the quote's pre-VAT taxable amount (rounded to satang) and value_quote_id points at it (deal audit value_synced). Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create. api-system-spec.md §7.4.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3917,6 +4551,20 @@
                     },
                     "404": {
                         "description": "Deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Created as accepted while the deal already has an Accepted quote",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Invalid field (items[i].qty/price/discount_percent, discount_total, wht_rate, issue_date, validity_date)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -4004,7 +4652,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns a single Deal by ID.",
+                "description": "Returns a single Deal by ID, plus the read-only value_quote_number (number of the Accepted quote its value is synced from — value_quote_id — else null).",
                 "produces": [
                     "application/json"
                 ],
@@ -4025,7 +4673,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal"
+                            "$ref": "#/definitions/internal_handlers.dealDetail"
                         }
                     },
                     "404": {
@@ -4043,7 +4691,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Full update of a Deal — same validation as Create. Writes a stage_changed audit log entry when the submitted stage differs from the deal's current one. Only the assigned Sales Rep (or Admin/Sales Manager) may update; a Sales Rep cannot reassign to another rep. api-system-spec.md §7.1.",
+                "description": "Full update of a Deal — same validation as Create. An omitted stage/status keeps the stored value; moving from a Won/Lost stage to an open one sets status open. Moving a Won Deal with money attached (a non-deleted Payment, any installment, or a signed Contract) out of Won is 409 (WON_DEAL_PROTECTED) for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without it), recorded in a won_reversed audit entry. Writes a stage_changed audit log entry when the submitted stage differs from the deal's current one. Only the assigned Sales Rep (or Admin/Sales Manager) may update; a Sales Rep may keep or claim the deal but not reassign it to another rep or unassign it (403). A changed assigned_to must be an active sales-role user (422). value/company_id changes write an updated audit entry and an assigned_to change a reassigned one. While value_quote_id is set (value synced from an Accepted quote), a value different from the stored one is 422 fields.value [\"synced_from_quote\"]; resending the same value is fine. The response adds value_quote_number. api-system-spec.md §7.1.",
                 "consumes": [
                     "application/json"
                 ],
@@ -4070,13 +4718,19 @@
                         "schema": {
                             "$ref": "#/definitions/internal_handlers.dealForm"
                         }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Required from a manager moving a Won Deal with money out of Won (max 500 chars)",
+                        "name": "reason",
+                        "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal"
+                            "$ref": "#/definitions/internal_handlers.dealDetail"
                         }
                     },
                     "400": {
@@ -4087,7 +4741,7 @@
                         }
                     },
                     "403": {
-                        "description": "Not authorized to update this deal, or cannot assign a deal to another sales rep",
+                        "description": "Not authorized to update this deal, or cannot assign a deal to another sales rep or unassign it",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -4095,6 +4749,20 @@
                     },
                     "404": {
                         "description": "Deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Won Deal with money: WON_DEAL_PROTECTED (not a manager) or REASON_REQUIRED",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "assigned_to is not an active sales-role user, or value changed while synced from an Accepted quote (fields.value synced_from_quote)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -4108,7 +4776,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Soft-delete (AuditedModel) — recoverable via Restore/Trash below. Only the assigned Sales Rep (or Admin/Sales Manager) may delete.",
+                "description": "Soft-delete (AuditedModel) — recoverable via Restore/Trash below, and written to the audit log (action deleted). Only the assigned Sales Rep (or Admin/Sales Manager) may delete. A Won Deal with money attached (a non-deleted Payment, any installment, or a signed Contract) is 409 WON_DEAL_PROTECTED for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without it), stored in the audit entry.",
                 "tags": [
                     "deals"
                 ],
@@ -4120,6 +4788,12 @@
                         "name": "id",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Required from a manager deleting a Won Deal with money (max 500 chars)",
+                        "name": "reason",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -4135,6 +4809,13 @@
                     },
                     "404": {
                         "description": "Deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Won Deal with money: WON_DEAL_PROTECTED (not a manager) or REASON_REQUIRED",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -4183,7 +4864,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal"
+                            "$ref": "#/definitions/internal_handlers.dealDetail"
                         }
                     },
                     "400": {
@@ -4199,6 +4880,13 @@
                             "type": "object",
                             "additionalProperties": true
                         }
+                    },
+                    "422": {
+                        "description": "assigned_to is not an active sales-role user",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
                     }
                 }
             }
@@ -4210,7 +4898,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Restores a soft-deleted Deal.",
+                "description": "Restores a soft-deleted Deal, writing a restored audit log entry.",
                 "produces": [
                     "application/json"
                 ],
@@ -4231,7 +4919,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal"
+                            "$ref": "#/definitions/internal_handlers.dealDetail"
                         }
                     },
                     "404": {
@@ -4251,7 +4939,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Dedicated endpoint for the Kanban drag-and-drop quick-move. Sets status to won/lost alongside stage (and re-derives probability) in the same transaction; writes a stage_changed audit log entry per §8.5's explicit minimum scope. Moving into a stage resolved as Won is blocked (422-style validation error) if AppSettings.RequireSignedContractBeforeWon is enabled and the deal has no Contract with status Signed. Only the assigned Sales Rep (or Admin/Sales Manager) may move it.",
+                "description": "Dedicated endpoint for the Kanban drag-and-drop quick-move. Sets status to won/lost alongside stage — or open (clearing lost_reason) on a move into any other stage — and re-derives probability in the same transaction; writes a stage_changed audit log entry per §8.5's explicit minimum scope. Moving into a stage resolved as Won is blocked (422-style validation error) if AppSettings.RequireSignedContractBeforeWon is enabled and the deal has no Contract with status Signed. A move into a Lost stage requires lost_reason (422), unless the Deal is already Lost with one stored. Moving a Won Deal with money attached out of Won is 409 WON_DEAL_PROTECTED for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without it), recorded in a won_reversed audit entry. Only the assigned Sales Rep (or Admin/Sales Manager) may move it.",
                 "consumes": [
                     "application/json"
                 ],
@@ -4278,13 +4966,19 @@
                         "schema": {
                             "$ref": "#/definitions/internal_handlers.dealStageForm"
                         }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Required from a manager moving a Won Deal with money out of Won (max 500 chars)",
+                        "name": "reason",
+                        "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Deal"
+                            "$ref": "#/definitions/internal_handlers.dealDetail"
                         },
                         "headers": {
                             "X-Lane-Rebalanced": {
@@ -4314,8 +5008,15 @@
                             "additionalProperties": true
                         }
                     },
+                    "409": {
+                        "description": "Won Deal with money: WON_DEAL_PROTECTED (not a manager) or REASON_REQUIRED",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
                     "422": {
-                        "description": "position out of range (±1e9)",
+                        "description": "position out of range (±1e9), or lost_reason missing/invalid on a move into Lost",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -4417,7 +5118,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Admin/Sales Rep/Sales Manager only. A Sales Rep cannot assign the new lead to another rep. If assigned_to is omitted, the lead is auto-assigned round-robin among active Sales Reps by current open-record load.",
+                "description": "Admin/Sales Rep/Sales Manager only. A Sales Rep cannot assign the new lead to another rep; assigned_to must be an active user in a sales role. If assigned_to is omitted, the lead is auto-assigned round-robin among active Sales Reps by current open-record load. A lead whose email (case-insensitive) or phone (digits only, +66 read as 0) matches an existing lead is a 409 unless allow_duplicate=true.",
                 "consumes": [
                     "application/json"
                 ],
@@ -4437,6 +5138,12 @@
                         "schema": {
                             "$ref": "#/definitions/internal_handlers.leadForm"
                         }
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "true creates the lead even if another has the same email or phone",
+                        "name": "allow_duplicate",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -4455,6 +5162,20 @@
                     },
                     "403": {
                         "description": "Cannot assign a lead to another sales rep",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Another lead has the same email or phone (error.fields, error.duplicate_of)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "status is not New/Contacted/Qualified/Disqualified, or assigned_to is not an active sales user",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -4672,7 +5393,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Admin/Sales Rep/Sales Manager, and only if the caller owns the lead or has manager-level write access. Reassigning to another rep is likewise restricted. Omitting classification leaves an existing manual \"sql\" override in place rather than letting it be auto-recomputed away.",
+                "description": "Admin/Sales Rep/Sales Manager, and only if the caller owns the lead or has manager-level write access. Reassigning to another rep is likewise restricted. Omitting classification leaves an existing manual \"sql\" override in place rather than letting it be auto-recomputed away; omitting status keeps the stored one.",
                 "consumes": [
                     "application/json"
                 ],
@@ -4728,6 +5449,13 @@
                             "type": "object",
                             "additionalProperties": true
                         }
+                    },
+                    "422": {
+                        "description": "status is not New/Contacted/Qualified/Disqualified, or a changed assigned_to is not an active sales user",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
                     }
                 }
             },
@@ -4779,7 +5507,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Admin/Sales Rep/Sales Manager, and only if the caller owns the lead or has manager-level write access. Converts a Lead into a Deal, reusing or creating the linked Company/Contact as needed — FR-CRM-004, api-system-spec.md §3. Fails if the lead was already converted.",
+                "description": "Admin/Sales Rep/Sales Manager, and only if the caller owns the lead or has manager-level write access. Converts a Lead into a Deal, reusing or creating the linked Company/Contact as needed — FR-CRM-004, api-system-spec.md §3. The new deal gets Deal Create's validation: value \u003e= 0, a valid expected_close_date, an active stage/channel, a valid business_unit, lost_reason on a Lost stage, the signed-contract gate on a Won stage, and status following the stage's Won/Lost flags. A Sales Rep cannot assign the deal to another rep. An explicit company_id/contact_id must exist, and the contact must belong to that company. Without contact_id, a Contact in the company with the same email (case-insensitive) is reused. A created Company is named company_name, else the Lead's soft-deleted Company's name, else the Lead's name. Fails if the lead was already converted, including by a concurrent request.",
                 "consumes": [
                     "application/json"
                 ],
@@ -4799,7 +5527,7 @@
                         "required": true
                     },
                     {
-                        "description": "Optional company_id/contact_id overrides and the new deal's fields",
+                        "description": "Optional company_id/company_name/contact_id overrides and the new deal's fields",
                         "name": "body",
                         "in": "body",
                         "required": true,
@@ -4817,21 +5545,21 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid body, or stage/channel not a valid active value",
+                        "description": "Invalid body",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
                         }
                     },
                     "403": {
-                        "description": "Not authorized to convert this lead",
+                        "description": "Not authorized to convert this lead, or cannot assign a deal to another sales rep",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
                         }
                     },
                     "404": {
-                        "description": "Lead not found",
+                        "description": "Lead, company or contact not found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -4839,6 +5567,13 @@
                     },
                     "409": {
                         "description": "Lead has already been converted",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Validation error (value, expected_close_date, stage/channel/business_unit, lost_reason, signed contract required, contact not in company)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -5001,7 +5736,61 @@
                         }
                     },
                     "422": {
-                        "description": "position out of range (±1e9)",
+                        "description": "status is not New/Contacted/Qualified/Disqualified, or position out of range (±1e9)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/open/deals/{dealId}/payment-installments": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    },
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "Returns each planned installment with its derived paid/partial/overdue/upcoming status (utils.ComputeInstallmentStatusesFromPayments), ordered by due_date. Backs the Deal detail page's Payment Schedule section, and is also served read-only to API keys at /open/deals/{dealId}/payment-installments. Sales Rep/Marketing callers only see Deals assigned to them or unassigned; Admin/Sales Manager see every Deal. api-system-spec.md §7.5a.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payment-installments"
+                ],
+                "summary": "List a deal's payment installment schedule (Admin/Sales Rep/Sales Manager/Marketing)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Deal ID",
+                        "name": "dealId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_utils.InstallmentStatus"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Not authorized to read this deal's records",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Deal not found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -5102,7 +5891,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Same validation as Create. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may edit.",
+                "description": "Same validation as Create. Writes a payment_installment updated audit entry (before/after) when something changed. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may edit.",
                 "consumes": [
                     "application/json"
                 ],
@@ -5160,7 +5949,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Hard delete. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.",
+                "description": "Hard delete, with a payment_installment deleted audit entry holding the row as it was. Payments linked to it (installment_id, deleted ones included) are unlinked, not deleted — their money rejoins the Deal's waterfall. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.",
                 "tags": [
                     "payment-installments"
                 ],
@@ -5195,14 +5984,164 @@
                 }
             }
         },
+        "/payments/export": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "CSV download of every non-deleted Payment on a non-deleted Deal, oldest paid_at first, for reconciling against FlowAccount. Columns: Paid At (YYYY-MM-DD, server-local), Document Number, Deal ID, Deal, Company, Amount (cash), WHT Amount, Total (amount + WHT), Method, Installment ID, Installment Due Date, Note, Created By. Filename payments-YYYYMMDD.csv (today, server-local). Admin/Sales Manager only. api-system-spec.md §7.5.",
+                "produces": [
+                    "text/csv"
+                ],
+                "tags": [
+                    "export"
+                ],
+                "summary": "Export payments as CSV (Admin/Sales Manager only)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "paid_at on or after this day (YYYY-MM-DD, server-local)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "paid_at on or before this day (YYYY-MM-DD, server-local, inclusive)",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Only this Deal's payments",
+                        "name": "deal_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Only payments on this Company's Deals",
+                        "name": "company_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "cash, transfer, card or other",
+                        "name": "method",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "CSV export",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "403": {
+                        "description": "Not Admin/Sales Manager",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Invalid date_from/date_to (or date_to before date_from), deal_id, company_id or method",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to export data",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/payments/{id}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Partial merge: only fields present in the body change (same validation as Create); installment_id: null unlinks. Typical use is ticking wht_certificate_received once the 50 ทวิ arrives, or adding the FlowAccount document_number later. deal_id is immutable. A changed document_number must be unique among non-deleted payments (409); raising amount/wht_amount past the receivable is a 422 unless allow_overpayment: true. Writes a payment updated audit entry (before/after) when something changed. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may edit.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payments"
+                ],
+                "summary": "Edit a payment (Admin/Sales Rep/Sales Manager)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Payment ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Fields to change",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.paymentForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Payment"
+                        }
+                    },
+                    "403": {
+                        "description": "Not authorized to modify this deal's records",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Payment not found, or deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "document_number already used by another payment",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Validation error, or the payment exceeds the receivable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
             "delete": {
                 "security": [
                     {
                         "BearerAuth": []
                     }
                 ],
-                "description": "Hard delete of a Payment. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.",
+                "description": "Soft delete of a Payment (deleted_at/deleted_by set; it drops out of every total, list and report) with a payment deleted audit entry holding the row as it was. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.",
                 "tags": [
                     "payments"
                 ],
@@ -5782,7 +6721,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a new Prospect. status defaults to \"New\" if omitted; status \"Converted\" cannot be set directly (only via POST /prospects/:id/convert). source must be an active Prospect source and status an active Prospect stage. A Sales Rep may only assign to themselves.",
+                "description": "Creates a new Prospect. status defaults to \"New\" if omitted; status \"Converted\" cannot be set directly (only via POST /prospects/:id/convert). source must be an active Prospect source and status an active Prospect stage. A Sales Rep may only assign to themselves; assigned_to must be an active user in a sales role. A prospect whose email (case-insensitive) or phone (digits only, +66 read as 0) matches an existing prospect is a 409 unless allow_duplicate=true.",
                 "consumes": [
                     "application/json"
                 ],
@@ -5802,6 +6741,12 @@
                         "schema": {
                             "$ref": "#/definitions/internal_handlers.prospectForm"
                         }
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "true creates the prospect even if another has the same email or phone",
+                        "name": "allow_duplicate",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -5820,6 +6765,20 @@
                     },
                     "403": {
                         "description": "Cannot assign a prospect to another team member",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Another prospect has the same email or phone (error.fields, error.duplicate_of)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "assigned_to is not an active sales user",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -6029,7 +6988,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Updates a Prospect, including status transitions. status \"Converted\" cannot be set directly (only via POST /prospects/:id/convert), except re-submitting an already-Converted record's unchanged status. source must be an active Prospect source and status an active Prospect stage. A Sales Rep may only act on/assign to their own prospects.",
+                "description": "Updates a Prospect, including status transitions. status \"Converted\" cannot be set directly (only via POST /prospects/:id/convert), except re-submitting an already-Converted record's unchanged status. source must be an active Prospect source and status an active Prospect stage; omitting status keeps the stored one. A Sales Rep may only act on/assign to their own prospects.",
                 "consumes": [
                     "application/json"
                 ],
@@ -6085,6 +7044,13 @@
                             "type": "object",
                             "additionalProperties": true
                         }
+                    },
+                    "422": {
+                        "description": "A changed assigned_to is not an active sales user",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
                     }
                 }
             },
@@ -6136,7 +7102,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Converts a Prospect into a Lead (and a Company/Contact if not supplied or not already linked) in one transaction: resolve-or-create Company, resolve-or-create Contact, create the Lead with a back-reference to the source Prospect, carry over Attachments, then mark the Prospect \"Converted\" and stamp its converted_lead_id. Fails with 409 if already converted. Source/tags are carried over as-is even if they aren't among the Lead's own configured options.",
+                "description": "Converts a Prospect into a Lead (and a Company/Contact if not supplied or not already linked) in one transaction: resolve-or-create Company, resolve-or-create Contact, create the Lead with a back-reference to the source Prospect, carry over Attachments, then mark the Prospect \"Converted\" and stamp its converted_lead_id. Fails with 409 if already converted, including by a concurrent request. An explicit company_id/contact_id must exist (404), and the contact must belong to that company (422). Without contact_id, a Contact in the company with the same email (case-insensitive) is reused. A created Company is named company_name, else the Prospect's soft-deleted Company's name, else the Prospect's name. Source/tags are carried over as-is even if they aren't among the Lead's own configured options.",
                 "consumes": [
                     "application/json"
                 ],
@@ -6156,7 +7122,7 @@
                         "required": true
                     },
                     {
-                        "description": "Optional company_id/contact_id to link, and lead.assigned_to",
+                        "description": "Optional company_id/company_name/contact_id, and lead.assigned_to",
                         "name": "body",
                         "in": "body",
                         "required": true,
@@ -6188,7 +7154,7 @@
                         }
                     },
                     "404": {
-                        "description": "Prospect not found",
+                        "description": "Prospect, company or contact not found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -6196,6 +7162,13 @@
                     },
                     "409": {
                         "description": "Prospect has already been converted",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "contact_id does not belong to the company",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -6430,14 +7403,113 @@
                 }
             }
         },
+        "/quotes": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Paginated quotes, newest first, for the global search bar. search matches number, reference_number or the parent Deal's title (case-insensitive substring). Quotes whose Deal is soft-deleted are excluded. Each row's status reflects EffectiveStatus (may report \"expired\") and carries deal_title. Row scope matches GET /deals: every sales-pipeline role sees every Deal's quotes. Production: 403.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "quotes"
+                ],
+                "summary": "List / search quotes across all deals (Admin/Sales Rep/Sales Manager/Marketing)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Match quote number, reference_number or Deal title",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page (default 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Rows per page (default 20, max 200)",
+                        "name": "per_page",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Paginated quote list (data, page, per_page, total, total_page, next, prev); each row is a Quote plus deal_title",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Production role",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/quotes/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "A single Quote with its effective status (may report \"expired\") and the parent Deal's deal_title. Read-only, no CanWrite ownership check (same as List/Export-PDF). Backs the full-page Quote editor. Production: 403.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "quotes"
+                ],
+                "summary": "Get a quote (Admin/Sales Rep/Sales Manager/Marketing)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Quote ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.quoteWithDeal"
+                        }
+                    },
+                    "403": {
+                        "description": "Production role",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Quote not found, or its Deal is deleted",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
             "put": {
                 "security": [
                     {
                         "BearerAuth": []
                     }
                 ],
-                "description": "Updates status/items and every other Quote field (number excepted — immutable after Create). Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §7.4.",
+                "description": "Updates status/items and every other Quote field (number excepted — immutable after Create). Status moves follow models.CanTransitionQuoteStatus (draft→sent/accepted/rejected, sent→draft/accepted/rejected, accepted→rejected; an expired Sent quote can't be accepted), else 409. An Accepted/Rejected quote is read-only: changing any other field is a 409 (resending stored values is not). One Accepted quote per Deal (409 naming the existing one). Accepting a quote with priced items sets the Deal's value to its pre-VAT taxable amount (rounded to satang) and the Deal's value_quote_id to it (deal audit value_synced); moving that quote to rejected clears value_quote_id, keeping the value (value_unsynced). Status changes are audited. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may update. api-system-spec.md §7.4.",
                 "consumes": [
                     "application/json"
                 ],
@@ -6474,7 +7546,7 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid request body, or validation error (status, price_type, credit_days, wht_rate, discount_total)",
+                        "description": "Invalid request body",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -6493,6 +7565,20 @@
                             "type": "object",
                             "additionalProperties": true
                         }
+                    },
+                    "409": {
+                        "description": "Status transition not allowed, quote is read-only, or the deal already has an Accepted quote",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Invalid field (items[i].qty/price/discount_percent, discount_total, wht_rate, issue_date, validity_date)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
                     }
                 }
             },
@@ -6502,7 +7588,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Hard delete of a Quote. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.",
+                "description": "Hard delete of a Draft Quote; any other status is a 409. Only the parent Deal's assigned Sales Rep (or Admin/Sales Manager) may delete.",
                 "tags": [
                     "quotes"
                 ],
@@ -6519,6 +7605,61 @@
                 "responses": {
                     "204": {
                         "description": "No Content"
+                    },
+                    "403": {
+                        "description": "Not authorized to modify this deal's records",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Quote not found, or deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Quote is not a draft",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/quotes/{id}/duplicate": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Creates a new Draft Quote on the same Deal, copying every editable field (items, scope_of_work, reference_number, credit_days, price_type, vat_enabled, wht_enabled, wht_rate, discount_total, notes, internal_notes). The copy gets a new server-generated number, issue_date = today, and validity_date = today + the original's issue→validity gap (else + credit_days, else null). Never copied: status (always draft), uploaded file fields, extraction_status/warnings. The copy gets revision_of_id = the original chain's root quote and revision_no = the chain's highest + 1; the original is not changed. Same permission as creating a quote on that Deal.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "quotes"
+                ],
+                "summary": "Duplicate a quote as a new Draft (Admin/Sales Rep/Sales Manager/Marketing)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Quote ID to copy",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Quote"
+                        }
                     },
                     "403": {
                         "description": "Not authorized to modify this deal's records",
@@ -6812,13 +7953,13 @@
                     },
                     {
                         "type": "string",
-                        "description": "ISO date lower bound (YYYY-MM-DD), filters on created_at",
+                        "description": "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on created_at",
                         "name": "date_from",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "ISO date upper bound (YYYY-MM-DD), filters on created_at",
+                        "description": "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on created_at",
                         "name": "date_to",
                         "in": "query"
                     }
@@ -6826,6 +7967,13 @@
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Malformed date_from/date_to, or date_to before date_from",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -6865,13 +8013,13 @@
                     },
                     {
                         "type": "string",
-                        "description": "ISO date lower bound (YYYY-MM-DD), filters on created_at",
+                        "description": "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on created_at",
                         "name": "date_from",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "ISO date upper bound (YYYY-MM-DD), filters on created_at",
+                        "description": "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on created_at",
                         "name": "date_to",
                         "in": "query"
                     }
@@ -6881,6 +8029,13 @@
                         "description": "CSV export",
                         "schema": {
                             "type": "file"
+                        }
+                    },
+                    "422": {
+                        "description": "Malformed date_from/date_to, or date_to before date_from",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     },
                     "500": {
@@ -6900,7 +8055,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Won Deals whose recorded Payments sum to less than the Deal value, sorted by outstanding amount descending. FR-CRM-095. Admin/Sales Manager only.",
+                "description": "Won Deals with money still owed, sorted by outstanding_amount descending. receivable_amount = latest Accepted Quote's taxable amount + VAT when it has priced line items (receivable_source \"quote\"), else the Deal value (\"deal_value\") — including an Accepted uploaded PDF whose extraction found no items; outstanding_amount = receivable_amount − paid_amount − wht_amount. Aging: oldest_overdue_due_date, days_overdue, aging_bucket (current|1_30|31_60|61_90|90_plus) from the oldest unpaid overdue installment; legacy aging (overdue|upcoming|none) kept. FR-CRM-095. Admin/Sales Manager only.",
                 "produces": [
                     "application/json"
                 ],
@@ -7091,13 +8246,13 @@
                     },
                     {
                         "type": "string",
-                        "description": "ISO date lower bound (YYYY-MM-DD), filters on created_at",
+                        "description": "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on created_at",
                         "name": "date_from",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "ISO date upper bound (YYYY-MM-DD), filters on created_at",
+                        "description": "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on created_at",
                         "name": "date_to",
                         "in": "query"
                     }
@@ -7105,6 +8260,13 @@
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Malformed date_from/date_to, or date_to before date_from",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -7144,13 +8306,13 @@
                     },
                     {
                         "type": "string",
-                        "description": "ISO date lower bound (YYYY-MM-DD), filters on created_at",
+                        "description": "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on created_at",
                         "name": "date_from",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "ISO date upper bound (YYYY-MM-DD), filters on created_at",
+                        "description": "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on created_at",
                         "name": "date_to",
                         "in": "query"
                     }
@@ -7160,6 +8322,13 @@
                         "description": "CSV export",
                         "schema": {
                             "type": "file"
+                        }
+                    },
+                    "422": {
+                        "description": "Malformed date_from/date_to, or date_to before date_from",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     },
                     "500": {
@@ -7301,13 +8470,13 @@
                     },
                     {
                         "type": "string",
-                        "description": "ISO date lower bound (YYYY-MM-DD), filters on deals.created_at",
+                        "description": "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on deals.created_at",
                         "name": "date_from",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "ISO date upper bound (YYYY-MM-DD), filters on deals.created_at",
+                        "description": "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on deals.created_at",
                         "name": "date_to",
                         "in": "query"
                     }
@@ -7320,8 +8489,136 @@
                             "additionalProperties": true
                         }
                     },
+                    "422": {
+                        "description": "Malformed date_from/date_to, or date_to before date_from",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
                     "500": {
                         "description": "Failed to compute sales cycle report",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/reports/source-performance": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Per lead source: leads created in the window, how many reached Qualified, how many Won Deals they produced so far and their value, and win_rate = deals_won / leads × 100. Lead-originated Deals are attributed via the Lead (converted_deal_id / deals.lead_id), not deals.channel; Won Deals with no Lead, created in the window, are reported per deals.channel in direct_deals_won/direct_won_value. Dates are YYYY-MM-DD, both inclusive (from/to accepted as aliases); malformed or reversed → 422. FR-CRM-005. Admin/Sales Manager only.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "reports"
+                ],
+                "summary": "Source performance report (Admin/Sales Manager only)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Inclusive lower bound (YYYY-MM-DD) on Lead created_at (direct Deals: Deal created_at)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Inclusive upper bound (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by assigned user ID (Lead's, or the direct Deal's)",
+                        "name": "assigned_to",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/internal_handlers.sourcePerformanceRow"
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Malformed or reversed date range",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to compute source performance",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/reports/source-performance/export": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "CSV download of GET /reports/source-performance, same params. Admin/Sales Manager only.",
+                "produces": [
+                    "text/csv"
+                ],
+                "tags": [
+                    "reports"
+                ],
+                "summary": "Export source performance report as CSV (Admin/Sales Manager only)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Inclusive lower bound (YYYY-MM-DD)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Inclusive upper bound (YYYY-MM-DD)",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by assigned user ID",
+                        "name": "assigned_to",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "CSV export",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "422": {
+                        "description": "Malformed or reversed date range",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to export source performance",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -7459,13 +8756,13 @@
                     },
                     {
                         "type": "string",
-                        "description": "ISO date lower bound (YYYY-MM-DD), filters on the Lead's created_at",
+                        "description": "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on the Lead's created_at",
                         "name": "date_from",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "ISO date upper bound (YYYY-MM-DD), filters on the Lead's created_at",
+                        "description": "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on the Lead's created_at",
                         "name": "date_to",
                         "in": "query"
                     }
@@ -7473,6 +8770,13 @@
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Malformed date_from/date_to, or date_to before date_from",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -7512,13 +8816,13 @@
                     },
                     {
                         "type": "string",
-                        "description": "ISO date lower bound (YYYY-MM-DD)",
+                        "description": "ISO date lower bound (YYYY-MM-DD, from server-local midnight)",
                         "name": "date_from",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "ISO date upper bound (YYYY-MM-DD)",
+                        "description": "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day)",
                         "name": "date_to",
                         "in": "query"
                     }
@@ -7528,6 +8832,13 @@
                         "description": "CSV export",
                         "schema": {
                             "type": "file"
+                        }
+                    },
+                    "422": {
+                        "description": "Malformed date_from/date_to, or date_to before date_from",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     },
                     "500": {
@@ -7564,13 +8875,13 @@
                     },
                     {
                         "type": "string",
-                        "description": "ISO date lower bound (YYYY-MM-DD), filters on deals.created_at",
+                        "description": "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on when the Deal closed (won_at for won, stage_entered_at for lost)",
                         "name": "date_from",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "ISO date upper bound (YYYY-MM-DD), filters on deals.created_at",
+                        "description": "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on when the Deal closed",
                         "name": "date_to",
                         "in": "query"
                     },
@@ -7584,6 +8895,13 @@
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Malformed date_from/date_to, or date_to before date_from",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -7623,13 +8941,13 @@
                     },
                     {
                         "type": "string",
-                        "description": "ISO date lower bound (YYYY-MM-DD), filters on deals.created_at",
+                        "description": "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on deals.created_at",
                         "name": "date_from",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "ISO date upper bound (YYYY-MM-DD), filters on deals.created_at",
+                        "description": "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on deals.created_at",
                         "name": "date_to",
                         "in": "query"
                     },
@@ -7645,6 +8963,13 @@
                         "description": "CSV export",
                         "schema": {
                             "type": "file"
+                        }
+                    },
+                    "422": {
+                        "description": "Malformed date_from/date_to, or date_to before date_from",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     },
                     "500": {
@@ -7961,7 +9286,14 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid body or missing required fields",
+                        "description": "Invalid body",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Missing first_name/email, email not on the company domain or already in use, or role not one of Admin/Sales Rep/Sales Manager/Production/Marketing",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -8020,7 +9352,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Sets is_active false for every listed user in one transaction (same effect as Delete's is_active flip, without the soft-delete), writing a bulk_deactivated audit entry per row.",
+                "description": "Sets is_active false for every listed user in one transaction (same effect as Delete's is_active flip, without the soft-delete), writing a bulk_deactivated audit entry per row. Revokes every deactivated user's existing sessions, so re-activating them later does not revive old tokens. The caller cannot be in ids (422) and the last active Admin cannot be deactivated (409). Optional reassign_to (an active sales-role user, not in ids) moves every listed user's open Deals/Leads/Prospects/pending Tasks to that user in the same transaction. Returns open_records per listed user (what they still own) and reassigned (what moved, per user).",
                 "consumes": [
                     "application/json"
                 ],
@@ -8033,21 +9365,38 @@
                 "summary": "Bulk deactivate users (Admin only)",
                 "parameters": [
                     {
-                        "description": "User IDs",
+                        "description": "User IDs, plus optional reassign_to",
                         "name": "body",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.bulkUserIDsForm"
+                            "$ref": "#/definitions/internal_handlers.bulkDeactivateUsersForm"
                         }
                     }
                 ],
                 "responses": {
-                    "204": {
-                        "description": "No Content"
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.bulkDeactivateResponse"
+                        }
                     },
                     "400": {
                         "description": "Invalid request body, or ids is required",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Would deactivate the last active Admin",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "ids includes the caller, or an invalid reassign_to",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -8128,7 +9477,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Admin only. Full update; email must be on the allowed company domain. Password is only changed if provided (forces must_change_password true). The response never includes password_hash (excluded via json:\"-\").",
+                "description": "Admin only. Full update; email must be on the allowed company domain and role one of the known roles. Password is only changed if provided (forces must_change_password true). Changing role, resetting the password, or deactivating signs the user out of every existing session (their tokens stop working immediately). The caller cannot change their own role or deactivate themselves (422), and the last active Admin cannot be demoted or deactivated (409). Role and is_active changes write role_changed/activated/deactivated audit entries. When the update deactivates the user or moves them to a role that can't own pipeline records (Production), the response adds open_records (their remaining open Deals/Leads/Prospects/pending Tasks); an optional reassign_to (an active sales-role user) first moves those records to that user in the same transaction, reported in reassigned. The response never includes password_hash (excluded via json:\"-\").",
                 "consumes": [
                     "application/json"
                 ],
@@ -8148,12 +9497,12 @@
                         "required": true
                     },
                     {
-                        "description": "User fields",
+                        "description": "User fields, plus optional reassign_to",
                         "name": "body",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.userForm"
+                            "$ref": "#/definitions/internal_handlers.userUpdateForm"
                         }
                     }
                 ],
@@ -8161,11 +9510,11 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.User"
+                            "$ref": "#/definitions/internal_handlers.userWriteResponse"
                         }
                     },
                     "400": {
-                        "description": "Invalid body or missing required fields",
+                        "description": "Invalid body",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -8173,6 +9522,20 @@
                     },
                     "404": {
                         "description": "User not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Would demote or deactivate the last active Admin",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Missing email, email not on the company domain, role not one of Admin/Sales Rep/Sales Manager/Production/Marketing, changing your own role or deactivating yourself, or an invalid reassign_to",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -8186,7 +9549,13 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Admin only. Soft-delete (deactivates and gorm soft-deletes the row), not a hard delete §1.6. Also invalidates the user's cached auth state.",
+                "description": "Admin only. Soft-delete (deactivates and gorm soft-deletes the row), not a hard delete §1.6. Also invalidates the user's cached auth state. The caller cannot delete themselves (422), nor the last active Admin (409). Optional reassign_to (query ?reassign_to= or JSON body; an active sales-role user) moves the user's open Deals/Leads/Prospects/pending Tasks to that user in the same transaction. Returns 200 with open_records (open records the deleted user still owns) and, with reassign_to, reassigned (what moved).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
                 "tags": [
                     "users"
                 ],
@@ -8198,14 +9567,45 @@
                         "name": "id",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "User to receive the deleted user's open records",
+                        "name": "reassign_to",
+                        "in": "query"
+                    },
+                    {
+                        "description": "Optional reassign_to",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.userDeleteForm"
+                        }
                     }
                 ],
                 "responses": {
-                    "204": {
-                        "description": "No Content"
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.userDeleteResponse"
+                        }
                     },
                     "404": {
                         "description": "User not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Would delete the last active Admin",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Deleting yourself, or an invalid reassign_to",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -8322,6 +9722,103 @@
                 }
             }
         },
+        "github_com_igeargeek_sales-system-api_internal_models.Attachment": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.AttachmentCategory"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "external_url": {
+                    "type": "string"
+                },
+                "file_name": {
+                    "type": "string"
+                },
+                "file_size": {
+                    "type": "integer"
+                },
+                "file_url": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "mime_type": {
+                    "type": "string"
+                },
+                "related_id": {
+                    "type": "integer"
+                },
+                "related_type": {
+                    "description": "Composite index on (related_type, related_id) — every List query filters\non both together (see AttachmentHandler.List), same reasoning as Activity's.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.AttachmentRelatedType"
+                        }
+                    ]
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "uploaded_by": {
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_igeargeek_sales-system-api_internal_models.AttachmentCategory": {
+            "type": "string",
+            "enum": [
+                "Quotation",
+                "Proposal",
+                "Estimation",
+                "Plan",
+                "Support",
+                "Other"
+            ],
+            "x-enum-varnames": [
+                "AttachmentCategoryQuotation",
+                "AttachmentCategoryProposal",
+                "AttachmentCategoryEstimation",
+                "AttachmentCategoryPlan",
+                "AttachmentCategorySupport",
+                "AttachmentCategoryOther"
+            ]
+        },
+        "github_com_igeargeek_sales-system-api_internal_models.AttachmentRelatedType": {
+            "type": "string",
+            "enum": [
+                "lead",
+                "deal",
+                "company",
+                "project",
+                "quote",
+                "prospect"
+            ],
+            "x-enum-varnames": [
+                "AttachmentRelatedLead",
+                "AttachmentRelatedDeal",
+                "AttachmentRelatedCompany",
+                "AttachmentRelatedProject",
+                "AttachmentRelatedQuote",
+                "AttachmentRelatedProspect"
+            ]
+        },
+        "github_com_igeargeek_sales-system-api_internal_models.BillingCycle": {
+            "type": "string",
+            "enum": [
+                "monthly",
+                "yearly",
+                "one_time"
+            ],
+            "x-enum-varnames": [
+                "BillingCycleMonthly",
+                "BillingCycleYearly",
+                "BillingCycleOneTime"
+            ]
+        },
         "github_com_igeargeek_sales-system-api_internal_models.BusinessUnit": {
             "type": "string",
             "enum": [
@@ -8337,6 +9834,10 @@
             "type": "object",
             "properties": {
                 "address": {
+                    "type": "string"
+                },
+                "branch_code": {
+                    "description": "BranchCode/PostalCode are each exactly five digits when set\n(BranchCode \"00000\" = head office). An update that omits either keeps\nthe saved value (validateCompanyForm).",
                     "type": "string"
                 },
                 "created_at": {
@@ -8364,6 +9865,9 @@
                     "type": "string"
                 },
                 "notes": {
+                    "type": "string"
+                },
+                "postal_code": {
                     "type": "string"
                 },
                 "revenue_size": {
@@ -8495,6 +9999,18 @@
                 "deal_id": {
                     "type": "integer"
                 },
+                "effective_status": {
+                    "description": "EffectiveStatus is the read-derived status to display: \"expired\" once a\nSigned contract's EndDate has passed, else Status. Never stored or\naccepted on write — Status stays \"signed\", so the Won gate\n(validateContractSignedBeforeWon, the frontend's useContractGate) keeps\ncounting it, and a client that saves Status back never turns a\nlapsed-but-signed contract into a stored \"expired\" one. Filled by the\nAfterFind/AfterSave hooks below; see EffectiveStatusAt.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.ContractStatus"
+                        }
+                    ]
+                },
+                "end_date": {
+                    "description": "EndDate is when the signed contract's term ends (a calendar date).\nThe contract_expiry NotificationRule warns ThresholdDays ahead, once\nper EndDate value. Optional; nil never fires.",
+                    "type": "string"
+                },
                 "id": {
                     "type": "integer"
                 },
@@ -8533,6 +10049,14 @@
         "github_com_igeargeek_sales-system-api_internal_models.CustomerProduct": {
             "type": "object",
             "properties": {
+                "billing_cycle": {
+                    "description": "BillingCycle/Price describe what the renewal is worth — informational\n(and shown in the renewal Task), not used to generate any invoice:\ninvoices are issued in FlowAccount, charged via a Contract.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.BillingCycle"
+                        }
+                    ]
+                },
                 "company_id": {
                     "type": "integer"
                 },
@@ -8554,8 +10078,15 @@
                 "id": {
                     "type": "integer"
                 },
+                "price": {
+                    "type": "number"
+                },
                 "product_id": {
                     "type": "integer"
+                },
+                "renewal_date": {
+                    "description": "RenewalDate is the next date this subscription renews (a calendar\ndate, no time). The customer_product_renewal NotificationRule fires\nonce per RenewalDate value, so rolling it forward a year after\nrenewing re-arms the reminder. Optional; nil never fires.",
+                    "type": "string"
                 },
                 "source_deal_id": {
                     "type": "integer"
@@ -8687,6 +10218,14 @@
                 },
                 "value": {
                     "type": "number"
+                },
+                "value_quote_id": {
+                    "description": "ValueQuoteID is the Accepted Quote whose pre-VAT taxable amount the\nDeal's Value was last synced from (handlers.syncDealValue), nil when\nValue is the rep's own figure. While set, PUT /deals/:id can't change\nValue. FK to quotes(id), ON DELETE SET NULL (database.\nensureDealValueQuoteFK). Create-only for GORM writes (\"\u003c-:create\"): a\nfull-row Save of a stale Deal must never overwrite it, so only the sync\ncode's own UPDATE statements change it.",
+                    "type": "integer"
+                },
+                "won_at": {
+                    "description": "WonAt is when the Deal became Won (status won), nil while it isn't —\nwhat the dashboard and reports count \"won this period\" by, rather than\ncreated_at. Kept in step with Status by the BeforeSave hook (won_at.go)\non every struct write; see database.BackfillDealWonAt for older rows.",
+                    "type": "string"
                 }
             }
         },
@@ -8820,7 +10359,7 @@
                     "type": "string"
                 },
                 "company_id": {
-                    "description": "CompanyID replaces the free-text CompanyName this Lead used to carry\n(dropped 2026-08-24) — a real FK to Company, same as Deal/Contact,\ninstead of a bare string. Nullable: unlike Deal/Contact, a Lead can\nstill exist with no company picked yet (matching CompanyName's old\noptional-ness — Create/Update never required it either). Existing\nrows were backfilled from their old CompanyName text (exact\ncase-insensitive match against Companies, or a newly created Company\nwhen no match existed) — see database.backfillLeadCompanyIDs.",
+                    "description": "CompanyID is a real FK to Company, as on Deal/Contact, but nullable:\na Lead can exist before a company is picked. See\ndatabase.backfillLeadCompanyIDs for rows migrated from free text.",
                     "type": "integer"
                 },
                 "converted_deal_id": {
@@ -8999,19 +10538,121 @@
                 "LostReasonOther"
             ]
         },
+        "github_com_igeargeek_sales-system-api_internal_models.NotificationEntityType": {
+            "type": "string",
+            "enum": [
+                "deal",
+                "quote",
+                "contract",
+                "prospect",
+                "company",
+                "payment_installment",
+                "customer_product_renewal",
+                "contract_expiry"
+            ],
+            "x-enum-varnames": [
+                "NotificationEntityDeal",
+                "NotificationEntityQuote",
+                "NotificationEntityContract",
+                "NotificationEntityProspect",
+                "NotificationEntityCompany",
+                "NotificationEntityPaymentInstallment",
+                "NotificationEntityCustomerProductRenewal",
+                "NotificationEntityContractExpiry"
+            ]
+        },
+        "github_com_igeargeek_sales-system-api_internal_models.NotificationRecipientRole": {
+            "type": "string",
+            "enum": [
+                "owner",
+                "owner_and_managers"
+            ],
+            "x-enum-varnames": [
+                "NotificationRecipientOwner",
+                "NotificationRecipientOwnerAndManagers"
+            ]
+        },
+        "github_com_igeargeek_sales-system-api_internal_models.NotificationRule": {
+            "type": "object",
+            "properties": {
+                "create_task": {
+                    "description": "CreateTask — AutoMigrate adds this NOT NULL DEFAULT true, which also\nbackfills every pre-existing rule to true. Create must write an\nexplicit false itself (GORM omits zero values for defaulted columns).",
+                    "type": "boolean"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "integer"
+                },
+                "deleted_at": {
+                    "$ref": "#/definitions/gorm.DeletedAt"
+                },
+                "deleted_by": {
+                    "type": "integer"
+                },
+                "entity_type": {
+                    "description": "varchar(32), not (16) — \"payment_installment\" (20 chars) needs the\nextra room; widened rather than shortening the value once RecipientRole\non this same struct already uses varchar(32).",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.NotificationEntityType"
+                        }
+                    ]
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "recipient_role": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.NotificationRecipientRole"
+                },
+                "threshold_days": {
+                    "type": "integer"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "integer"
+                }
+            }
+        },
         "github_com_igeargeek_sales-system-api_internal_models.Payment": {
             "type": "object",
             "properties": {
                 "amount": {
+                    "description": "Amount is the cash that arrived — net of any withholding tax.",
                     "type": "number"
                 },
                 "created_at": {
                     "type": "string"
                 },
+                "created_by": {
+                    "type": "integer"
+                },
                 "deal_id": {
                     "type": "integer"
                 },
+                "deleted_at": {
+                    "$ref": "#/definitions/gorm.DeletedAt"
+                },
+                "deleted_by": {
+                    "type": "integer"
+                },
+                "document_number": {
+                    "description": "DocumentNumber is the FlowAccount receipt / tax-invoice number for this\npayment, free text, optional.",
+                    "type": "string"
+                },
                 "id": {
+                    "type": "integer"
+                },
+                "installment_id": {
+                    "description": "InstallmentID optionally pins this payment to one PaymentInstallment of\nthe same Deal. Linked payments settle their own installment first; the\nrest still waterfall in due-date order (utils.\nComputeInstallmentStatusesFromPayments). App-level reference only, like\nevery other id column here — PaymentInstallmentHandler.Delete clears it.",
                     "type": "integer"
                 },
                 "method": {
@@ -9025,6 +10666,17 @@
                 },
                 "updated_at": {
                     "type": "string"
+                },
+                "updated_by": {
+                    "type": "integer"
+                },
+                "wht_amount": {
+                    "description": "WhtAmount is the withholding tax the customer deducted and remits to\nthe Revenue Department on our behalf. It settles the invoice just like\ncash does (see SettledAmount), so a 3% WHT customer paying 97,000 on a\n100,000 invoice leaves nothing outstanding.",
+                    "type": "number"
+                },
+                "wht_certificate_received": {
+                    "description": "WhtCertificateReceived tracks whether the customer's withholding tax\ncertificate (หนังสือรับรองการหักภาษี ณ ที่จ่าย, \"50 ทวิ\") has arrived —\naccounting needs it to claim the WHT credit, and it often lags the\npayment by weeks.",
+                    "type": "boolean"
                 }
             }
         },
@@ -9076,6 +10728,10 @@
                     "type": "string"
                 },
                 "created_by": {
+                    "type": "integer"
+                },
+                "default_probability": {
+                    "description": "DefaultProbability is the win probability a Deal entering this stage\ngets when none is given (utils.DefaultProbabilityFor) — derived from\nthe flags and the stage's place in the funnel, never stored. Filled on\nevery /admin/pipeline-stages response so the frontend prefills the\nserver's number rather than keeping a table of its own.",
                     "type": "integer"
                 },
                 "deleted_at": {
@@ -9475,6 +11131,13 @@
                     "description": "ReferenceNumber is free-text, user-entered (e.g. the customer's own PO\nnumber) — unrelated to Number above, which this system generates.",
                     "type": "string"
                 },
+                "revision_no": {
+                    "type": "integer"
+                },
+                "revision_of_id": {
+                    "description": "RevisionOfID/RevisionNo link a quote made by Duplicate back to the\nfirst quote of its chain (the root, never an intermediate copy), so\nevery revision of one offer shares a RevisionOfID. The root itself has\nnil and 0; each copy gets the chain's highest RevisionNo + 1. The FK\n(ON DELETE SET NULL) is added by database.ensureQuoteRevisionFK.",
+                    "type": "integer"
+                },
                 "scope_of_work": {
                     "description": "ScopeOfWork is a free-text narrative describing the overall engagement\n(deliverables/phases/terms) — separate from each line item's own\nDescription, which stays a short per-item label. Optional; rendered as\na wrapped paragraph above the line-items table in ExportPDF.",
                     "type": "string"
@@ -9798,7 +11461,7 @@
             "type": "object",
             "properties": {
                 "covered": {
-                    "description": "Covered is how much of this installment's Amount has been paid,\ncumulatively — see ComputeInstallmentStatuses's own doc for the\nwaterfall allocation this comes from.",
+                    "description": "Covered is how much of this installment's Amount has been paid,\ncumulatively — see ComputeInstallmentStatusesFromPayments's doc for\nthe waterfall allocation this comes from.",
                     "type": "number"
                 },
                 "installment": {
@@ -9840,6 +11503,65 @@
                     "type": "string"
                 },
                 "owner_user_id": {
+                    "type": "integer"
+                }
+            }
+        },
+        "internal_handlers.bulkArchiveResult": {
+            "type": "object",
+            "properties": {
+                "archived": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "skipped": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_handlers.bulkArchiveSkip"
+                    }
+                }
+            }
+        },
+        "internal_handlers.bulkArchiveSkip": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer"
+                },
+                "reason": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.bulkDeactivateResponse": {
+            "type": "object",
+            "properties": {
+                "open_records": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_handlers.userOpenRecords"
+                    }
+                },
+                "reassigned": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_handlers.reassignResult"
+                    }
+                }
+            }
+        },
+        "internal_handlers.bulkDeactivateUsersForm": {
+            "type": "object",
+            "properties": {
+                "ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "reassign_to": {
                     "type": "integer"
                 }
             }
@@ -9907,6 +11629,9 @@
                 "address": {
                     "type": "string"
                 },
+                "branch_code": {
+                    "type": "string"
+                },
                 "industry": {
                     "type": "string"
                 },
@@ -9917,6 +11642,9 @@
                     "type": "string"
                 },
                 "notes": {
+                    "type": "string"
+                },
+                "postal_code": {
                     "type": "string"
                 },
                 "revenue_size": {
@@ -9977,6 +11705,10 @@
         "internal_handlers.contractForm": {
             "type": "object",
             "properties": {
+                "end_date": {
+                    "description": "EndDate — the term's end, YYYY-MM-DD or RFC 3339, stored as a date.\nOn Update, omitted keeps the stored value and null/\"\" clears it.",
+                    "type": "string"
+                },
                 "quote_id": {
                     "type": "integer"
                 },
@@ -9991,48 +11723,35 @@
                 "company_id": {
                     "type": "integer"
                 },
+                "company_name": {
+                    "description": "CompanyName names the Company when Convert has to create one (no\ncompany_id, and the Lead has no live Company) — see\nresolveOrCreateCompany.",
+                    "type": "string"
+                },
                 "contact_id": {
                     "type": "integer"
                 },
                 "deal": {
-                    "type": "object",
-                    "properties": {
-                        "assigned_to": {
-                            "type": "integer"
-                        },
-                        "business_unit": {
-                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.BusinessUnit"
-                        },
-                        "business_unit_item": {
-                            "type": "string"
-                        },
-                        "channel": {
-                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource"
-                        },
-                        "expected_close_date": {
-                            "type": "string"
-                        },
-                        "stage": {
-                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage"
-                        },
-                        "title": {
-                            "type": "string"
-                        },
-                        "value": {
-                            "type": "number"
-                        }
-                    }
+                    "$ref": "#/definitions/internal_handlers.dealFields"
                 }
             }
         },
         "internal_handlers.customerProductForm": {
             "type": "object",
             "properties": {
+                "billing_cycle": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.BillingCycle"
+                },
                 "end_date": {
                     "type": "string"
                 },
+                "price": {
+                    "type": "number"
+                },
                 "product_id": {
                     "type": "integer"
+                },
+                "renewal_date": {
+                    "type": "string"
                 },
                 "source_deal_id": {
                     "type": "integer"
@@ -10048,6 +11767,14 @@
         "internal_handlers.customerProductResponse": {
             "type": "object",
             "properties": {
+                "billing_cycle": {
+                    "description": "BillingCycle/Price describe what the renewal is worth — informational\n(and shown in the renewal Task), not used to generate any invoice:\ninvoices are issued in FlowAccount, charged via a Contract.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.BillingCycle"
+                        }
+                    ]
+                },
                 "company_id": {
                     "type": "integer"
                 },
@@ -10069,11 +11796,18 @@
                 "id": {
                     "type": "integer"
                 },
+                "price": {
+                    "type": "number"
+                },
                 "product": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Product"
                 },
                 "product_id": {
                     "type": "integer"
+                },
+                "renewal_date": {
+                    "description": "RenewalDate is the next date this subscription renews (a calendar\ndate, no time). The customer_product_renewal NotificationRule fires\nonce per RenewalDate value, so rolling it forward a year after\nrenewing re-arms the reminder. Optional; nil never fires.",
+                    "type": "string"
                 },
                 "source_deal_id": {
                     "type": "integer"
@@ -10095,11 +11829,169 @@
         "internal_handlers.customerProductUpdateForm": {
             "type": "object",
             "properties": {
+                "billing_cycle": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.BillingCycle"
+                },
                 "end_date": {
+                    "type": "string"
+                },
+                "price": {
+                    "type": "number"
+                },
+                "renewal_date": {
                     "type": "string"
                 },
                 "status": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.CustomerProductStatus"
+                }
+            }
+        },
+        "internal_handlers.dealDetail": {
+            "type": "object",
+            "properties": {
+                "assigned_to": {
+                    "type": "integer"
+                },
+                "business_unit": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.BusinessUnit"
+                },
+                "business_unit_item": {
+                    "type": "string"
+                },
+                "channel": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource"
+                },
+                "company_id": {
+                    "type": "integer"
+                },
+                "contact_id": {
+                    "type": "integer"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "integer"
+                },
+                "deleted_at": {
+                    "$ref": "#/definitions/gorm.DeletedAt"
+                },
+                "deleted_by": {
+                    "type": "integer"
+                },
+                "expected_close_date": {
+                    "type": "string"
+                },
+                "forecast_category": {
+                    "description": "ForecastCategory is the Commit/Best Case/Pipeline forecast bucket,\ndefaulted per-stage (StageDefaultForecastCategory) but always manually\noverridable, mirroring Probability's own default/override pattern.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.ForecastCategory"
+                        }
+                    ]
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "lead_id": {
+                    "description": "LeadID traces this Deal back to the Lead it was converted from, if any.",
+                    "type": "integer"
+                },
+                "lost_reason": {
+                    "description": "LostReason is required only when Stage/Status is set to Lost (validated\nat the handler layer, see DealHandler.Update).",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason"
+                        }
+                    ]
+                },
+                "position": {
+                    "description": "Position orders this Deal's Kanban card within its own Stage lane only —\nnever compared across stages. Set to MAX(position)+1 in its lane on\nCreate (including Lead conversion) and on any lane change that carries\nno position (the edit form, a dropdown-move), and to the client's\nmidpoint of its new neighbors on a drag-move (DealHandler.UpdateStage),\nso siblings normally never need rewriting. When a drop lands within\n1e-6 of a neighbor the lane is renumbered 1..n instead\n(handlers/card_position.go). See database.BackfillCardPositions for\npre-existing rows.",
+                    "type": "number"
+                },
+                "previous_stage": {
+                    "description": "The lane this record was in before its last move (see\nMarkStageEntered); nil if it has never moved.",
+                    "type": "string"
+                },
+                "probability": {
+                    "description": "Probability is the 0-100 win-probability, defaulted per-stage\n(StageDefaultProbability) but always manually overridable.",
+                    "type": "integer"
+                },
+                "stage": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage"
+                },
+                "stage_entered_at": {
+                    "description": "When this record entered its current lane; see stage_entered.go.",
+                    "type": "string"
+                },
+                "status": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStatus"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "title": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "integer"
+                },
+                "value": {
+                    "type": "number"
+                },
+                "value_quote_id": {
+                    "description": "ValueQuoteID is the Accepted Quote whose pre-VAT taxable amount the\nDeal's Value was last synced from (handlers.syncDealValue), nil when\nValue is the rep's own figure. While set, PUT /deals/:id can't change\nValue. FK to quotes(id), ON DELETE SET NULL (database.\nensureDealValueQuoteFK). Create-only for GORM writes (\"\u003c-:create\"): a\nfull-row Save of a stale Deal must never overwrite it, so only the sync\ncode's own UPDATE statements change it.",
+                    "type": "integer"
+                },
+                "value_quote_number": {
+                    "type": "string"
+                },
+                "won_at": {
+                    "description": "WonAt is when the Deal became Won (status won), nil while it isn't —\nwhat the dashboard and reports count \"won this period\" by, rather than\ncreated_at. Kept in step with Status by the BeforeSave hook (won_at.go)\non every struct write; see database.BackfillDealWonAt for older rows.",
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.dealFields": {
+            "type": "object",
+            "properties": {
+                "assigned_to": {
+                    "type": "integer"
+                },
+                "business_unit": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.BusinessUnit"
+                },
+                "business_unit_item": {
+                    "type": "string"
+                },
+                "channel": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadSource"
+                },
+                "expected_close_date": {
+                    "type": "string"
+                },
+                "lost_reason": {
+                    "description": "LostReason is required once stage or status is Lost.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason"
+                        }
+                    ]
+                },
+                "stage": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.DealStage"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "number"
                 }
             }
         },
@@ -10131,7 +12023,12 @@
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.ForecastCategory"
                 },
                 "lost_reason": {
-                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason"
+                    "description": "LostReason is required once stage or status is Lost.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason"
+                        }
+                    ]
                 },
                 "probability": {
                     "type": "integer"
@@ -10162,7 +12059,7 @@
             "type": "object",
             "properties": {
                 "lost_reason": {
-                    "description": "LostReason is optional here (the Kanban drag doesn't collect one), but\nwhen sent on a move into a Lost stage it's validated and saved — the\nOverview Pipeline's side panel asks for it (FR-CRM-123). Ignored on a\nmove into any other stage.",
+                    "description": "LostReason is required on a move into a Lost stage, as on PUT (a\nDeal already Lost with a stored reason may omit it to reposition) —\nthe Kanban drag and the Overview Pipeline's side panel (FR-CRM-123)\nboth ask for it. Ignored on a move into any other stage.",
                     "allOf": [
                         {
                             "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.LostReason"
@@ -10306,6 +12203,80 @@
                 }
             }
         },
+        "internal_handlers.mergeConflict": {
+            "type": "object",
+            "properties": {
+                "field": {
+                    "type": "string"
+                },
+                "source_id": {
+                    "type": "integer"
+                },
+                "value": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.mergeForm": {
+            "type": "object",
+            "properties": {
+                "source_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                }
+            }
+        },
+        "internal_handlers.mergeResponse": {
+            "type": "object",
+            "properties": {
+                "conflicts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_handlers.mergeConflict"
+                    }
+                },
+                "filled": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "moved": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "integer",
+                        "format": "int64"
+                    }
+                },
+                "target": {}
+            }
+        },
+        "internal_handlers.notificationRuleForm": {
+            "type": "object",
+            "properties": {
+                "create_task": {
+                    "description": "CreateTask — optional; defaults to true on Create, unchanged on Update\nwhen omitted.",
+                    "type": "boolean"
+                },
+                "entity_type": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.NotificationEntityType"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "recipient_role": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.NotificationRecipientRole"
+                },
+                "threshold_days": {
+                    "type": "integer"
+                }
+            }
+        },
         "internal_handlers.openOptions": {
             "type": "object",
             "properties": {
@@ -10370,11 +12341,42 @@
                 }
             }
         },
+        "internal_handlers.openRecordCounts": {
+            "type": "object",
+            "properties": {
+                "deals": {
+                    "type": "integer"
+                },
+                "leads": {
+                    "type": "integer"
+                },
+                "prospects": {
+                    "type": "integer"
+                },
+                "tasks": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
         "internal_handlers.paymentForm": {
             "type": "object",
             "properties": {
+                "allow_overpayment": {
+                    "description": "AllowOverpayment lets this save take the Deal's settled total (cash +\nWHT) past its receivable; without it that's a 422. Not stored — the\naudit entry records that it was used.",
+                    "type": "boolean"
+                },
                 "amount": {
                     "type": "number"
+                },
+                "document_number": {
+                    "type": "string"
+                },
+                "installment_id": {
+                    "description": "InstallmentID is raw so Update can tell \"absent\" (keep) from null\n(unlink) from a number (link) — a plain *uint can't.",
+                    "type": "integer"
                 },
                 "method": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.PaymentMethod"
@@ -10384,6 +12386,12 @@
                 },
                 "paid_at": {
                     "type": "string"
+                },
+                "wht_amount": {
+                    "type": "number"
+                },
+                "wht_certificate_received": {
+                    "type": "boolean"
                 }
             }
         },
@@ -10489,6 +12497,10 @@
             "properties": {
                 "company_id": {
                     "type": "integer"
+                },
+                "company_name": {
+                    "description": "CompanyName — see convertRequest.CompanyName.",
+                    "type": "string"
                 },
                 "contact_id": {
                     "type": "integer"
@@ -10650,6 +12662,7 @@
                     "type": "string"
                 },
                 "vat_enabled": {
+                    "description": "nil = true, like Quote Create",
                     "type": "boolean"
                 },
                 "wht_enabled": {
@@ -10657,6 +12670,138 @@
                 },
                 "wht_rate": {
                     "type": "number"
+                }
+            }
+        },
+        "internal_handlers.quoteWithDeal": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "credit_days": {
+                    "description": "CreditDays is purely informational context for ValidityDate (which\nalready serves as the actual due date/\"ครบกำหนด\") — how many days of\ncredit were granted, not itself used in any date arithmetic here.",
+                    "type": "integer"
+                },
+                "deal_id": {
+                    "type": "integer"
+                },
+                "deal_title": {
+                    "type": "string"
+                },
+                "discount_total": {
+                    "description": "DiscountTotal is a flat currency amount subtracted once from the\nitems' summed (already-per-item-discounted) subtotal — independent of\neach QuoteItem's own DiscountPercent above.",
+                    "type": "number"
+                },
+                "extraction_status": {
+                    "description": "ExtractionStatus/ExtractionWarnings record the outcome of best-effort\nfield extraction from an uploaded FlowAccount PDF (Upload handler,\nutils.ExtractFlowAccountQuote) — nil/empty for every Quote created the\nnormal line-item way, since extraction never runs for those. \"ok\": every\nfield extraction looked for was found and self-consistent. \"partial\":\nsome fields extracted, ExtractionWarnings lists what's missing/suspect\n(e.g. a recomputed total that doesn't match the PDF's printed one) —\nthe rep should double-check those before Sending. \"failed\": the upload\nstill succeeded and the file is still attached, but the PDF didn't look\nlike a FlowAccount export at all (or had no readable text layer), so\nnothing was pre-filled. A pointer for the same AutoMigrate-hazard\nreason as Number above — existing rows never had this column.",
+                    "type": "string"
+                },
+                "extraction_warnings": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "file_name": {
+                    "type": "string"
+                },
+                "file_size": {
+                    "type": "integer"
+                },
+                "file_url": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "internal_notes": {
+                    "type": "string"
+                },
+                "issue_date": {
+                    "description": "IssueDate is the quote's \"as of\" date (rendered as \"วันที่\" in the\nquotation-builder reference) — parsed the same permissive way as\nValidityDate via ParseFlexDate.",
+                    "type": "string"
+                },
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuoteItem"
+                    }
+                },
+                "notes": {
+                    "description": "Notes prints on the exported PDF (payment terms, validity terms,\netc.) — InternalNotes deliberately never does; see ExportPDF, which\nonly ever reads Notes.",
+                    "type": "string"
+                },
+                "number": {
+                    "description": "Number is a generated, immutable document number (e.g. \"QT2026080004\")\nassigned once at Create time via utils.NextDocumentNumber — never\nuser-edited afterward. See internal/utils/document_number.go. A\npointer, not a plain string with \"not null\": AutoMigrate ADD COLUMN\nNOT NULL on a table that already has rows would fail outright on any\npre-existing database (same class of hazard database.go already\navoids for other columns) — every Quote row created going forward\nalways gets one, but rows from before this field existed stay nil\nrather than requiring a backfill. A unique index tolerates any number\nof NULLs in Postgres, so this doesn't relax uniqueness for quotes that\ndo have a Number.",
+                    "type": "string"
+                },
+                "price_type": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuotePriceType"
+                },
+                "reference_number": {
+                    "description": "ReferenceNumber is free-text, user-entered (e.g. the customer's own PO\nnumber) — unrelated to Number above, which this system generates.",
+                    "type": "string"
+                },
+                "revision_no": {
+                    "type": "integer"
+                },
+                "revision_of_id": {
+                    "description": "RevisionOfID/RevisionNo link a quote made by Duplicate back to the\nfirst quote of its chain (the root, never an intermediate copy), so\nevery revision of one offer shares a RevisionOfID. The root itself has\nnil and 0; each copy gets the chain's highest RevisionNo + 1. The FK\n(ON DELETE SET NULL) is added by database.ensureQuoteRevisionFK.",
+                    "type": "integer"
+                },
+                "scope_of_work": {
+                    "description": "ScopeOfWork is a free-text narrative describing the overall engagement\n(deliverables/phases/terms) — separate from each line item's own\nDescription, which stays a short per-item label. Optional; rendered as\na wrapped paragraph above the line-items table in ExportPDF.",
+                    "type": "string"
+                },
+                "status": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuoteStatus"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "uploaded_at": {
+                    "type": "string"
+                },
+                "validity_date": {
+                    "type": "string"
+                },
+                "vat_enabled": {
+                    "description": "VatEnabled toggles Thailand's fixed 7% VAT in ComputeQuoteTotals — no\nseparate rate field, since 7% is the statutory rate, not something a\nquote should be able to override.",
+                    "type": "boolean"
+                },
+                "wht_enabled": {
+                    "description": "WhtEnabled/WhtRate: withholding tax varies by service type in Thailand\n(commonly 3% or 5%), so unlike VAT it needs its own rate field. Only\nmeaningful when WhtEnabled is true.",
+                    "type": "boolean"
+                },
+                "wht_rate": {
+                    "type": "number"
+                }
+            }
+        },
+        "internal_handlers.reassignResult": {
+            "type": "object",
+            "properties": {
+                "deals": {
+                    "type": "integer"
+                },
+                "leads": {
+                    "type": "integer"
+                },
+                "prospects": {
+                    "type": "integer"
+                },
+                "reassign_to": {
+                    "type": "integer"
+                },
+                "tasks": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                },
+                "user_id": {
+                    "type": "integer"
                 }
             }
         },
@@ -10694,6 +12839,39 @@
                 }
             }
         },
+        "internal_handlers.sourcePerformanceRow": {
+            "type": "object",
+            "properties": {
+                "deals_won": {
+                    "description": "DealsWon/WonValue: Won Deals that came from those Leads, so far\n(Σ deals.value, same revenue figure top-referrers uses).",
+                    "type": "integer"
+                },
+                "direct_deals_won": {
+                    "description": "DirectDealsWon/DirectWonValue: Won Deals created in the window with no\noriginating Lead (entered straight into the pipeline), attributed by\ntheir own deals.channel. Kept separate so leads → qualified → won stays\none cohort and WinRate can't exceed 100%.",
+                    "type": "integer"
+                },
+                "direct_won_value": {
+                    "type": "number"
+                },
+                "leads": {
+                    "description": "Leads created in the window with this source; Qualified = those that\nreached Qualified (status Qualified, or already converted to a Deal —\nconversion leaves status at Qualified, but checking converted_deal_id\ntoo keeps a later status edit from hiding a real conversion).",
+                    "type": "integer"
+                },
+                "qualified": {
+                    "type": "integer"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "win_rate": {
+                    "description": "WinRate = DealsWon / Leads × 100 — lead-to-won, the end-to-end yield\nof the source. 0 when Leads is 0.",
+                    "type": "number"
+                },
+                "won_value": {
+                    "type": "number"
+                }
+            }
+        },
         "internal_handlers.tagForm": {
             "type": "object",
             "properties": {
@@ -10725,6 +12903,28 @@
                 }
             }
         },
+        "internal_handlers.userDeleteForm": {
+            "type": "object",
+            "properties": {
+                "reassign_to": {
+                    "type": "integer"
+                }
+            }
+        },
+        "internal_handlers.userDeleteResponse": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer"
+                },
+                "open_records": {
+                    "$ref": "#/definitions/internal_handlers.openRecordCounts"
+                },
+                "reassigned": {
+                    "$ref": "#/definitions/internal_handlers.reassignResult"
+                }
+            }
+        },
         "internal_handlers.userForm": {
             "type": "object",
             "properties": {
@@ -10753,9 +12953,134 @@
                     "type": "string"
                 }
             }
+        },
+        "internal_handlers.userOpenRecords": {
+            "type": "object",
+            "properties": {
+                "deals": {
+                    "type": "integer"
+                },
+                "leads": {
+                    "type": "integer"
+                },
+                "prospects": {
+                    "type": "integer"
+                },
+                "tasks": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                },
+                "user_id": {
+                    "type": "integer"
+                }
+            }
+        },
+        "internal_handlers.userUpdateForm": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string"
+                },
+                "first_name": {
+                    "type": "string"
+                },
+                "last_name": {
+                    "type": "string"
+                },
+                "notes": {
+                    "type": "string"
+                },
+                "password": {
+                    "type": "string"
+                },
+                "reassign_to": {
+                    "description": "ReassignTo receives the user's open records when this update takes\nthem away (deactivation, or a move to a role that can't own pipeline\nrecords). Ignored otherwise.",
+                    "type": "integer"
+                },
+                "role": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Role"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "tel": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.userWriteResponse": {
+            "type": "object",
+            "properties": {
+                "accepted_consent_id": {
+                    "type": "integer"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "integer"
+                },
+                "deleted_at": {
+                    "$ref": "#/definitions/gorm.DeletedAt"
+                },
+                "deleted_by": {
+                    "type": "integer"
+                },
+                "email": {
+                    "type": "string"
+                },
+                "first_name": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "last_name": {
+                    "type": "string"
+                },
+                "latest_login": {
+                    "type": "string"
+                },
+                "must_change_password": {
+                    "description": "MustChangePassword is set whenever an Admin assigns this account's password\n(creation or reset) and cleared once the holder sets their own via\nPOST /auth/change-password — see middleware.RequirePasswordChanged.",
+                    "type": "boolean"
+                },
+                "notes": {
+                    "type": "string"
+                },
+                "open_records": {
+                    "$ref": "#/definitions/internal_handlers.openRecordCounts"
+                },
+                "reassigned": {
+                    "$ref": "#/definitions/internal_handlers.reassignResult"
+                },
+                "role": {
+                    "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.Role"
+                },
+                "tel": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "integer"
+                }
+            }
         }
     },
     "securityDefinitions": {
+        "ApiKeyAuth": {
+            "description": "Open API key for the /open/* routes (docs/OPEN_API_GUIDE.md).",
+            "type": "apiKey",
+            "name": "X-API-Key",
+            "in": "header"
+        },
         "BearerAuth": {
             "description": "Bearer JWT, e.g. \"Bearer \u003ctoken\u003e\".",
             "type": "apiKey",
