@@ -455,15 +455,17 @@ func (h *UserHandler) Delete(c *fiber.Ctx) error {
 	return utils.OK(c, resp)
 }
 
+// bulkUserIDsForm is bulk-activate's body.
 type bulkUserIDsForm struct {
 	IDs []uint `json:"ids"`
 }
 
 // bulkDeactivateUsersForm is bulk-deactivate's body: the ids plus an
 // optional reassign_to that receives every listed user's open records.
+// bulkSetActive parses it for both endpoints; activate ignores reassign_to.
 type bulkDeactivateUsersForm struct {
-	IDs        []uint `json:"ids"`
-	ReassignTo *uint  `json:"reassign_to"`
+	bulkUserIDsForm
+	ReassignTo *uint `json:"reassign_to"`
 }
 
 // bulkDeactivateResponse is bulk-deactivate's response: each listed user's
