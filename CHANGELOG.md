@@ -4,6 +4,14 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## 2026-10-01 — Dashboard & pipeline metrics
+
+- **`Deal.won_at`** (new nullable, indexed column): when the Deal became Won. A `BeforeSave` hook on `Deal` sets it on the way into status `won` (Kanban stage move, `PUT`, create, Lead convert), keeps it on later re-saves, and clears it when the Deal reopens or is lost. On boot, `database.BackfillDealWonAt` fills it for won Deals that don't have one (from `stage_entered_at`, else `updated_at`) and clears it on Deals that aren't won. It only touches rows that are out of step, so it runs again on every boot.
+- **`GET /dashboard/summary`**: `won_value`, `win_rate`, the Won/Lost bars in `stage_breakdown`, and the won/lost numbers in `industry_breakdown` and `team_performance` now count Deals **won or lost inside the window**: won by `won_at`, lost by `stage_entered_at`. Before, they counted Deals created in the window. `revenue_trend` and `annual_revenue_trend` now bucket by `won_at`. Open-pipeline figures still go by `created_at`. `avg_deal_size` is now the average of Deals won in the window (FR-CRM-057), not of every Deal. New fields: `deals_count` (Deals matching the filters) and `total_deals_count`.
+- **`GET /reports/win-loss-reasons`** (and its CSV export): the date range now filters on when the Deal closed, not on `created_at`.
+- **`PipelineStage.default_probability`** (read-only, on every `/admin/pipeline-stages` response): the probability a Deal gets in that stage when none is sent (`utils.DefaultProbabilityFor`). The frontend uses this in place of its own table.
+- **`Contract.effective_status`** (read-only, on every contract response): `expired` once a `signed` contract's `end_date` has passed, using the server-local day. `status` stays `signed`, so the signed-contract Won gate still counts the contract.
+
 ## 2026-09-28 — Review pass: sessions, access, deal states, report dates, deploy hardening
 
 Fixes from a full review of auth, handlers, reports and infrastructure.

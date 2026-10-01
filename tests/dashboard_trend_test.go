@@ -30,8 +30,7 @@ func TestDashboardSummary_RevenueTrendBucketsByMonth(t *testing.T) {
 	twoMonthsAgoDeal.Value = 500
 	require.NoError(t, db.Save(twoMonthsAgoDeal).Error)
 	pastDate := time.Now().AddDate(0, -2, 0)
-	require.NoError(t, db.Model(&models.Deal{}).Where("id = ?", twoMonthsAgoDeal.ID).
-		Update("created_at", pastDate).Error)
+	setWonAt(t, db, twoMonthsAgoDeal.ID, pastDate)
 
 	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/dashboard/summary", nil, admin.ID, admin.Role)
 	var out struct {

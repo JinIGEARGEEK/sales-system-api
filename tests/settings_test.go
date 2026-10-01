@@ -208,8 +208,7 @@ func TestDashboardSummary_AnnualRevenueProgressRatio(t *testing.T) {
 	lastYearDeal.Value = 999999
 	require.NoError(t, db.Save(lastYearDeal).Error)
 	lastYear := time.Now().AddDate(-1, 0, 0)
-	require.NoError(t, db.Model(&models.Deal{}).Where("id = ?", lastYearDeal.ID).
-		Update("created_at", lastYear).Error)
+	setWonAt(t, db, lastYearDeal.ID, lastYear)
 
 	req := testutil.AuthRequest(t, http.MethodGet, "/api/v1/dashboard/summary", nil, admin.ID, admin.Role)
 	var out struct {
