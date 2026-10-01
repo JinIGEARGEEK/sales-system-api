@@ -210,6 +210,10 @@ func AutoMigrate(db *gorm.DB) error {
 	if err := BackfillStageEnteredAt(db); err != nil {
 		return err
 	}
+	// After BackfillStageEnteredAt: won_at is filled from stage_entered_at.
+	if err := BackfillDealWonAt(db); err != nil {
+		return err
+	}
 	if err := MigrateCompanySizeDefaults(db); err != nil {
 		return err
 	}
@@ -386,6 +390,33 @@ func BackfillStageEnteredAt(db *gorm.DB) error {
 	for _, st := range stmts {
 		if err := db.Exec(st.sql).Error; err != nil {
 			return fmt.Errorf("backfill %s stage_entered_at: %w", st.table, err)
+		}
+	}
+	return nil
+}
+
+// BackfillDealWonAt brings deals.won_at (added 2026-10-01, see
+// models.Deal.WonAt) in line with status for rows written before it existed,
+// or by an instance still on older code mid rolling deploy:
+//   - a won Deal with no won_at gets the best evidence of when it became
+//     Won: stage_entered_at (when it entered its current — Won — lane),
+//     else updated_at. A Deal won at an open stage (status won without a
+//     stage move) can only be dated that way approximately.
+//   - a Deal that isn't won but still has a won_at (reopened by old code,
+//     which didn't know to clear it) has it cleared.
+//
+// Both statements only touch rows that disagree, so it's re-runnable on
+// every boot, like BackfillStageEnteredAt. UPDATE without GORM: no
+// updated_at bump, these aren't user edits.
+func BackfillDealWonAt(db *gorm.DB) error {
+	stmts := []string{
+		`UPDATE deals SET won_at = COALESCE(stage_entered_at, updated_at, created_at)
+		 WHERE status = 'won' AND won_at IS NULL`,
+		`UPDATE deals SET won_at = NULL WHERE status <> 'won' AND won_at IS NOT NULL`,
+	}
+	for _, sql := range stmts {
+		if err := db.Exec(sql).Error; err != nil {
+			return fmt.Errorf("backfill deals won_at: %w", err)
 		}
 	}
 	return nil

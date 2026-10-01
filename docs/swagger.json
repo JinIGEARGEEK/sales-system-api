@@ -4125,7 +4125,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates every installment in one batch insert + one summary audit-log entry, instead of the caller looping N calls to Create — mirrors CampaignHandler.BulkCreateTasks's shape. The frontend computes the actual split (equal amounts, spaced dates); this endpoint only validates and inserts, same permissive per-row rules as the single-row Create. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create.",
+                "description": "Creates every installment in one batch insert + one summary audit-log entry, instead of the caller looping N calls to Create — mirrors CampaignHandler.BulkCreateTasks's shape. The frontend computes the actual split (equal amounts, spaced dates); this endpoint only validates and inserts, same per-row rules as the single-row Create. The whole batch is rejected (422, fields.installments [\"exceeds_receivable\"]) when the Deal's existing installments plus this batch would total more than its receivable — the Outstanding Balance rule: latest Accepted Quote's taxable amount + VAT when priced, else the Deal value; skipped when that receivable is 0. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create.",
                 "consumes": [
                     "application/json"
                 ],
@@ -4180,6 +4180,13 @@
                     },
                     "404": {
                         "description": "Deal not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Empty or invalid installments, or the schedule would exceed the receivable (exceeds_receivable)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -7214,7 +7221,7 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid request body, or validation error (status, price_type, credit_days, wht_rate, discount_total)",
+                        "description": "Invalid request body",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -8543,13 +8550,13 @@
                     },
                     {
                         "type": "string",
-                        "description": "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on deals.created_at",
+                        "description": "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on when the Deal closed (won_at for won, stage_entered_at for lost)",
                         "name": "date_from",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on deals.created_at",
+                        "description": "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on when the Deal closed",
                         "name": "date_to",
                         "in": "query"
                     },
@@ -9667,6 +9674,14 @@
                 "deal_id": {
                     "type": "integer"
                 },
+                "effective_status": {
+                    "description": "EffectiveStatus is the read-derived status to display: \"expired\" once a\nSigned contract's EndDate has passed, else Status. Never stored or\naccepted on write — Status stays \"signed\", so the Won gate\n(validateContractSignedBeforeWon, the frontend's useContractGate) keeps\ncounting it, and a client that saves Status back never turns a\nlapsed-but-signed contract into a stored \"expired\" one. Filled by the\nAfterFind/AfterSave hooks below; see EffectiveStatusAt.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.ContractStatus"
+                        }
+                    ]
+                },
                 "end_date": {
                     "description": "EndDate is when the signed contract's term ends (a calendar date).\nThe contract_expiry NotificationRule warns ThresholdDays ahead, once\nper EndDate value. Optional; nil never fires.",
                     "type": "string"
@@ -9878,6 +9893,10 @@
                 },
                 "value": {
                     "type": "number"
+                },
+                "won_at": {
+                    "description": "WonAt is when the Deal became Won (status won), nil while it isn't —\nwhat the dashboard and reports count \"won this period\" by, rather than\ncreated_at. Kept in step with Status by the BeforeSave hook (won_at.go)\non every struct write; see database.BackfillDealWonAt for older rows.",
+                    "type": "string"
                 }
             }
         },
@@ -10380,6 +10399,10 @@
                     "type": "string"
                 },
                 "created_by": {
+                    "type": "integer"
+                },
+                "default_probability": {
+                    "description": "DefaultProbability is the win probability a Deal entering this stage\ngets when none is given (utils.DefaultProbabilityFor) — derived from\nthe flags and the stage's place in the funnel, never stored. Filled on\nevery /admin/pipeline-stages response so the frontend prefills the\nserver's number rather than keeping a table of its own.",
                     "type": "integer"
                 },
                 "deleted_at": {

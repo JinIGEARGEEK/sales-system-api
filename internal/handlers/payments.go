@@ -173,7 +173,7 @@ func paymentSnapshot(p models.Payment) models.JSONMap {
 // unique among non-deleted Payments (409; only checked when docChanged, so
 // an old duplicate doesn't block editing anything else), and the Deal's
 // settled total (cash + WHT) mustn't pass its receivable
-// (dealReceivableAmount) by more than utils.MoneyEpsilon unless allowOver
+// (dealReceivable) by more than utils.MoneyEpsilon unless allowOver
 // (422) — checked only when this save raises payment's own settled amount
 // above prevSettled. Returns overpaid (the allowance was used) and
 // utils.ErrHandled once a response has been written.
@@ -204,7 +204,7 @@ func checkPaymentMoneyRules(c *fiber.Ctx, tx *gorm.DB, deal *models.Deal, paymen
 		Select("COALESCE(SUM(amount + wht_amount), 0)").Scan(&others).Error; err != nil {
 		return false, err
 	}
-	receivable, err := dealReceivableAmount(tx, deal)
+	receivable, err := dealReceivable(tx, deal)
 	if err != nil {
 		return false, err
 	}

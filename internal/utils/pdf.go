@@ -100,9 +100,12 @@ func renderItemsTable(pdf *fpdf.Fpdf, items []models.QuoteItem, showDiscount boo
 	const lineHeight = 5.0
 	var grandTotal float64
 	for _, item := range items {
-		lineTotal := item.Qty * item.Price
-		if showDiscount && item.DiscountPercent > 0 {
-			lineTotal *= 1 - item.DiscountPercent/100
+		// Rounded per line (QuoteLineTotal), the same figures
+		// ComputeQuoteTotals sums, so the printed lines add up to the
+		// printed subtotal.
+		lineTotal := RoundSatang(item.Qty * item.Price)
+		if showDiscount {
+			lineTotal = QuoteLineTotal(item)
 		}
 		grandTotal += lineTotal
 
@@ -128,6 +131,7 @@ func renderItemsTable(pdf *fpdf.Fpdf, items []models.QuoteItem, showDiscount boo
 		}
 		pdf.CellFormat(30, rowHeight, fmt.Sprintf("%.2f", lineTotal), "1", 1, "R", false, 0, "")
 	}
+	grandTotal = RoundSatang(grandTotal)
 	pdf.SetFont(PDFFont, "B", 10)
 	labelWidth := 150.0
 	if showDiscount {

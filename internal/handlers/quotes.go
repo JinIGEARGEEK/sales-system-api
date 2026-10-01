@@ -384,7 +384,8 @@ func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 // @Param id path int true "Quote ID"
 // @Param body body quoteForm true "Quote fields"
 // @Success 200 {object} models.Quote
-// @Failure 400 {object} map[string]interface{} "Invalid request body, or validation error (status, price_type, credit_days, wht_rate, discount_total)"
+// @Failure 400 {object} map[string]interface{} "Invalid request body"
+// @Failure 422 {object} map[string]interface{} "Validation error (status, price_type, credit_days, wht_rate, discount_total)"
 // @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
 // @Failure 404 {object} map[string]interface{} "Quote not found, or deal not found"
 // @Failure 409 {object} map[string]interface{} "Status transition not allowed, quote is read-only, or the deal already has an Accepted quote"
@@ -432,7 +433,6 @@ func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	if !validateQuoteForm(c, form) {
 		return nil
 	}
-
 	if form.Items != nil {
 		quote.Items = models.JSONItems(snapshotQuoteItems(h.DB, form.Items))
 	}
@@ -687,14 +687,20 @@ func (h *QuoteHandler) ExportPDF(c *fiber.Ctx) error {
 	// Discount total / VAT / WHT / grand total — same formula as
 	// utils.ComputeQuoteTotals so this PDF and the edit page's live totals
 	// never disagree.
-	totals := utils.ComputeQuoteTotals(quote.Items, quote.DiscountTotal, quote.VatEnabled, quote.WhtEnabled, quote.WhtRate)
+	totals := utils.QuoteTotalsOf(&quote)
 	pdf.SetFont(utils.PDFFont, "", 10)
 	if quote.DiscountTotal > 0 {
 		pdf.Ln(1)
 		pdf.CellFormat(165, 7, "Discount", "0", 0, "R", false, 0, "")
 		pdf.CellFormat(30, 7, fmt.Sprintf("-%.2f", quote.DiscountTotal), "0", 1, "R", false, 0, "")
 	}
-	if quote.VatEnabled {
+	if quote.VatEnabled && quote.PriceType == models.QuotePriceTypeInclTax {
+		// Prices already include VAT: show it split out of them, not added.
+		pdf.CellFormat(165, 7, "Amount before VAT", "0", 0, "R", false, 0, "")
+		pdf.CellFormat(30, 7, fmt.Sprintf("%.2f", totals.TaxableAmount), "0", 1, "R", false, 0, "")
+		pdf.CellFormat(165, 7, "VAT (7%, included)", "0", 0, "R", false, 0, "")
+		pdf.CellFormat(30, 7, fmt.Sprintf("%.2f", totals.Vat), "0", 1, "R", false, 0, "")
+	} else if quote.VatEnabled {
 		pdf.CellFormat(165, 7, "VAT (7%)", "0", 0, "R", false, 0, "")
 		pdf.CellFormat(30, 7, fmt.Sprintf("%.2f", totals.Vat), "0", 1, "R", false, 0, "")
 	}

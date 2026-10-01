@@ -81,12 +81,16 @@ func (q *Quote) IsLocked() bool {
 	return q.Status == QuoteStatusAccepted || q.Status == QuoteStatusRejected
 }
 
-// QuotePriceType records whether Quote.Items' Price values are meant to be
-// read as tax-exclusive or tax-inclusive — display/PDF concern only, doesn't
-// change how ComputeQuoteTotals adds VAT (a quote entered "incl_tax" is
-// expected to already have VAT baked into its item prices by whoever typed
-// them in; this is a labeling/expectation field, not a second computation
-// path).
+// QuotePriceType records whether Quote.Items' Price values are tax-exclusive
+// or tax-inclusive, and utils.ComputeQuoteTotals computes VAT accordingly:
+// "excl_tax" adds 7% VAT on top of the (discounted) prices; "incl_tax" means
+// the prices already contain VAT, so it's backed out instead (taxable =
+// net / 1.07, VAT = net - taxable, both rounded to satang) and the grand
+// total before WHT is exactly the prices as entered. Either way
+// TaxableAmount is the pre-VAT figure that revenue and WHT are based on.
+// With VatEnabled off the two behave the same. (Until 2026-10-01 this was a
+// label only and VAT was always added on top, double-charging VAT on every
+// incl_tax quote with VAT on.)
 type QuotePriceType string
 
 const (

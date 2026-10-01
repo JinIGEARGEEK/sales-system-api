@@ -272,6 +272,17 @@ definitions:
         type: string
       deal_id:
         type: integer
+      effective_status:
+        allOf:
+        - $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.ContractStatus'
+        description: |-
+          EffectiveStatus is the read-derived status to display: "expired" once a
+          Signed contract's EndDate has passed, else Status. Never stored or
+          accepted on write — Status stays "signed", so the Won gate
+          (validateContractSignedBeforeWon, the frontend's useContractGate) keeps
+          counting it, and a client that saves Status back never turns a
+          lapsed-but-signed contract into a stored "expired" one. Filled by the
+          AfterFind/AfterSave hooks below; see EffectiveStatusAt.
       end_date:
         description: |-
           EndDate is when the signed contract's term ends (a calendar date).
@@ -444,6 +455,13 @@ definitions:
         type: integer
       value:
         type: number
+      won_at:
+        description: |-
+          WonAt is when the Deal became Won (status won), nil while it isn't —
+          what the dashboard and reports count "won this period" by, rather than
+          created_at. Kept in step with Status by the BeforeSave hook (won_at.go)
+          on every struct write; see database.BackfillDealWonAt for older rows.
+        type: string
     type: object
   github_com_igeargeek_sales-system-api_internal_models.DealStage:
     enum:
@@ -850,6 +868,14 @@ definitions:
       created_at:
         type: string
       created_by:
+        type: integer
+      default_probability:
+        description: |-
+          DefaultProbability is the win probability a Deal entering this stage
+          gets when none is given (utils.DefaultProbabilityFor) — derived from
+          the flags and the stage's place in the funnel, never stored. Filled on
+          every /admin/pipeline-stages response so the frontend prefills the
+          server's number rather than keeping a table of its own.
         type: integer
       deleted_at:
         $ref: '#/definitions/gorm.DeletedAt'
@@ -5086,12 +5112,15 @@ paths:
     post:
       consumes:
       - application/json
-      description: Creates every installment in one batch insert + one summary audit-log
-        entry, instead of the caller looping N calls to Create — mirrors CampaignHandler.BulkCreateTasks's
+      description: 'Creates every installment in one batch insert + one summary audit-log
+        entry, instead of the caller looping N calls to Create — mirrors CampaignHandler.BulkCreateTasks''s
         shape. The frontend computes the actual split (equal amounts, spaced dates);
-        this endpoint only validates and inserts, same permissive per-row rules as
-        the single-row Create. Only the Deal's assigned Sales Rep (or Admin/Sales
-        Manager) may create.
+        this endpoint only validates and inserts, same per-row rules as the single-row
+        Create. The whole batch is rejected (422, fields.installments ["exceeds_receivable"])
+        when the Deal''s existing installments plus this batch would total more than
+        its receivable — the Outstanding Balance rule: latest Accepted Quote''s taxable
+        amount + VAT when priced, else the Deal value; skipped when that receivable
+        is 0. Only the Deal''s assigned Sales Rep (or Admin/Sales Manager) may create.'
       parameters:
       - description: Deal ID
         in: path
@@ -5125,6 +5154,12 @@ paths:
             type: object
         "404":
           description: Deal not found
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Empty or invalid installments, or the schedule would exceed
+            the receivable (exceeds_receivable)
           schema:
             additionalProperties: true
             type: object
@@ -7461,8 +7496,7 @@ paths:
           schema:
             $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.Quote'
         "400":
-          description: Invalid request body, or validation error (status, price_type,
-            credit_days, wht_rate, discount_total)
+          description: Invalid request body
           schema:
             additionalProperties: true
             type: object
@@ -8362,12 +8396,12 @@ paths:
         name: assigned_to
         type: string
       - description: ISO date lower bound (YYYY-MM-DD, from server-local midnight),
-          filters on deals.created_at
+          filters on when the Deal closed (won_at for won, stage_entered_at for lost)
         in: query
         name: date_from
         type: string
       - description: ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local
-          day), filters on deals.created_at
+          day), filters on when the Deal closed
         in: query
         name: date_to
         type: string

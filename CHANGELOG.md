@@ -24,6 +24,7 @@ Entries before this file existed are reconstructed from git/PR history — going
 - `PUT /deals/:id` audits `value`/`company_id` changes (`updated`) and `assigned_to` changes (`reassigned`, the same shape as `PATCH /deals/:id/reassign`, so Sales Managers see them), with before/after.
 
 **Quote and contract lifecycle.**
+- Supersedes the 2026-10-01 Accepted-quote pricing lock: an Accepted or Rejected quote is now fully read-only, so any change other than an allowed status move is `409` (it was a `422` with `fields` code `accepted_locked` for pricing fields only). Nothing in the frontend read `accepted_locked`.
 - Quote status moves follow a fixed table (`models.CanTransitionQuoteStatus`): draft → sent/accepted/rejected, sent → draft/accepted/rejected, accepted → rejected, rejected → nothing. A Sent quote past its validity date (shown as `expired`) can't be accepted; move it back to draft with a new `validity_date`, or duplicate it. Anything else is `409`.
 - An Accepted or Rejected quote is read-only: a `PUT` that would change any field other than `status` is `409`. Resending the stored values, or sending only `{"status": "rejected"}`, is fine.
 - One Accepted quote per Deal. Accepting (or creating as accepted) while another quote of the Deal is Accepted is `409` naming that quote's number; reject it first. The Deal row is locked, so two concurrent accepts can't both win. Every quote save also re-checks the stored status under a row lock, so a stale full-row `PUT` can't overwrite a concurrent status change (`409`, reload).
@@ -62,6 +63,18 @@ Regression-guarded: `tests/duplicate_detection_test.go`, new cases in `tests/imp
 - `utils.ErrBulkSkip` lets a `BulkUpdate` apply leave one row alone without failing the batch.
 
 Regression-guarded: `tests/won_deal_protection_test.go`, `tests/payment_guards_test.go`. Swagger annotations updated; regenerate `docs/` after merging.
+
+## 2026-10-01 — Quote money fixes: tax-inclusive VAT, satang rounding, Accepted lock, schedule cap
+
+- **Tax-inclusive quotes no longer charge VAT twice.** With `price_type: "incl_tax"` and VAT on, `ComputeQuoteTotals` backs VAT out of the prices (taxable = net × 100/107, VAT = net − taxable) instead of adding 7% on top. Affects the quote PDF, the Outstanding Balance receivable and expiring-soon `total_value`. `excl_tax` and VAT-off quotes are unchanged. WHT stays on the pre-VAT amount.
+- **Totals round to satang at every step** (line, subtotal, net, taxable, VAT, WHT; grand total from the rounded parts), half up like the frontend, so the PDF's printed lines add up exactly. A receivable can move by a satang.
+- **Accepted quotes' pricing is locked.** `PUT /quotes/:id` on a stored-Accepted quote returns `422` (`accepted_locked`) for a change to items, price type, VAT/WHT or discount. Same values resent, status changes and text fields still work.
+- **Generated payment schedules can't exceed the receivable.** `POST /deals/:dealId/payment-installments/bulk` returns `422` (`exceeds_receivable`) when existing + new installments would total more than the Deal's receivable (skipped when it's 0).
+- **`Deal.won_at`** (new nullable, indexed column): when the Deal became Won. A `BeforeSave` hook on `Deal` sets it on the way into status `won` (Kanban stage move, `PUT`, create, Lead convert), keeps it on later re-saves, and clears it when the Deal reopens or is lost. On boot, `database.BackfillDealWonAt` fills it for won Deals that don't have one (from `stage_entered_at`, else `updated_at`) and clears it on Deals that aren't won. It only touches rows that are out of step, so it runs again on every boot.
+- **`GET /dashboard/summary`**: `won_value`, `win_rate`, the Won/Lost bars in `stage_breakdown`, and the won/lost numbers in `industry_breakdown` and `team_performance` now count Deals **won or lost inside the window**: won by `won_at`, lost by `stage_entered_at`. Before, they counted Deals created in the window. `revenue_trend` and `annual_revenue_trend` now bucket by `won_at`. Open-pipeline figures still go by `created_at`. `avg_deal_size` is now the average of Deals won in the window (FR-CRM-057), not of every Deal. New fields: `deals_count` (Deals matching the filters) and `total_deals_count`.
+- **`GET /reports/win-loss-reasons`** (and its CSV export): the date range now filters on when the Deal closed, not on `created_at`.
+- **`PipelineStage.default_probability`** (read-only, on every `/admin/pipeline-stages` response): the probability a Deal gets in that stage when none is sent (`utils.DefaultProbabilityFor`). The frontend uses this in place of its own table.
+- **`Contract.effective_status`** (read-only, on every contract response): `expired` once a `signed` contract's `end_date` has passed, using the server-local day. `status` stays `signed`, so the signed-contract Won gate still counts the contract.
 
 ## 2026-09-28 — Review pass: sessions, access, deal states, report dates, deploy hardening
 

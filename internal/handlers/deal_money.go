@@ -90,30 +90,3 @@ func writeWonReversedAudit(tx *gorm.DB, deal *models.Deal, before models.JSONMap
 	after := models.JSONMap{"stage": deal.Stage, "status": deal.Status, "reason": reason}
 	return utils.WriteAuditLog(tx, "deal", deal.ID, "won_reversed", before, after, actorID)
 }
-
-// receivableFor is what the customer owes on a Deal in total — the Outstanding
-// Balance report's rule (computeOutstandingRow): the latest Accepted Quote's
-// taxable amount + VAT when it has priced line items, else the Deal value.
-func receivableFor(dealValue float64, acceptedQuote *models.Quote) float64 {
-	if acceptedQuote != nil {
-		totals := utils.ComputeQuoteTotals(acceptedQuote.Items, acceptedQuote.DiscountTotal, acceptedQuote.VatEnabled, acceptedQuote.WhtEnabled, acceptedQuote.WhtRate)
-		if totals.Subtotal > 0 {
-			return totals.ReceivableAmount()
-		}
-	}
-	return dealValue
-}
-
-// dealReceivableAmount loads the Deal's latest Accepted Quote and returns
-// receivableFor it.
-func dealReceivableAmount(db *gorm.DB, deal *models.Deal) (float64, error) {
-	var quotes []models.Quote
-	if err := db.Where("deal_id = ? AND status = ?", deal.ID, models.QuoteStatusAccepted).
-		Order("created_at DESC, id DESC").Limit(1).Find(&quotes).Error; err != nil {
-		return 0, err
-	}
-	if len(quotes) == 0 {
-		return receivableFor(deal.Value, nil), nil
-	}
-	return receivableFor(deal.Value, &quotes[0]), nil
-}

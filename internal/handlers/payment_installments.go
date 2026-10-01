@@ -116,13 +116,65 @@ func (h *PaymentInstallmentHandler) Create(c *fiber.Ctx) error {
 	return utils.Created(c, installment)
 }
 
+// ScheduleExceedsReceivableCode is the 422 `fields.installments` code
+// BulkCreate returns when the schedule would plan more than is owed.
+const ScheduleExceedsReceivableCode = "exceeds_receivable"
+
+// dealReceivable is what the customer owes on the Deal, by the Outstanding
+// Balance report's rule (utils.DealReceivable): its latest Accepted Quote's
+// taxable amount + VAT when priced, else the Deal value.
+func dealReceivable(db *gorm.DB, deal *models.Deal) (float64, error) {
+	var quotes []models.Quote
+	if err := db.Where("deal_id = ? AND status = ?", deal.ID, models.QuoteStatusAccepted).
+		Order("created_at DESC, id DESC").Limit(1).Find(&quotes).Error; err != nil {
+		return 0, err
+	}
+	var latest *models.Quote
+	if len(quotes) > 0 {
+		latest = &quotes[0]
+	}
+	amount, _ := utils.DealReceivable(deal.Value, latest)
+	return amount, nil
+}
+
+// scheduleExceedsReceivable writes a 422 and returns true when the Deal's
+// existing installments plus `rows` would total more than its receivable
+// (to the satang). Paid installments count too — the schedule as a whole is
+// what's measured against what's owed. A receivable of 0 (no Accepted Quote
+// and no Deal value yet) has nothing to measure against, so it never blocks.
+func (h *PaymentInstallmentHandler) scheduleExceedsReceivable(c *fiber.Ctx, deal *models.Deal, rows []paymentInstallmentForm) (bool, error) {
+	receivable, err := dealReceivable(h.DB, deal)
+	if err != nil {
+		return false, err
+	}
+	if receivable <= 0 {
+		return false, nil
+	}
+	var existing float64
+	if err := h.DB.Model(&models.PaymentInstallment{}).Where("deal_id = ?", deal.ID).
+		Select("COALESCE(SUM(amount), 0)").Scan(&existing).Error; err != nil {
+		return false, err
+	}
+	var batch float64
+	for _, row := range rows {
+		batch += row.Amount
+	}
+	total := utils.RoundSatang(existing + batch)
+	if total <= receivable+utils.MoneyEpsilon {
+		return false, nil
+	}
+	msg := fmt.Sprintf("the schedule would total %.2f, more than the %.2f receivable (%.2f already scheduled)", total, receivable, existing)
+	_ = utils.ValidationError(c, msg, map[string][]string{"installments": {ScheduleExceedsReceivableCode}})
+	return true, nil
+}
+
 type paymentInstallmentBulkForm struct {
 	Installments []paymentInstallmentForm `json:"installments"`
 }
 
 // BulkCreate godoc
 // @Summary Generate a payment schedule in one action (Admin/Sales Rep/Sales Manager)
-// @Description Creates every installment in one batch insert + one summary audit-log entry, instead of the caller looping N calls to Create — mirrors CampaignHandler.BulkCreateTasks's shape. The frontend computes the actual split (equal amounts, spaced dates); this endpoint only validates and inserts, same permissive per-row rules as the single-row Create. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create.
+// @Description Creates every installment in one batch insert + one summary audit-log entry, instead of the caller looping N calls to Create — mirrors CampaignHandler.BulkCreateTasks's shape. The frontend computes the actual split (equal amounts, spaced dates); this endpoint only validates and inserts, same per-row rules as the single-row Create. The whole batch is rejected (422, fields.installments ["exceeds_receivable"]) when the Deal's existing installments plus this batch would total more than its receivable — the Outstanding Balance rule: latest Accepted Quote's taxable amount + VAT when priced, else the Deal value; skipped when that receivable is 0. Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may create.
 // @Tags payment-installments
 // @Security BearerAuth
 // @Accept json
@@ -133,6 +185,7 @@ type paymentInstallmentBulkForm struct {
 // @Failure 400 {object} map[string]interface{} "Invalid request body"
 // @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
 // @Failure 404 {object} map[string]interface{} "Deal not found"
+// @Failure 422 {object} map[string]interface{} "Empty or invalid installments, or the schedule would exceed the receivable (exceeds_receivable)"
 // @Router /deals/{dealId}/payment-installments/bulk [post]
 func (h *PaymentInstallmentHandler) BulkCreate(c *fiber.Ctx) error {
 	deal, err := dealForSubResource(c, h.DB, c.Params("dealId"))
@@ -151,6 +204,14 @@ func (h *PaymentInstallmentHandler) BulkCreate(c *fiber.Ctx) error {
 		if !row.validate(c) {
 			return nil
 		}
+	}
+
+	exceeds, err := h.scheduleExceedsReceivable(c, deal, form.Installments)
+	if err != nil {
+		return utils.Internal(c, "Failed to generate payment schedule")
+	}
+	if exceeds {
+		return nil
 	}
 
 	installments := make([]models.PaymentInstallment, 0, len(form.Installments))

@@ -339,7 +339,11 @@ func (h *ReportHandler) fetchWinLossReasons(c *fiber.Ctx) ([]winLossReasonRow, e
 	if v := c.Query("assigned_to"); v != "" {
 		query = query.Where("deals.assigned_to = ?", v)
 	}
-	query = window.Apply(query, "deals.created_at")
+	// Closed in the window: won ones by won_at, lost ones by when they
+	// entered the Lost lane — same reading as the dashboard's win rate
+	// (dealWindows), not when the Deal was created.
+	windows := newDealWindows(window, "")
+	query = anyOf(windows.won, windows.lost).apply(query)
 	if v := c.Query("company_tag"); v != "" {
 		query = query.Joins("JOIN companies ON companies.id = deals.company_id").
 			Where("companies.tags && ARRAY[?]::text[]", v)
@@ -364,8 +368,8 @@ func (h *ReportHandler) fetchWinLossReasons(c *fiber.Ctx) ([]winLossReasonRow, e
 // @Security BearerAuth
 // @Produce json
 // @Param assigned_to query string false "Filter by assigned Sales Rep user ID"
-// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on deals.created_at"
-// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on deals.created_at"
+// @Param date_from query string false "ISO date lower bound (YYYY-MM-DD, from server-local midnight), filters on when the Deal closed (won_at for won, stage_entered_at for lost)"
+// @Param date_to query string false "ISO date upper bound (YYYY-MM-DD, inclusive of that whole server-local day), filters on when the Deal closed"
 // @Param company_tag query string false "Filter by Company tag"
 // @Success 200 {object} map[string]interface{}
 // @Failure 422 {object} map[string]interface{} "Malformed date_from/date_to, or date_to before date_from"
@@ -598,15 +602,13 @@ func quotePtr(q models.Quote, ok bool) *models.Quote {
 // from the Deal's latest Accepted Quote (nil if none), Payments and
 // installment schedule. Pure — no DB — so the money math is unit-testable.
 func computeOutstandingRow(r *outstandingBalanceRow, acceptedQuote *models.Quote, payments []models.Payment, installments []models.PaymentInstallment, now time.Time) {
-	r.ReceivableAmount, r.ReceivableSource = r.DealValue, ReceivableSourceDealValue
-	if acceptedQuote != nil {
-		totals := utils.ComputeQuoteTotals(acceptedQuote.Items, acceptedQuote.DiscountTotal, acceptedQuote.VatEnabled, acceptedQuote.WhtEnabled, acceptedQuote.WhtRate)
-		// Only a quote with priced line items says what the customer owes;
-		// an uploaded PDF whose extraction failed is Accepted with no items,
-		// and the Deal value is the better figure then.
-		if totals.Subtotal > 0 {
-			r.ReceivableAmount, r.ReceivableSource = totals.ReceivableAmount(), ReceivableSourceQuote
-		}
+	// Only a quote with priced line items says what the customer owes; an
+	// uploaded PDF whose extraction failed is Accepted with no items, and the
+	// Deal value is the better figure then (utils.DealReceivable).
+	amount, fromQuote := utils.DealReceivable(r.DealValue, acceptedQuote)
+	r.ReceivableAmount, r.ReceivableSource = amount, ReceivableSourceDealValue
+	if fromQuote {
+		r.ReceivableSource = ReceivableSourceQuote
 	}
 
 	r.PaidAmount, r.WhtAmount = 0, 0
@@ -743,7 +745,7 @@ func (h *ReportHandler) fetchQuotesExpiringSoon(c *fiber.Ctx) ([]quoteExpiringSo
 		}
 		for _, qwd := range dealQuotes {
 			q := qwd.quote
-			total := utils.ComputeQuoteTotals(q.Items, q.DiscountTotal, q.VatEnabled, q.WhtEnabled, q.WhtRate).GrandTotal
+			total := utils.QuoteTotalsOf(&q).GrandTotal
 			result = append(result, quoteExpiringSoonRow{
 				QuoteID: qwd.quote.ID, DealID: dealID, DealTitle: deal.Title,
 				CompanyName: companyNameByID[deal.CompanyID], ValidityDate: *qwd.quote.ValidityDate, TotalValue: total,
