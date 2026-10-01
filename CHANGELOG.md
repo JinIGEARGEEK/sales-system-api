@@ -6,6 +6,10 @@ Entries before this file existed are reconstructed from git/PR history — going
 
 ## Unreleased — Review follow-ups
 
+**Quotes priced before the tax-inclusive VAT fix keep their totals.**
+- The 2026-10-01 fix (#77) stopped `incl_tax` quotes from adding VAT on top of their prices, but it also recalculated quotes made before it, so a quote a customer had already received showed a lower total and receivable. A one-time boot migration (`KeepLegacyInclTaxQuoteTotals`, `data_migrations` row `legacy_incl_tax_quote_totals`) switches every sent/accepted/rejected `incl_tax` quote with VAT on, created before the fix merged (2026-10-01 04:43 UTC), to `excl_tax`. That is exactly the old calculation (prices + 7% VAT), so the total, PDF and receivable return to what the customer saw. Drafts and quotes created after the fix keep the corrected tax-inclusive calculation.
+- A Deal whose value was linked to one of those quotes is unlinked with its value unchanged (the boot never rewrites revenue); it links again the next time one of its quotes is accepted. No audit rows. Regression-guarded: `TestKeepLegacyInclTaxQuoteTotals`.
+
 **CSV exports past 500 rows.**
 - **Fixed:** the companies, contacts, deals, products and projects exports skipped and repeated rows once they had more than one 500-row page. The later pages used `FindInBatches`, which pages by id and kept the first page's offset, while the export sorts by `created_at`. Exports now page with LIMIT/OFFSET in their own order, with an `id` tie-breaker. Regression-guarded: `TestExport_PagesNeitherSkipNorRepeatRows`.
 
