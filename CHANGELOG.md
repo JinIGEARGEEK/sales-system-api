@@ -4,6 +4,17 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## Unreleased — Review round 2
+
+**Users and ownership.**
+- Deactivating a user (`PUT /users/:id` with `status: "inactive"`, `PATCH /users/bulk-deactivate`), deleting one (`DELETE /users/:id`), or moving one to a role that can't own pipeline records (Production) accepts an optional `reassign_to`: an active Admin/Sales Rep/Sales Manager/Marketing user, not one of the users being removed (`422` on field `reassign_to` otherwise). Their open Deals (status `open`), Leads and Prospects (not converted or disqualified) and pending Tasks move to that user in the same transaction, with one `records_reassigned` audit row per user giving the counts. Closed records keep their owner. On `DELETE`, `reassign_to` can be a query param or a JSON body.
+- Those responses now report `open_records` (`{deals, leads, prospects, tasks, total}` still owned), and `reassigned` (same counts plus `user_id`, `reassign_to`) when `reassign_to` was given, so the UI can offer a reassign. **`DELETE /users/:id` and `PATCH /users/bulk-deactivate` now return `200` with a body instead of `204`.** `PUT` adds the two fields to the user object. Bulk returns arrays: `open_records` per listed user (with `user_id`) and `reassigned` per user that had records moved. `bulk-activate` still returns `204`.
+- An Admin can't change their own role or deactivate or delete themselves (`422`, on field `role`/`status`/`id`/`ids`). Nobody can demote, deactivate or delete the last active Admin (`409`). The check locks the active Admin rows, so two Admins removing each other at the same time can't both succeed.
+- `PUT /users/:id` writes `role_changed` and `activated`/`deactivated` audit rows (bulk was already audited).
+- Deal `assigned_to` must be an active user in a sales-pipeline role (`422` on field `assigned_to`) on `POST /deals` (and Lead Convert, which shares the check), `PATCH /deals/:id/reassign`, and the deal/lead/prospect `bulk-reassign`. `PUT /deals/:id` checks it only when it changes, so a deal whose owner was deactivated can still be edited.
+- On `PUT /deals/:id` a Sales Rep or Marketing user can keep their deal or claim an unassigned one, but not unassign it or give it to someone else (`403`).
+- `PUT /deals/:id` audits `value`/`company_id` changes (`updated`) and `assigned_to` changes (`reassigned`, the same shape as `PATCH /deals/:id/reassign`, so Sales Managers see them), with before/after.
+
 ## 2026-09-28 — Review pass: sessions, access, deal states, report dates, deploy hardening
 
 Fixes from a full review of auth, handlers, reports and infrastructure.

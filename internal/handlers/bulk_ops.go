@@ -45,6 +45,9 @@ func bulkReassignEntity[T any](c *fiber.Ctx, db *gorm.DB, entityType string,
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, fmt.Sprintf("Cannot assign a %s to another team member", entityType))
 	}
+	if err := validateAssignee(db, form.AssignedTo); err != nil {
+		return respondAssigneeErr(c, err)
+	}
 
 	actorID := middleware.CurrentUserID(c)
 	err := utils.BulkUpdate(db, form.IDs, entityType, "bulk_reassigned", actorID,
