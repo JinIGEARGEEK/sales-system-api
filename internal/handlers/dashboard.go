@@ -23,29 +23,111 @@ func NewDashboardHandler(db *gorm.DB) *DashboardHandler {
 	return &DashboardHandler{DB: db}
 }
 
-// applyDateWindow applies the shared date_from/date_to-or-period resolution
-// (explicit bounds win outright; period is only a fallback when both are
-// omitted) against the given column. Shared by baseFilter (deals.created_at)
-// and teamPerformance's activity-count query (activities.created_at) so the
-// two aggregates always agree on what date window "this dashboard view"
-// means, rather than each re-deriving it. window is the already-parsed
-// date_from/date_to (dateRangeQuery: inclusive server-local days).
-func applyDateWindow(query *gorm.DB, column string, window utils.DateRange, period string) *gorm.DB {
+// windowBounds resolves the shared date_from/date_to-or-period rule into
+// bounds: explicit bounds win outright; period is only a fallback when both
+// are omitted. window is the already-parsed date_from/date_to
+// (dateRangeQuery: inclusive server-local days). Nil means unbounded.
+func windowBounds(window utils.DateRange, period string) (from, toExclusive *time.Time) {
 	if window.IsZero() {
-		if from, ok := periodStart(period); ok {
-			query = query.Where(column+" >= ?", from)
+		if start, ok := periodStart(period); ok {
+			return &start, nil
 		}
-		return query
+		return nil, nil
 	}
-	return window.Apply(query, column)
+	return window.From, window.ToExclusive
 }
 
-// baseFilter applies the shared date_from/date_to (or period), business_unit,
-// business_unit_item, channel, assigned_to (Sales Rep), and company_tag query
-// params — api-system-spec.md §9, FR-CRM-055.
-func (h *DashboardHandler) baseFilter(c *fiber.Ctx, window utils.DateRange) *gorm.DB {
+// sqlCond is one SQL condition with its bind args, so the dashboard's date
+// windows can be combined (OR'd, or used inside an aggregate's FILTER).
+type sqlCond struct {
+	sql  string
+	args []interface{}
+}
+
+// windowCond is the dashboard's date window as a condition on column
+// ("TRUE" when unbounded). Qualify column if the query joins another table.
+func windowCond(column string, window utils.DateRange, period string) sqlCond {
+	from, to := windowBounds(window, period)
+	var parts []string
+	var args []interface{}
+	if from != nil {
+		parts, args = append(parts, column+" >= ?"), append(args, *from)
+	}
+	if to != nil {
+		parts, args = append(parts, column+" < ?"), append(args, *to)
+	}
+	if len(parts) == 0 {
+		return sqlCond{sql: "TRUE"}
+	}
+	return sqlCond{sql: strings.Join(parts, " AND "), args: args}
+}
+
+// and prefixes c with a fixed (arg-free) condition.
+func (c sqlCond) and(prefix string) sqlCond {
+	return sqlCond{sql: prefix + " AND " + c.sql, args: c.args}
+}
+
+// anyOf ORs conds into one parenthesized condition.
+func anyOf(conds ...sqlCond) sqlCond {
+	parts := make([]string, len(conds))
+	var args []interface{}
+	for i, c := range conds {
+		parts[i] = "(" + c.sql + ")"
+		args = append(args, c.args...)
+	}
+	return sqlCond{sql: "(" + strings.Join(parts, " OR ") + ")", args: args}
+}
+
+func (c sqlCond) apply(query *gorm.DB) *gorm.DB {
+	return query.Where(c.sql, c.args...)
+}
+
+// dealWindows is the dashboard's date window read three ways, by the date
+// each kind of figure counts a Deal on:
+//   - created: when it entered the pipeline (open pipeline, forecast, deal
+//     counts — "deals created this period")
+//   - won: when it became Won (deals.won_at), so "won this period" means
+//     closed this period, not created this period then won any time
+//   - lost: when it became Lost — stage_entered_at, its entry into the Lost
+//     lane (a Lost-flagged stage forces status lost; there's no separate
+//     lost_at). Win rate is won ÷ (won + lost) over the same closing window.
+type dealWindows struct {
+	created, won, lost sqlCond
+}
+
+func newDealWindows(window utils.DateRange, period string) dealWindows {
+	return dealWindows{
+		created: windowCond("deals.created_at", window, period),
+		won:     windowCond("deals.won_at", window, period).and("deals.status = 'won'"),
+		lost:    windowCond("deals.stage_entered_at", window, period).and("deals.status = 'lost'"),
+	}
+}
+
+// inPeriod matches a Deal any figure counts in the window: open and created
+// in it, or won/lost in it. stage_breakdown/industry/team rows group over
+// this, so a Won bar or a rep's win count agrees with won_value/win_rate.
+func (w dealWindows) inPeriod() sqlCond {
+	return anyOf(w.created.and("deals.status = 'open'"), w.won, w.lost)
+}
+
+// applyDateWindow filters query to column inside the dashboard's date
+// window. Shared by the created_at-windowed Deal figures and
+// teamPerformance's activity-count query (activities.created_at) so they
+// always agree on what date window "this dashboard view" means.
+func applyDateWindow(query *gorm.DB, column string, window utils.DateRange, period string) *gorm.DB {
+	cond := windowCond(column, window, period)
+	if cond.args == nil {
+		return query
+	}
+	return cond.apply(query)
+}
+
+// dealFilter applies the shared business_unit, business_unit_item, channel,
+// assigned_to (Sales Rep), and company_tag query params — api-system-spec.md
+// §9, FR-CRM-055 — but no date window: each figure adds the window for the
+// date it counts by (dealWindows).
+func (h *DashboardHandler) dealFilter(c *fiber.Ctx) *gorm.DB {
 	query := h.DB.Model(&models.Deal{})
-	query = applyDateWindow(query, "deals.created_at", window, c.Query("period"))
 
 	if v := c.Query("business_unit"); v != "" {
 		query = query.Where("deals.business_unit = ?", v)
@@ -104,8 +186,8 @@ type annualGoalTrendPoint struct {
 	GoalPace float64 `json:"goal_pace"`
 }
 
-// annualRevenueTrend buckets cumulative Won Deal value for the current
-// calendar year, Jan through the current month, alongside a straight-line
+// annualRevenueTrend buckets cumulative Won Deal value (by won_at, the month
+// it was won) for the current calendar year, Jan through the current month, alongside a straight-line
 // "goal pace" for the same point (annualGoal × months-elapsed/12) — lets the
 // frontend chart whether the company is ahead of or behind pace over the
 // year, not just infer it from today's single ratio. A fixed company-wide
@@ -122,7 +204,7 @@ func (h *DashboardHandler) annualRevenueTrend(annualGoal int64) []annualGoalTren
 	monthsElapsed := int(now.Month())
 	bounds := monthBounds(yearStart, monthsElapsed)
 	byMonth := sumByLocalMonth(h.DB.Model(&models.Deal{}).Where("status = ?", models.DealStatusWon),
-		"created_at", "value", bounds)
+		"won_at", "value", bounds)
 
 	points := make([]annualGoalTrendPoint, 0, monthsElapsed)
 	cumulative := 0.0
@@ -309,13 +391,18 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	}
 	summaryCacheMu.Unlock()
 
-	base := h.baseFilter(c, window)
+	// dims carries the non-date filters; base adds the created_at window for
+	// the figures counted by when a Deal entered the pipeline, windows the
+	// won/lost ones (see dealWindows).
+	dims := h.dealFilter(c)
+	windows := newDealWindows(window, c.Query("period"))
+	base := applyDateWindow(dims.Session(&gorm.Session{}), "deals.created_at", window, c.Query("period"))
 	// Read every query param the concurrent goroutines below need up front,
 	// on this goroutine, before any of them start. c.Query(...) reads/lazily
 	// parses fasthttp's shared, unsynchronized query-args cache on first
 	// access per request — calling it from multiple goroutines at once (as an
 	// earlier version of this handler did, via each breakdown method calling
-	// h.baseFilter(c) for itself) is a data race. base already resolves every
+	// h.baseFilter(c) for itself) is a data race. dims/base already resolve every
 	// filter into gorm clauses synchronously right here; companyTagSet is the
 	// one extra bit industryBreakdown needs to avoid double-joining companies.
 	companyTagSet := c.Query("company_tag") != ""
@@ -345,7 +432,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 	// fiber-request-shaped), only `base`/`settings` and plain values already
 	// captured above — see the comment on that.
 	var openPipelineValue, wonValue, avgDealSize, forecastedRevenue float64
-	var openDealsCount, wonCount, lostCount int64
+	var openDealsCount, wonCount, lostCount, dealsCount, totalDealsCount int64
 	var revenueTrend, forecastTrend []revenueTrendPoint
 	var stageBreakdown []stageBreakdownItem
 	var forecastByCategory forecastByCategoryItem
@@ -391,13 +478,22 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 		base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusOpen).
 			Select("COALESCE(SUM(deals.value), 0)").Scan(&openPipelineValue)
 	})
+	// Won figures count Deals won in the window (won_at), not created in it.
 	run("won_value", func() {
-		base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusWon).
+		windows.won.apply(dims.Session(&gorm.Session{})).
 			Select("COALESCE(SUM(deals.value), 0)").Scan(&wonValue)
 	})
+	// FR-CRM-057: the average size of a won Deal, over the same won-in-window
+	// Deals as won_value — not every Deal regardless of outcome.
 	run("avg_deal_size", func() {
-		base.Session(&gorm.Session{}).Select("COALESCE(AVG(deals.value), 0)").Scan(&avgDealSize)
+		windows.won.apply(dims.Session(&gorm.Session{})).
+			Select("COALESCE(AVG(deals.value), 0)").Scan(&avgDealSize)
 	})
+	// deals_count/total_deals_count back the filter bar's "Showing X of Y
+	// deals": X is every Deal matching the filters (created in the window),
+	// Y every Deal at all.
+	run("deals_count", func() { base.Session(&gorm.Session{}).Count(&dealsCount) })
+	run("total_deals_count", func() { h.DB.Model(&models.Deal{}).Count(&totalDealsCount) })
 	run("open_deals_count", func() {
 		base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusOpen).Count(&openDealsCount)
 	})
@@ -409,20 +505,20 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 			Select("COALESCE(SUM(deals.value * COALESCE(deals.probability, 0) / 100.0), 0)").Scan(&forecastedRevenue)
 	})
 	run("win_rate", func() {
-		base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusWon).Count(&wonCount)
+		windows.won.apply(dims.Session(&gorm.Session{})).Count(&wonCount)
 	})
 	run("win_rate", func() {
-		base.Session(&gorm.Session{}).Where("deals.status = ?", models.DealStatusLost).Count(&lostCount)
+		windows.lost.apply(dims.Session(&gorm.Session{})).Count(&lostCount)
 	})
 	run("revenue_trend", func() { revenueTrend = h.revenueTrend() })
 	run("forecast_trend", func() { forecastTrend = h.forecastTrend() })
-	run("stage_breakdown", func() { stageBreakdown = h.stageBreakdown(base) })
+	run("stage_breakdown", func() { stageBreakdown = h.stageBreakdown(dims, windows) })
 	run("forecast_by_category", func() { forecastByCategory = h.forecastByCategory(base) })
-	run("industry_breakdown", func() { industryBreakdown = h.industryBreakdown(base, companyTagSet) })
-	run("team_performance", func() { teamPerformance = h.teamPerformance(base, window, period) })
+	run("industry_breakdown", func() { industryBreakdown = h.industryBreakdown(dims, windows, companyTagSet) })
+	run("team_performance", func() { teamPerformance = h.teamPerformance(dims, windows, window, period) })
 	run("annual_revenue_trend", func() { annualRevenueTrend = h.annualRevenueTrend(settings.AnnualRevenueGoal) })
 	// upsellOpportunities is Company-centric (not Deal-scoped), so it's
-	// deliberately independent of `base`/baseFilter's Deal-side query params —
+	// deliberately independent of `dims`/dealFilter's Deal-side query params —
 	// see h.upsellOpportunities's own doc comment.
 	run("upsell_opportunities", func() { upsellOpportunities = h.upsellOpportunities(upsellMinStaleDays) })
 	var quarterlySalesTarget float64
@@ -474,6 +570,8 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 		"won_value":                     wonValue,
 		"win_rate":                      winRate(wonCount, lostCount),
 		"open_deals_count":              openDealsCount,
+		"deals_count":                   dealsCount,
+		"total_deals_count":             totalDealsCount,
 		"forecasted_revenue":            forecastedRevenue,
 		"forecast_by_category":          forecastByCategory,
 		"avg_deal_size":                 avgDealSize,
@@ -515,7 +613,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 }
 
 // revenueTrend buckets the last 6 months (this month + 5 back) of Won revenue
-// by created_at month, in a single grouped query rather than one query per
+// by won_at month (when it was won, not created), in a single grouped query rather than one query per
 // month — the original shape issued 6 round-trips here on every dashboard
 // load. Deliberately ignores Summary's base filter (business_unit/channel/
 // assigned_to/company_tag/date range) — it's a fixed trailing-6-month view
@@ -523,7 +621,7 @@ func (h *DashboardHandler) Summary(c *fiber.Ctx) error {
 func (h *DashboardHandler) revenueTrend() []revenueTrendPoint {
 	bounds := monthBounds(thisMonthStart(time.Now()).AddDate(0, -5, 0), 6)
 	byMonth := sumByLocalMonth(h.DB.Model(&models.Deal{}).Where("status = ?", models.DealStatusWon),
-		"created_at", "value", bounds)
+		"won_at", "value", bounds)
 
 	points := make([]revenueTrendPoint, 0, 6)
 	for i, v := range byMonth {
@@ -593,16 +691,34 @@ func (h *DashboardHandler) forecastTrend() []revenueTrendPoint {
 }
 
 // stageBreakdown, industryBreakdown, and teamPerformance all take the already
-// -built base filter query (from Summary's single synchronous h.baseFilter(c)
+// -built filter query (from Summary's single synchronous h.dealFilter(c)
 // call) rather than *fiber.Ctx — Summary runs these concurrently, and
 // c.Query from several goroutines at once is a data race on fasthttp's
 // lazily-parsed query-args cache.
-func (h *DashboardHandler) stageBreakdown(base *gorm.DB) []stageBreakdownItem {
+//
+// Open stages count Deals created in the window; Won/Lost stages count
+// Deals won/lost in it (dealWindows.inPeriod), so the Won bar and the
+// outcome split's Lost slice agree with won_value/win_rate.
+func (h *DashboardHandler) stageBreakdown(dims *gorm.DB, windows dealWindows) []stageBreakdownItem {
 	var rows []stageBreakdownItem
-	base.Session(&gorm.Session{}).
+	windows.inPeriod().apply(dims.Session(&gorm.Session{})).
 		Select("deals.stage, COALESCE(SUM(deals.value), 0) as value, count(*) as count").
 		Group("deals.stage").Scan(&rows)
 	return rows
+}
+
+// wonLostAggregates is the Select list industryBreakdown/teamPerformance
+// share: won/lost counts (and won value) over Deals won/lost in the window.
+func wonLostAggregates(prefix string, windows dealWindows) (string, []interface{}) {
+	sql := prefix +
+		"count(*) FILTER (WHERE " + windows.won.sql + ") as won_count, " +
+		"COALESCE(SUM(deals.value) FILTER (WHERE " + windows.won.sql + "), 0) as won_value, " +
+		"count(*) FILTER (WHERE " + windows.lost.sql + ") as lost_count"
+	args := make([]interface{}, 0, 2*len(windows.won.args)+len(windows.lost.args))
+	args = append(args, windows.won.args...)
+	args = append(args, windows.won.args...)
+	args = append(args, windows.lost.args...)
+	return sql, args
 }
 
 // forecastByCategory splits forecastedRevenue's same weighted formula
@@ -635,18 +751,18 @@ func (h *DashboardHandler) forecastByCategory(base *gorm.DB) forecastByCategoryI
 
 // companyTagSet mirrors whether Summary's base filter already joined
 // companies (only when ?company_tag= was supplied) — avoids joining it twice.
-func (h *DashboardHandler) industryBreakdown(base *gorm.DB, companyTagSet bool) []industryBreakdownItem {
+func (h *DashboardHandler) industryBreakdown(dims *gorm.DB, windows dealWindows, companyTagSet bool) []industryBreakdownItem {
 	var rows []struct {
 		Industry  string
 		WonCount  int64
 		LostCount int64
 	}
-	query := base.Session(&gorm.Session{})
+	query := windows.inPeriod().apply(dims.Session(&gorm.Session{}))
 	if !companyTagSet {
 		query = query.Joins("JOIN companies ON companies.id = deals.company_id")
 	}
-	query.Select("companies.industry as industry, count(*) FILTER (WHERE deals.status = 'won') as won_count, count(*) FILTER (WHERE deals.status = 'lost') as lost_count").
-		Group("companies.industry").Scan(&rows)
+	sel, args := wonLostAggregates("companies.industry as industry, ", windows)
+	query.Select(sel, args...).Group("companies.industry").Scan(&rows)
 
 	result := make([]industryBreakdownItem, 0, len(rows))
 	for _, r := range rows {
@@ -657,16 +773,17 @@ func (h *DashboardHandler) industryBreakdown(base *gorm.DB, companyTagSet bool) 
 	return result
 }
 
-func (h *DashboardHandler) teamPerformance(base *gorm.DB, window utils.DateRange, period string) []teamPerformanceItem {
+func (h *DashboardHandler) teamPerformance(dims *gorm.DB, windows dealWindows, window utils.DateRange, period string) []teamPerformanceItem {
 	var rows []struct {
 		UserID    uint
 		WonCount  int64
 		WonValue  float64
 		LostCount int64
 	}
-	base.Session(&gorm.Session{}).
+	sel, args := wonLostAggregates("deals.assigned_to as user_id, ", windows)
+	windows.inPeriod().apply(dims.Session(&gorm.Session{})).
 		Where("deals.assigned_to IS NOT NULL").
-		Select("deals.assigned_to as user_id, count(*) FILTER (WHERE deals.status = 'won') as won_count, COALESCE(SUM(deals.value) FILTER (WHERE deals.status = 'won'), 0) as won_value, count(*) FILTER (WHERE deals.status = 'lost') as lost_count").
+		Select(sel, args...).
 		Group("deals.assigned_to").Scan(&rows)
 
 	userIDs := make([]uint, 0, len(rows))
@@ -684,9 +801,7 @@ func (h *DashboardHandler) teamPerformance(base *gorm.DB, window utils.DateRange
 
 	// Activity count per rep, over the same date window as the deal-count
 	// aggregates above (FR-CRM-053) — a separate query since Activity isn't
-	// joined to Deal, mirroring baseFilter's own date_from/date_to/period
-	// resolution rather than sharing it (base is scoped to deals.*, not a
-	// generically reusable filter).
+	// joined to Deal, through the same applyDateWindow resolution.
 	activityCounts := make(map[uint]int64, len(userIDs))
 	if len(userIDs) > 0 {
 		activityQuery := applyDateWindow(h.DB.Model(&models.Activity{}).Where("created_by_id IN ?", userIDs),
@@ -731,7 +846,7 @@ type upsellCompany struct {
 // most-stale first, capped at upsellCap. minStaleDays is the widget's own
 // filter dropdown (?upsell_min_stale_days).
 //
-// Deliberately independent of Summary's baseFilter (business_unit/channel/
+// Deliberately independent of Summary's dealFilter (business_unit/channel/
 // assigned_to/company_tag/date range) — this is Company-centric, not
 // Deal-scoped, same reasoning as annualRevenueTrend/revenueTrend/forecastTrend
 // ignoring those filters.

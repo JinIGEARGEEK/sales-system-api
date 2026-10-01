@@ -424,6 +424,12 @@ interface Deal {
   channel: LeadSource
   business_unit: BusinessUnit | null
   business_unit_item: string | null   // free-text label, e.g. specific product/project name
+  // Read-only (added 2026-10-01): when the Deal became Won (status won), null
+  // while it isn't. Set by the server on every move into won (stage drag, PUT,
+  // create, Lead convert), kept on later re-saves, cleared on a reopen/Lost.
+  // Existing won Deals were backfilled from stage_entered_at. The dashboard and
+  // win/loss report count "won this period" by it.
+  won_at: string | null
   created_at: string
 }
 ```
@@ -694,6 +700,11 @@ interface Contract {
   quote_id: number | null   // the Quote a Contract's PDF pulls line items/total from — optional,
                               // a Contract can be drafted before a Quote is finalized
   status: ContractStatus
+  // Read-only, derived (added 2026-10-01): 'expired' once a 'signed' contract's
+  // end_date has passed (server-local day), else `status`. Never stored or
+  // accepted on write — `status` stays 'signed', so the FR-CRM-045 Won gate
+  // still counts it. Display this; send back `status`, never this.
+  effective_status: ContractStatus
   signed_file_url: string | null
   signed_date: string | null
   created_at: string
@@ -702,7 +713,7 @@ interface Contract {
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/deals/:dealId/contracts` | List. |
+| `GET` | `/deals/:dealId/contracts` | List. Every Contract in this and the other contract responses carries the derived `effective_status` (see the shape above). |
 | `POST` | `/deals/:dealId/contracts` | Create. |
 | `PUT` | `/contracts/:id` | Update status/`quote_id`. |
 | `POST` | `/contracts/:id/upload` | Upload the signed document (§6.1) → sets `signed_file_url`/`signed_date`. |
@@ -795,7 +806,7 @@ Six more, going beyond the dashboard's aggregate stat cards into "which specific
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/reports/win-loss-reasons?date_from=&date_to=&assigned_to=&company_tag=` | `FR-CRM-093`. Every closed Deal (`won` or `lost`), grouped by `"won"` or its `lost_reason` code — `[{ reason, count, value }]`, sorted by `count` descending. Answers "why are we losing," not just the dashboard's win-rate number. A lost Deal missing `lost_reason` (shouldn't happen given `lost_reason`'s required-on-Lost validation, but tolerated defensively) groups under `"other"` rather than being dropped. |
+| `GET` | `/reports/win-loss-reasons?date_from=&date_to=&assigned_to=&company_tag=` | `FR-CRM-093`. Every closed Deal (`won` or `lost`), grouped by `"won"` or its `lost_reason` code — `[{ reason, count, value }]`, sorted by `count` descending. **Updated 2026-10-01:** `date_from`/`date_to` match when the Deal closed — `won_at` for won, `stage_entered_at` (entry into the Lost lane) for lost — not its `created_at`. Answers "why are we losing," not just the dashboard's win-rate number. A lost Deal missing `lost_reason` (shouldn't happen given `lost_reason`'s required-on-Lost validation, but tolerated defensively) groups under `"other"` rather than being dropped. |
 | `GET` | `/reports/stalled-deals?min_days=&assigned_to=&company_tag=` | `FR-CRM-094`. Open Deals with no logged Activity for at least `min_days` (default 14, falling back to the Deal's own `created_at` if it has never had one) — `[{ deal_id, title, company_name, stage, value, assigned_to, last_activity_at, days_stalled }]`, sorted by `days_stalled` descending (coldest first). Surfaces deals quietly going cold, not yet marked Lost. |
 | `GET` | `/reports/outstanding-balance?assigned_to=&company_tag=` | `FR-CRM-095`. Won Deals whose recorded Payments sum to less than the Deal's `value` — `[{ deal_id, deal_title, company_name, deal_value, paid_amount, outstanding_amount, aging }]`, sorted by `outstanding_amount` descending, every row money still owed. `aging` is `'overdue' \| 'upcoming' \| 'none'` — added 2026-09-15 alongside §7.5a's Payment Installment schedule: `'none'` when the Deal has no installment schedule defined (this report's original, pre-`aging` behavior, unchanged), otherwise `'overdue'` if any of that Deal's installments is overdue per §7.5a's waterfall helper (`utils.ComputeInstallmentStatusesFromPayments`, run against this Deal's Payments), else `'upcoming'`. Batches every row's installments in one query (`applyOutstandingBalanceAging`), not N+1 per row. **2026-09-27:** `receivable_amount` is the latest Accepted Quote's taxable amount + VAT (`receivable_source: 'quote'`) only when that quote has priced line items; otherwise (no Accepted quote, or e.g. an uploaded PDF whose extraction found no items) the Deal `value` (`'deal_value'`); `outstanding_amount` = receivable − `paid_amount` − `wht_amount`, rows within 0.005 of zero dropped. |
 | `GET` | `/reports/quotes-expiring-soon?within_days=&assigned_to=&company_tag=` | `FR-CRM-096`. Sent quotes (not yet Accepted/Rejected) whose `validity_date` falls within the next `within_days` (default 7) — `[{ quote_id, deal_id, deal_title, company_name, validity_date, total_value }]`, sorted by `validity_date` ascending (soonest-to-expire first). The forward-looking mirror of `Quote`'s `EffectiveStatus`-derived `expired` state (§7.4) — same permissive RFC3339-or-bare-date `validity_date` parsing, a value that fails to parse is silently skipped rather than erroring the whole report. `assigned_to`/`company_tag` match against each quote's parent Deal (there's no single SQL join spanning quotes/deals/companies here, so this is resolved in application code). |
@@ -908,6 +919,7 @@ interface OptionRow {              // LeadSourceOption / IndustryOption / Compan
 | Method | Path | Description |
 |---|---|---|
 | `GET` / `POST` | `/admin/pipeline-stages` | List / create a `PipelineStage`. Seeded on first run from the previously hardcoded `DealStage` enum (`Lead, Qualified, Proposal Sent, Negotiation, Won, Lost`) so existing Deals validate unchanged. **Updated 2026-09-24:** optional `stale_days` (1–365, or `null` for the default 14) — how long a record may sit in this stage before the Overview Pipeline flags it stale; not used on won/lost/disqualified stages. Unlike the stage's other fields, an update that omits `stale_days` leaves the saved value alone (older clients can't wipe it); only an explicit `null` resets it. **Updated 2026-09-24:** renaming a stage repoints every record that stores it by name — Deals' `stage` (for pipeline stages) or Prospects' `status` (for Prospect stages), plus `previous_stage` — in the same transaction, including soft-deleted rows, without touching their `updated_at`. A Deal created without a stage now starts in the first active non-won/lost stage by `sort_order` (seeded `Lead`), not the literal name, and Lead→Deal conversion falls back to that stage if `Qualified` no longer exists — so renaming the first stage (e.g. `Lead` → `Discovery`) is safe. **Updated 2026-09-25:** names are trimmed and must fit the column records store them in — at most 64 characters for a pipeline stage (`deals.stage`), 16 for a Prospect stage (`prospects.status`) — and a name another stage already has (including a soft-deleted one) is a `422` on create *and* update; both used to surface as a `500` from the rename cascade or the unique index. A converted Lead's Deal takes the stage's configured default probability and forecast category, like Deal Create. Known limitation: stage-change audit rows keep the name at the time of the move, so the time-in-stage report (`GET /reports/sales-cycle`'s `by_stage`) shows a renamed stage's history under its old name, separately from the new one. |
+| — | `PipelineStage.default_probability` | **Added 2026-10-01.** Read-only, on every list/create/update response: the win probability a Deal entering this stage gets when none is sent — 100 for the Won-flagged stage, 0 for Lost, otherwise spread 10→90 across the active open stages in `sort_order` (an inactive stage falls back to the old fixed table). The single source for it: the frontend prefills the probability input from this instead of keeping its own table. Since every open stage's value depends on the whole funnel, refetch the list after a stage write. |
 | `PATCH` / `DELETE` | `/admin/pipeline-stages/:id` | Update (including `is_active`/`sort_order`/`is_won_stage`/`is_lost_stage`) / delete. **Fixed 2026-09-10**: setting `is_won_stage`/`is_lost_stage` on a stage now clears that flag from every other row (one transaction alongside the save) — `DealHandler.UpdateStage`/`checkDealIdleRule` resolve "the" won/lost stage with a single lookup, so two rows flagged at once used to leave that pick undefined instead of erroring. |
 | `GET` / `POST` | `/admin/lead-sources` | List / create a `LeadSourceOption` — shared by `Lead.source` and `Deal.channel`. Seeded from the retired `LeadSource` enum (`Referral, Website, Event, Ads, Other`). |
 | `PATCH` / `DELETE` | `/admin/lead-sources/:id` | Update / delete. |
@@ -1052,6 +1064,8 @@ Response shape (one object covering every widget on `pages/index.vue`):
     "won_value": 1250000,
     "win_rate": 42,
     "open_deals_count": 18,
+    "deals_count": 42,
+    "total_deals_count": 310,
     "forecasted_revenue": 2150000,
     "avg_deal_size": 185000,
     "avg_sales_cycle_days": 34,
@@ -1061,7 +1075,7 @@ Response shape (one object covering every widget on `pages/index.vue`):
     "annual_revenue_actual": 5230000,
     "annual_revenue_progress_ratio": 0.436,
     "annual_revenue_trend": [ { "label": "Jan", "actual": 820000, "goal_pace": 1000000 }, "...Jan through the current month, cumulative" ],
-    "revenue_trend": [ { "label": "Mar", "value": 320000 }, "...trailing 6 months, Won revenue by close month" ],
+    "revenue_trend": [ { "label": "Mar", "value": 320000 }, "...trailing 6 months, Won revenue by won_at month" ],
     "forecast_trend": [ { "label": "Mar", "value": 410000 }, "...next 6 months, open-deal value × probability by expected_close_date month" ],
     "stage_breakdown": [ { "stage": "Qualified", "value": 900000, "count": 4 }, "...per DealStage" ],
     "industry_breakdown": [ { "industry": "Retail", "win_rate": 55, "won_count": 6 }, "..." ],
@@ -1074,6 +1088,8 @@ Response shape (one object covering every widget on `pages/index.vue`):
   }
 }
 ```
+
+**Which date each figure counts by (updated 2026-10-01).** The date window (`date_from`/`date_to`/`period`) is applied per figure: `won_value`, `avg_deal_size`, `win_rate` and the won/lost parts of `stage_breakdown`/`industry_breakdown`/`team_performance` count Deals **closed** in the window — won ones by `Deal.won_at` (when the Deal became Won), lost ones by `stage_entered_at` (when it entered the Lost lane) — not Deals created in it then closed whenever. `open_pipeline_value`, `open_deals_count`, `forecasted_revenue`, `forecast_by_category`, open stages in `stage_breakdown`, and `deals_count` still count by `created_at`. `avg_deal_size` is the average value of Deals won in the window (FR-CRM-057), no longer of every Deal. `revenue_trend`/`annual_revenue_trend` bucket by `won_at` month. `deals_count` is the number of Deals matching every filter (created in the window) and `total_deals_count` every Deal — the filter bar's "Showing X of Y deals".
 
 `quarterly_sales_target` (`FR-CRM-058`) and `annual_revenue_goal`/`annual_revenue_actual`/`annual_revenue_progress_ratio`/`annual_revenue_trend` (`FR-CRM-091`) are Admin-configurable via `PATCH /admin/settings` — see §8.6. `quarterly_sales_target`'s value resolves through §8.7's per-quarter override first (a `SalesTarget` row for the current `(year, quarter)`, if an Admin has set one) before falling back to `quarterly_sales_target(annual) / 4` — this response field always reports whichever one actually applies to the current quarter, not the raw annual figure. `annual_revenue_trend`'s `actual` is a running cumulative total through each month (not that month's own delta); `goal_pace` is a straight-line `annual_revenue_goal × months_elapsed / 12` for the same point, letting the frontend chart whether the company is ahead of or behind pace, not just infer it from today's single ratio. Both `revenue_trend`/`forecast_trend` and `annual_revenue_trend` deliberately ignore this endpoint's own `business_unit`/`channel`/`date_from`/`date_to` filters (fixed trailing-6-months and fixed calendar-year views respectively, not filtered slices) — only the top-level stat cards and `stage_breakdown`/`industry_breakdown`/`team_performance` respect them.
 

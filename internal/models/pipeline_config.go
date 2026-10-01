@@ -21,6 +21,12 @@ type PipelineStage struct {
 	// (DefaultStaleDays). Meaningless on a won/lost stage, which is never
 	// stale.
 	StaleDays *int `json:"stale_days"`
+	// DefaultProbability is the win probability a Deal entering this stage
+	// gets when none is given (utils.DefaultProbabilityFor) — derived from
+	// the flags and the stage's place in the funnel, never stored. Filled on
+	// every /admin/pipeline-stages response so the frontend prefills the
+	// server's number rather than keeping a table of its own.
+	DefaultProbability int `gorm:"-" json:"default_probability"`
 }
 
 // DefaultStaleDays is the stale threshold for any stage without its own
