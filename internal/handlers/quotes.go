@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -52,6 +53,75 @@ func (h *QuoteHandler) List(c *fiber.Ctx) error {
 		return utils.Internal(c, "Failed to list quotes")
 	}
 	return utils.OK(c, withEffectiveStatuses(quotes))
+}
+
+// quoteWithDeal is a Quote row plus its parent Deal's title, for responses
+// read outside a Deal's context (the global search, the full-page editor).
+// deal_title is read-only and never written back.
+type quoteWithDeal struct {
+	models.Quote
+	DealTitle string `json:"deal_title"`
+}
+
+// Search godoc
+// @Summary List / search quotes across all deals (Admin/Sales Rep/Sales Manager/Marketing)
+// @Description Paginated quotes, newest first, for the global search bar. search matches number, reference_number or the parent Deal's title (case-insensitive substring). Quotes whose Deal is soft-deleted are excluded. Each row's status reflects EffectiveStatus (may report "expired") and carries deal_title. Row scope matches GET /deals: every sales-pipeline role sees every Deal's quotes. Production: 403.
+// @Tags quotes
+// @Security BearerAuth
+// @Produce json
+// @Param search query string false "Match quote number, reference_number or Deal title"
+// @Param page query int false "Page (default 1)"
+// @Param per_page query int false "Rows per page (default 20, max 200)"
+// @Success 200 {object} map[string]interface{} "Paginated quote list (data, page, per_page, total, total_page, next, prev); each row is a Quote plus deal_title"
+// @Failure 403 {object} map[string]interface{} "Production role"
+// @Router /quotes [get]
+func (h *QuoteHandler) Search(c *fiber.Ctx) error {
+	page, perPage, offset := utils.Pagination(c)
+	query := h.DB.Model(&models.Quote{}).
+		Joins("JOIN deals ON deals.id = quotes.deal_id AND deals.deleted_at IS NULL")
+	if v := strings.TrimSpace(c.Query("search")); v != "" {
+		like := utils.LikePattern(v)
+		query = query.Where("(quotes.number ILIKE ? ESCAPE '\\' OR quotes.reference_number ILIKE ? ESCAPE '\\' OR deals.title ILIKE ? ESCAPE '\\')", like, like, like)
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return utils.Internal(c, "Failed to list quotes")
+	}
+
+	rows := []quoteWithDeal{}
+	if err := query.Select("quotes.*, deals.title AS deal_title").
+		Order("quotes.created_at DESC, quotes.id DESC").
+		Limit(perPage).Offset(offset).Find(&rows).Error; err != nil {
+		return utils.Internal(c, "Failed to list quotes")
+	}
+	for i := range rows {
+		rows[i].Quote = withEffectiveStatus(rows[i].Quote)
+	}
+	return utils.List(c, rows, page, perPage, total)
+}
+
+// Get godoc
+// @Summary Get a quote (Admin/Sales Rep/Sales Manager/Marketing)
+// @Description A single Quote with its effective status (may report "expired") and the parent Deal's deal_title. Read-only, no CanWrite ownership check (same as List/Export-PDF). Backs the full-page Quote editor. Production: 403.
+// @Tags quotes
+// @Security BearerAuth
+// @Produce json
+// @Param id path int true "Quote ID"
+// @Success 200 {object} quoteWithDeal
+// @Failure 403 {object} map[string]interface{} "Production role"
+// @Failure 404 {object} map[string]interface{} "Quote not found, or its Deal is deleted"
+// @Router /quotes/{id} [get]
+func (h *QuoteHandler) Get(c *fiber.Ctx) error {
+	var quote models.Quote
+	if err := utils.FindByID(c, h.DB, &quote, "Quote not found"); err != nil {
+		return nil
+	}
+	var deal models.Deal
+	if err := h.DB.Select("id", "title").First(&deal, quote.DealID).Error; err != nil {
+		return utils.NotFound(c, "Deal not found")
+	}
+	return utils.OK(c, quoteWithDeal{Quote: withEffectiveStatus(quote), DealTitle: deal.Title})
 }
 
 // withEffectiveStatuses overrides each Quote's Status field with its

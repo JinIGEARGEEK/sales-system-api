@@ -2197,6 +2197,132 @@ definitions:
       wht_rate:
         type: number
     type: object
+  internal_handlers.quoteWithDeal:
+    properties:
+      created_at:
+        type: string
+      credit_days:
+        description: |-
+          CreditDays is purely informational context for ValidityDate (which
+          already serves as the actual due date/"ครบกำหนด") — how many days of
+          credit were granted, not itself used in any date arithmetic here.
+        type: integer
+      deal_id:
+        type: integer
+      deal_title:
+        type: string
+      discount_total:
+        description: |-
+          DiscountTotal is a flat currency amount subtracted once from the
+          items' summed (already-per-item-discounted) subtotal — independent of
+          each QuoteItem's own DiscountPercent above.
+        type: number
+      extraction_status:
+        description: |-
+          ExtractionStatus/ExtractionWarnings record the outcome of best-effort
+          field extraction from an uploaded FlowAccount PDF (Upload handler,
+          utils.ExtractFlowAccountQuote) — nil/empty for every Quote created the
+          normal line-item way, since extraction never runs for those. "ok": every
+          field extraction looked for was found and self-consistent. "partial":
+          some fields extracted, ExtractionWarnings lists what's missing/suspect
+          (e.g. a recomputed total that doesn't match the PDF's printed one) —
+          the rep should double-check those before Sending. "failed": the upload
+          still succeeded and the file is still attached, but the PDF didn't look
+          like a FlowAccount export at all (or had no readable text layer), so
+          nothing was pre-filled. A pointer for the same AutoMigrate-hazard
+          reason as Number above — existing rows never had this column.
+        type: string
+      extraction_warnings:
+        items:
+          type: string
+        type: array
+      file_name:
+        type: string
+      file_size:
+        type: integer
+      file_url:
+        type: string
+      id:
+        type: integer
+      internal_notes:
+        type: string
+      issue_date:
+        description: |-
+          IssueDate is the quote's "as of" date (rendered as "วันที่" in the
+          quotation-builder reference) — parsed the same permissive way as
+          ValidityDate via ParseFlexDate.
+        type: string
+      items:
+        items:
+          $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuoteItem'
+        type: array
+      notes:
+        description: |-
+          Notes prints on the exported PDF (payment terms, validity terms,
+          etc.) — InternalNotes deliberately never does; see ExportPDF, which
+          only ever reads Notes.
+        type: string
+      number:
+        description: |-
+          Number is a generated, immutable document number (e.g. "QT2026080004")
+          assigned once at Create time via utils.NextDocumentNumber — never
+          user-edited afterward. See internal/utils/document_number.go. A
+          pointer, not a plain string with "not null": AutoMigrate ADD COLUMN
+          NOT NULL on a table that already has rows would fail outright on any
+          pre-existing database (same class of hazard database.go already
+          avoids for other columns) — every Quote row created going forward
+          always gets one, but rows from before this field existed stay nil
+          rather than requiring a backfill. A unique index tolerates any number
+          of NULLs in Postgres, so this doesn't relax uniqueness for quotes that
+          do have a Number.
+        type: string
+      price_type:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuotePriceType'
+      reference_number:
+        description: |-
+          ReferenceNumber is free-text, user-entered (e.g. the customer's own PO
+          number) — unrelated to Number above, which this system generates.
+        type: string
+      revision_no:
+        type: integer
+      revision_of_id:
+        description: |-
+          RevisionOfID/RevisionNo link a quote made by Duplicate back to the
+          first quote of its chain (the root, never an intermediate copy), so
+          every revision of one offer shares a RevisionOfID. The root itself has
+          nil and 0; each copy gets the chain's highest RevisionNo + 1. The FK
+          (ON DELETE SET NULL) is added by database.ensureQuoteRevisionFK.
+        type: integer
+      scope_of_work:
+        description: |-
+          ScopeOfWork is a free-text narrative describing the overall engagement
+          (deliverables/phases/terms) — separate from each line item's own
+          Description, which stays a short per-item label. Optional; rendered as
+          a wrapped paragraph above the line-items table in ExportPDF.
+        type: string
+      status:
+        $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.QuoteStatus'
+      updated_at:
+        type: string
+      uploaded_at:
+        type: string
+      validity_date:
+        type: string
+      vat_enabled:
+        description: |-
+          VatEnabled toggles Thailand's fixed 7% VAT in ComputeQuoteTotals — no
+          separate rate field, since 7% is the statutory rate, not something a
+          quote should be able to override.
+        type: boolean
+      wht_enabled:
+        description: |-
+          WhtEnabled/WhtRate: withholding tax varies by service type in Thailand
+          (commonly 3% or 5%), so unlike VAT it needs its own rate field. Only
+          meaningful when WhtEnabled is true.
+        type: boolean
+      wht_rate:
+        type: number
+    type: object
   internal_handlers.reassignResult:
     properties:
       deals:
@@ -7432,6 +7558,46 @@ paths:
       summary: Delete a quote template (Admin/Sales Rep/Sales Manager)
       tags:
       - quote-templates
+  /quotes:
+    get:
+      description: 'Paginated quotes, newest first, for the global search bar. search
+        matches number, reference_number or the parent Deal''s title (case-insensitive
+        substring). Quotes whose Deal is soft-deleted are excluded. Each row''s status
+        reflects EffectiveStatus (may report "expired") and carries deal_title. Row
+        scope matches GET /deals: every sales-pipeline role sees every Deal''s quotes.
+        Production: 403.'
+      parameters:
+      - description: Match quote number, reference_number or Deal title
+        in: query
+        name: search
+        type: string
+      - description: Page (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: Rows per page (default 20, max 200)
+        in: query
+        name: per_page
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Paginated quote list (data, page, per_page, total, total_page,
+            next, prev); each row is a Quote plus deal_title
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Production role
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List / search quotes across all deals (Admin/Sales Rep/Sales Manager/Marketing)
+      tags:
+      - quotes
   /quotes/{id}:
     delete:
       description: Hard delete of a Draft Quote; any other status is a 409. Only the
@@ -7463,6 +7629,38 @@ paths:
       security:
       - BearerAuth: []
       summary: Delete a quote
+      tags:
+      - quotes
+    get:
+      description: 'A single Quote with its effective status (may report "expired")
+        and the parent Deal''s deal_title. Read-only, no CanWrite ownership check
+        (same as List/Export-PDF). Backs the full-page Quote editor. Production: 403.'
+      parameters:
+      - description: Quote ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.quoteWithDeal'
+        "403":
+          description: Production role
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Quote not found, or its Deal is deleted
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get a quote (Admin/Sales Rep/Sales Manager/Marketing)
       tags:
       - quotes
     put:
