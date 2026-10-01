@@ -635,6 +635,9 @@ type teamMember struct {
 	ID    uint   `json:"id"`
 	Name  string `json:"name"`
 	Email string `json:"email"`
+	// Role lets pickers offer only users who may own the record (e.g. no
+	// Production on Deals/Tasks — validateAssignee).
+	Role models.Role `json:"role"`
 }
 
 // TeamMembers godoc
@@ -657,6 +660,7 @@ func (h *UserHandler) TeamMembers(c *fiber.Ctx) error {
 			ID:    u.ID,
 			Name:  u.FirstName + " " + u.LastName,
 			Email: u.Email,
+			Role:  u.Role,
 		})
 	}
 	return utils.OK(c, members)
