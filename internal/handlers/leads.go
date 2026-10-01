@@ -150,16 +150,18 @@ func validateLeadStatus(c *fiber.Ctx, status models.LeadStatus) error {
 
 // Create godoc
 // @Summary Create a lead (Sales pipeline roles)
-// @Description Admin/Sales Rep/Sales Manager only. A Sales Rep cannot assign the new lead to another rep. If assigned_to is omitted, the lead is auto-assigned round-robin among active Sales Reps by current open-record load.
+// @Description Admin/Sales Rep/Sales Manager only. A Sales Rep cannot assign the new lead to another rep; assigned_to must be an active user in a sales role. If assigned_to is omitted, the lead is auto-assigned round-robin among active Sales Reps by current open-record load. A lead whose email (case-insensitive) or phone (digits only, +66 read as 0) matches an existing lead is a 409 unless allow_duplicate=true.
 // @Tags leads
 // @Security BearerAuth
 // @Accept json
 // @Produce json
 // @Param body body leadForm true "Lead fields"
+// @Param allow_duplicate query bool false "true creates the lead even if another has the same email or phone"
 // @Success 201 {object} models.Lead
 // @Failure 400 {object} map[string]interface{} "Invalid body"
 // @Failure 403 {object} map[string]interface{} "Cannot assign a lead to another sales rep"
-// @Failure 422 {object} map[string]interface{} "status is not New/Contacted/Qualified/Disqualified"
+// @Failure 409 {object} map[string]interface{} "Another lead has the same email or phone (error.fields, error.duplicate_of)"
+// @Failure 422 {object} map[string]interface{} "status is not New/Contacted/Qualified/Disqualified, or assigned_to is not an active sales user"
 // @Router /leads [post]
 func (h *LeadHandler) Create(c *fiber.Ctx) error {
 	var form leadForm
@@ -188,6 +190,12 @@ func (h *LeadHandler) Create(c *fiber.Ctx) error {
 		return nil
 	}
 	if err := validateLeadCompanyID(c, h.DB, form.CompanyID); err != nil {
+		return nil
+	}
+	if err := validateAssignee(h.DB, form.AssignedTo); err != nil {
+		return respondAssigneeErr(c, err)
+	}
+	if err := rejectDuplicate(c, h.DB, &models.Lead{}, "lead", form.Email, form.Phone); err != nil {
 		return nil
 	}
 
@@ -429,7 +437,7 @@ func (h *LeadHandler) ScoreBreakdown(c *fiber.Ctx) error {
 // @Failure 400 {object} map[string]interface{} "Invalid body"
 // @Failure 403 {object} map[string]interface{} "Not authorized to update this lead"
 // @Failure 404 {object} map[string]interface{} "Lead not found"
-// @Failure 422 {object} map[string]interface{} "status is not New/Contacted/Qualified/Disqualified"
+// @Failure 422 {object} map[string]interface{} "status is not New/Contacted/Qualified/Disqualified, or a changed assigned_to is not an active sales user"
 // @Router /leads/{id} [put]
 func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	var lead models.Lead
@@ -464,6 +472,13 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	}
 	if err := validateLeadCompanyID(c, h.DB, form.CompanyID); err != nil {
 		return nil
+	}
+	// Only a changed owner is checked: the form resends the stored one on
+	// every save, and a since-deactivated owner shouldn't block other edits.
+	if !utils.UintPtrEqual(form.AssignedTo, lead.AssignedTo) {
+		if err := validateAssignee(h.DB, form.AssignedTo); err != nil {
+			return respondAssigneeErr(c, err)
+		}
 	}
 
 	// Captured before the mutation: the form resubmits the full Lead on
@@ -691,20 +706,24 @@ func (h *LeadHandler) BulkArchive(c *fiber.Ctx) error {
 }
 
 type convertRequest struct {
-	CompanyID *uint      `json:"company_id"`
-	ContactID *uint      `json:"contact_id"`
-	Deal      dealFields `json:"deal"`
+	CompanyID *uint `json:"company_id"`
+	// CompanyName names the Company when Convert has to create one (no
+	// company_id, and the Lead has no live Company) — see
+	// resolveOrCreateCompany.
+	CompanyName string     `json:"company_name"`
+	ContactID   *uint      `json:"contact_id"`
+	Deal        dealFields `json:"deal"`
 }
 
 // Convert godoc
 // @Summary Convert a lead to a deal (Sales pipeline roles)
-// @Description Admin/Sales Rep/Sales Manager, and only if the caller owns the lead or has manager-level write access. Converts a Lead into a Deal, reusing or creating the linked Company/Contact as needed — FR-CRM-004, api-system-spec.md §3. The new deal gets Deal Create's validation: value >= 0, a valid expected_close_date, an active stage/channel, a valid business_unit, lost_reason on a Lost stage, the signed-contract gate on a Won stage, and status following the stage's Won/Lost flags. A Sales Rep cannot assign the deal to another rep. An explicit company_id/contact_id must exist, and the contact must belong to that company. Fails if the lead was already converted, including by a concurrent request.
+// @Description Admin/Sales Rep/Sales Manager, and only if the caller owns the lead or has manager-level write access. Converts a Lead into a Deal, reusing or creating the linked Company/Contact as needed — FR-CRM-004, api-system-spec.md §3. The new deal gets Deal Create's validation: value >= 0, a valid expected_close_date, an active stage/channel, a valid business_unit, lost_reason on a Lost stage, the signed-contract gate on a Won stage, and status following the stage's Won/Lost flags. A Sales Rep cannot assign the deal to another rep. An explicit company_id/contact_id must exist, and the contact must belong to that company. Without contact_id, a Contact in the company with the same email (case-insensitive) is reused. A created Company is named company_name, else the Lead's soft-deleted Company's name, else the Lead's name. Fails if the lead was already converted, including by a concurrent request.
 // @Tags leads
 // @Security BearerAuth
 // @Accept json
 // @Produce json
 // @Param id path int true "Lead ID"
-// @Param body body convertRequest true "Optional company_id/contact_id overrides and the new deal's fields"
+// @Param body body convertRequest true "Optional company_id/company_name/contact_id overrides and the new deal's fields"
 // @Success 200 {object} map[string]interface{} "deal, company, and contact objects"
 // @Failure 400 {object} map[string]interface{} "Invalid body"
 // @Failure 403 {object} map[string]interface{} "Not authorized to convert this lead, or cannot assign a deal to another sales rep"
@@ -765,7 +784,7 @@ func (h *LeadHandler) Convert(c *fiber.Ctx) error {
 		// An explicit req.CompanyID wins over the Lead's own company (the
 		// usual case) — see resolveOrCreateCompany.
 		var err error
-		company, err = resolveOrCreateCompany(tx, req.CompanyID, lead.CompanyID)
+		company, err = resolveOrCreateCompany(tx, req.CompanyID, lead.CompanyID, newCompanyNames{explicit: req.CompanyName, contact: lead.Name})
 		if err != nil {
 			return err
 		}

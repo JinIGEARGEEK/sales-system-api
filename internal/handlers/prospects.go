@@ -88,15 +88,18 @@ type prospectForm struct {
 
 // Create godoc
 // @Summary Create a prospect (Admin/Marketing/Sales Manager/Sales Rep)
-// @Description Creates a new Prospect. status defaults to "New" if omitted; status "Converted" cannot be set directly (only via POST /prospects/:id/convert). source must be an active Prospect source and status an active Prospect stage. A Sales Rep may only assign to themselves.
+// @Description Creates a new Prospect. status defaults to "New" if omitted; status "Converted" cannot be set directly (only via POST /prospects/:id/convert). source must be an active Prospect source and status an active Prospect stage. A Sales Rep may only assign to themselves; assigned_to must be an active user in a sales role. A prospect whose email (case-insensitive) or phone (digits only, +66 read as 0) matches an existing prospect is a 409 unless allow_duplicate=true.
 // @Tags prospects
 // @Security BearerAuth
 // @Accept json
 // @Produce json
 // @Param body body prospectForm true "Prospect fields"
+// @Param allow_duplicate query bool false "true creates the prospect even if another has the same email or phone"
 // @Success 201 {object} models.Prospect
 // @Failure 400 {object} map[string]interface{} "Validation error (name required, invalid source/status/business_unit/email)"
 // @Failure 403 {object} map[string]interface{} "Cannot assign a prospect to another team member"
+// @Failure 409 {object} map[string]interface{} "Another prospect has the same email or phone (error.fields, error.duplicate_of)"
+// @Failure 422 {object} map[string]interface{} "assigned_to is not an active sales user"
 // @Router /prospects [post]
 func (h *ProspectHandler) Create(c *fiber.Ctx) error {
 	var form prospectForm
@@ -123,6 +126,12 @@ func (h *ProspectHandler) Create(c *fiber.Ctx) error {
 	}
 	if !models.IsValidBusinessUnit(form.BusinessUnit) {
 		return utils.ValidationError(c, "business_unit must be Project or Product", map[string][]string{"business_unit": {"invalid"}})
+	}
+	if err := validateAssignee(h.DB, form.AssignedTo); err != nil {
+		return respondAssigneeErr(c, err)
+	}
+	if err := rejectDuplicate(c, h.DB, &models.Prospect{}, "prospect", form.Email, form.Phone); err != nil {
+		return nil
 	}
 
 	prospect := models.Prospect{
@@ -172,6 +181,7 @@ func (h *ProspectHandler) Get(c *fiber.Ctx) error {
 // @Failure 400 {object} map[string]interface{} "Validation error (invalid source/status/business_unit/email)"
 // @Failure 403 {object} map[string]interface{} "Not authorized to update this prospect"
 // @Failure 404 {object} map[string]interface{} "Prospect not found"
+// @Failure 422 {object} map[string]interface{} "A changed assigned_to is not an active sales user"
 // @Router /prospects/{id} [put]
 func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 	var prospect models.Prospect
@@ -206,6 +216,12 @@ func (h *ProspectHandler) Update(c *fiber.Ctx) error {
 	}
 	if !models.IsValidBusinessUnit(form.BusinessUnit) {
 		return utils.ValidationError(c, "business_unit must be Project or Product", map[string][]string{"business_unit": {"invalid"}})
+	}
+	// Only a changed owner is checked — see LeadHandler.Update.
+	if !utils.UintPtrEqual(form.AssignedTo, prospect.AssignedTo) {
+		if err := validateAssignee(h.DB, form.AssignedTo); err != nil {
+			return respondAssigneeErr(c, err)
+		}
 	}
 
 	// oldStatus captured ahead of the mutation below, mirroring Deal's
@@ -421,21 +437,23 @@ func (h *ProspectHandler) BulkArchive(c *fiber.Ctx) error {
 
 type prospectConvertRequest struct {
 	CompanyID *uint `json:"company_id"`
-	ContactID *uint `json:"contact_id"`
-	Lead      struct {
+	// CompanyName — see convertRequest.CompanyName.
+	CompanyName string `json:"company_name"`
+	ContactID   *uint  `json:"contact_id"`
+	Lead        struct {
 		AssignedTo *uint `json:"assigned_to"`
 	} `json:"lead"`
 }
 
 // Convert godoc
 // @Summary Convert a prospect into a lead (Admin/Marketing/Sales Manager/Sales Rep)
-// @Description Converts a Prospect into a Lead (and a Company/Contact if not supplied or not already linked) in one transaction: resolve-or-create Company, resolve-or-create Contact, create the Lead with a back-reference to the source Prospect, carry over Attachments, then mark the Prospect "Converted" and stamp its converted_lead_id. Fails with 409 if already converted, including by a concurrent request. An explicit company_id/contact_id must exist (404), and the contact must belong to that company (422). Source/tags are carried over as-is even if they aren't among the Lead's own configured options.
+// @Description Converts a Prospect into a Lead (and a Company/Contact if not supplied or not already linked) in one transaction: resolve-or-create Company, resolve-or-create Contact, create the Lead with a back-reference to the source Prospect, carry over Attachments, then mark the Prospect "Converted" and stamp its converted_lead_id. Fails with 409 if already converted, including by a concurrent request. An explicit company_id/contact_id must exist (404), and the contact must belong to that company (422). Without contact_id, a Contact in the company with the same email (case-insensitive) is reused. A created Company is named company_name, else the Prospect's soft-deleted Company's name, else the Prospect's name. Source/tags are carried over as-is even if they aren't among the Lead's own configured options.
 // @Tags prospects
 // @Security BearerAuth
 // @Accept json
 // @Produce json
 // @Param id path int true "Prospect ID"
-// @Param body body prospectConvertRequest true "Optional company_id/contact_id to link, and lead.assigned_to"
+// @Param body body prospectConvertRequest true "Optional company_id/company_name/contact_id, and lead.assigned_to"
 // @Success 200 {object} map[string]interface{} "lead, company, contact"
 // @Failure 400 {object} map[string]interface{} "Invalid request body"
 // @Failure 403 {object} map[string]interface{} "Not authorized to convert this prospect"
@@ -475,7 +493,7 @@ func (h *ProspectHandler) Convert(c *fiber.Ctx) error {
 			return errAlreadyConverted
 		}
 		var err error
-		company, err = resolveOrCreateCompany(tx, req.CompanyID, prospect.CompanyID)
+		company, err = resolveOrCreateCompany(tx, req.CompanyID, prospect.CompanyID, newCompanyNames{explicit: req.CompanyName, contact: prospect.Name})
 		if err != nil {
 			return err
 		}

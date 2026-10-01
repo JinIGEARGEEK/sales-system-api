@@ -97,6 +97,39 @@ func respondImportFileError(c *fiber.Ctx, err error) error {
 	}
 }
 
+// importRowSavepoint is the savepoint importRow sets before each row.
+const importRowSavepoint = "import_row"
+
+// importRow runs one row's writes under a savepoint. In Postgres a failed
+// statement aborts the whole transaction, so without one a single bad row
+// made every later row (and the commit) fail too. A row's own failure is
+// rolled back to the savepoint and returned as rowErr, for the caller to
+// report and skip; err is a savepoint failure that should abort the import.
+func importRow(tx *gorm.DB, write func() error) (rowErr, err error) {
+	if err := tx.SavePoint(importRowSavepoint).Error; err != nil {
+		return nil, err
+	}
+	if rowErr := write(); rowErr != nil {
+		if err := tx.RollbackTo(importRowSavepoint).Error; err != nil {
+			return nil, err
+		}
+		return rowErr, nil
+	}
+	return nil, tx.Exec("RELEASE SAVEPOINT " + importRowSavepoint).Error
+}
+
+// hasNUL reports whether any cell holds a NUL byte, which Postgres text
+// rejects. Such a row is skipped at parse time: in the batched lookup
+// queries it would fail the whole import, not just its own row.
+func hasNUL(row []string) bool {
+	for _, cell := range row {
+		if strings.ContainsRune(cell, 0) {
+			return true
+		}
+	}
+	return false
+}
+
 // normalizeName lowercases and trims a company name for case/whitespace
 // insensitive fallback matching.
 func normalizeName(name string) string {
@@ -192,7 +225,7 @@ func (idx *companyIndex) put(company *models.Company) {
 
 // ImportCompanies godoc
 // @Summary Bulk-import companies from CSV
-// @Description Uploads a CSV file (header row skipped, up to 10MB / 5000 data rows) with columns name,industry,size,website — name is required per row. Dedupes primarily by normalized website domain, falling back to a case-insensitive/whitespace-trimmed name match when either side has no website (FR-CRM-014): a match updates the existing Company, otherwise a new one is created. Runs as one all-or-nothing transaction; per-row failures are collected into the result rather than aborting the whole import.
+// @Description Uploads a CSV file (header row skipped, up to 10MB / 5000 data rows) with columns name,industry,size,website — name is required per row. Dedupes primarily by normalized website domain, falling back to a case-insensitive/whitespace-trimmed name match when either side has no website (FR-CRM-014): a match updates the existing Company, otherwise a new one is created. Runs in one transaction with a savepoint per row, so a row that fails to save is rolled back, reported in errors and skipped while the rest are imported.
 // @Tags companies
 // @Security BearerAuth
 // @Accept multipart/form-data
@@ -215,6 +248,11 @@ func (h *ImportHandler) ImportCompanies(c *fiber.Ctx) error {
 	result := importResult{Errors: []importError{}}
 	for i, row := range rows {
 		rowNum := i + 2
+		if hasNUL(row) {
+			result.Errors = append(result.Errors, importError{Row: rowNum, Message: "row contains a NUL character"})
+			result.Skipped++
+			continue
+		}
 		if len(row) < 1 || strings.TrimSpace(row[0]) == "" {
 			result.Errors = append(result.Errors, importError{Row: rowNum, Message: "name is required"})
 			result.Skipped++
@@ -246,21 +284,33 @@ func (h *ImportHandler) ImportCompanies(c *fiber.Ctx) error {
 		}
 
 		for _, pr := range parsed {
-			if existing := idx.lookup(pr.name, pr.web); existing != nil {
+			if found := idx.lookup(pr.name, pr.web); found != nil {
+				// A copy, so a failed save leaves the index as it was.
+				existing := *found
 				existing.Industry, existing.Size, existing.Website = pr.industry, pr.size, pr.web
 				existing.Domain = utils.ExtractDomain(pr.web)
-				if err := tx.Save(existing).Error; err != nil {
+				rowErr, err := importRow(tx, func() error { return tx.Save(&existing).Error })
+				if err != nil {
+					return err
+				}
+				if rowErr != nil {
 					result.Errors = append(result.Errors, importError{Row: pr.rowNum, Message: "failed to update"})
 					result.Skipped++
 					continue
 				}
-				idx.put(existing)
+				// Written back, so every index entry for it sees the save.
+				*found = existing
+				idx.put(found)
 				result.Updated++
 				continue
 			}
 
 			company := models.Company{Name: pr.name, Industry: pr.industry, Size: pr.size, Website: pr.web, Domain: utils.ExtractDomain(pr.web), Status: models.StatusActive}
-			if err := tx.Create(&company).Error; err != nil {
+			rowErr, err := importRow(tx, func() error { return tx.Create(&company).Error })
+			if err != nil {
+				return err
+			}
+			if rowErr != nil {
 				result.Errors = append(result.Errors, importError{Row: pr.rowNum, Message: "failed to create"})
 				result.Skipped++
 				continue
@@ -278,14 +328,15 @@ func (h *ImportHandler) ImportCompanies(c *fiber.Ctx) error {
 
 // ImportContacts godoc
 // @Summary Bulk-import contacts from CSV
-// @Description Uploads a CSV file (header row skipped, up to 10MB / 5000 data rows) with columns company_id,name,email,phone,role_title — company_id and name are required per row. Dedupes by email per FR-CRM-014: an existing Contact with the same email is updated, otherwise a new one is created. Same all-or-nothing transaction treatment as ImportCompanies; per-row failures are collected into the result rather than aborting the whole import.
+// @Description Uploads a CSV file (header row skipped, up to 10MB / 5000 data rows) with columns company_id,name,email,phone,role_title — company_id and name are required per row, and every company_id must be an existing Company (422 before anything is imported). Dedupes by email per FR-CRM-014, case-insensitively and within the row's own Company: a match there is updated (name always; phone/role_title only when the CSV cell is non-empty), otherwise a new Contact is created — a Contact is never moved to another Company. Same savepoint-per-row treatment as ImportCompanies.
 // @Tags contacts
 // @Security BearerAuth
 // @Accept multipart/form-data
 // @Produce json
 // @Param file formData file true "CSV file: company_id,name,email,phone,role_title"
 // @Success 200 {object} importResult "created/updated/skipped counts plus a per-row error list"
-// @Failure 400 {object} map[string]interface{} "Missing/invalid file, unsupported format (non-.csv), row limit exceeded, or invalid company_id"
+// @Failure 400 {object} map[string]interface{} "Missing/invalid file, unsupported format (non-.csv), or row limit exceeded"
+// @Failure 422 {object} map[string]interface{} "A company_id that doesn't name an existing Company"
 // @Router /contacts/import [post]
 func (h *ImportHandler) ImportContacts(c *fiber.Ctx) error {
 	rows, err := openImportFile(c)
@@ -302,6 +353,11 @@ func (h *ImportHandler) ImportContacts(c *fiber.Ctx) error {
 	result := importResult{Errors: []importError{}}
 	for i, row := range rows {
 		rowNum := i + 2
+		if hasNUL(row) {
+			result.Errors = append(result.Errors, importError{Row: rowNum, Message: "row contains a NUL character"})
+			result.Skipped++
+			continue
+		}
 		if len(row) < 2 || strings.TrimSpace(row[0]) == "" || strings.TrimSpace(row[1]) == "" {
 			result.Errors = append(result.Errors, importError{Row: rowNum, Message: "company_id and name are required"})
 			result.Skipped++
@@ -326,54 +382,111 @@ func (h *ImportHandler) ImportContacts(c *fiber.Ctx) error {
 		parsed = append(parsed, pr)
 	}
 
+	// Every company_id must exist before anything is written: a missing
+	// one would otherwise leave Contacts pointing at no Company.
+	companySet := map[uint]bool{}
+	for _, pr := range parsed {
+		companySet[pr.companyID] = true
+	}
+	companyIDs := make([]uint, 0, len(companySet))
+	for id := range companySet {
+		companyIDs = append(companyIDs, id)
+	}
+	if len(companyIDs) > 0 {
+		var found []uint
+		if err := h.DB.Model(&models.Company{}).Where("id IN ?", companyIDs).Pluck("id", &found).Error; err != nil {
+			return utils.Internal(c, "Failed to import contacts")
+		}
+		for _, id := range found {
+			delete(companySet, id)
+		}
+		if len(companySet) > 0 {
+			missing := make([]string, 0, len(companySet))
+			for _, pr := range parsed {
+				if companySet[pr.companyID] {
+					missing = append(missing, fmt.Sprintf("%d (row %d)", pr.companyID, pr.rowNum))
+				}
+			}
+			return utils.ValidationError(c, "company_id not found: "+strings.Join(missing, ", "),
+				map[string][]string{"company_id": {"not_found"}})
+		}
+	}
+
+	// Contacts are matched on (company_id, lower(email)): the same address
+	// under another Company is a different Contact, not one to move here.
+	type contactKey struct {
+		companyID uint
+		email     string
+	}
 	emailSet := map[string]bool{}
 	for _, pr := range parsed {
-		if pr.email != "" {
-			emailSet[pr.email] = true
+		if e := utils.NormalizeEmail(pr.email); e != "" {
+			emailSet[e] = true
 		}
 	}
 
 	err = h.DB.Transaction(func(tx *gorm.DB) error {
-		byEmail := map[string]*models.Contact{}
+		byKey := map[contactKey]*models.Contact{}
 		if len(emailSet) > 0 {
 			emails := make([]string, 0, len(emailSet))
 			for e := range emailSet {
 				emails = append(emails, e)
 			}
 			var contacts []models.Contact
-			if err := tx.Where("email IN ?", emails).Find(&contacts).Error; err != nil {
+			// Newest first, so with several matches the oldest is written
+			// last and kept.
+			if err := tx.Where("company_id IN ? AND LOWER(TRIM(email)) IN ?", companyIDs, emails).
+				Order("id DESC").Find(&contacts).Error; err != nil {
 				return err
 			}
-			for _, ct := range contacts {
-				byEmail[ct.Email] = &ct
+			for i := range contacts {
+				ct := &contacts[i]
+				byKey[contactKey{ct.CompanyID, utils.NormalizeEmail(ct.Email)}] = ct
 			}
 		}
 
 		for _, pr := range parsed {
-			if pr.email != "" {
-				if existing, ok := byEmail[pr.email]; ok {
-					existing.Name, existing.Phone, existing.RoleTitle, existing.CompanyID = pr.name, pr.phone, pr.roleTitle, pr.companyID
-					if err := tx.Save(existing).Error; err != nil {
-						result.Errors = append(result.Errors, importError{Row: pr.rowNum, Message: "failed to update"})
-						result.Skipped++
-						continue
-					}
-					result.Updated++
+			key := contactKey{pr.companyID, utils.NormalizeEmail(pr.email)}
+			if found, ok := byKey[key]; ok && key.email != "" {
+				// A copy, so a failed save leaves the map as it was. An empty
+				// phone/role_title cell keeps the stored value.
+				existing := *found
+				existing.Name = pr.name
+				if pr.phone != "" {
+					existing.Phone = pr.phone
+				}
+				if pr.roleTitle != "" {
+					existing.RoleTitle = pr.roleTitle
+				}
+				rowErr, err := importRow(tx, func() error { return tx.Save(&existing).Error })
+				if err != nil {
+					return err
+				}
+				if rowErr != nil {
+					result.Errors = append(result.Errors, importError{Row: pr.rowNum, Message: "failed to update"})
+					result.Skipped++
 					continue
 				}
+				*found = existing
+				result.Updated++
+				continue
 			}
 
 			contact := models.Contact{
 				CompanyID: pr.companyID, Name: pr.name, Email: pr.email, Phone: pr.phone, RoleTitle: pr.roleTitle,
 				Status: models.StatusActive,
 			}
-			if err := tx.Create(&contact).Error; err != nil {
+			rowErr, err := importRow(tx, func() error { return tx.Create(&contact).Error })
+			if err != nil {
+				return err
+			}
+			if rowErr != nil {
 				result.Errors = append(result.Errors, importError{Row: pr.rowNum, Message: "failed to create"})
 				result.Skipped++
 				continue
 			}
-			if pr.email != "" {
-				byEmail[pr.email] = &contact
+			if key.email != "" {
+				byKey[key] = &contact
 			}
 			result.Created++
 		}
