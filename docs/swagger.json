@@ -2804,6 +2804,13 @@
                             "type": "object",
                             "additionalProperties": true
                         }
+                    },
+                    "409": {
+                        "description": "A live company now has this one's website domain",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
                     }
                 }
             }
@@ -3413,7 +3420,7 @@
                         }
                     },
                     "409": {
-                        "description": "Contract is signed (locked)",
+                        "description": "Contract is signed (locked), or its status changed meanwhile",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -3533,7 +3540,7 @@
                         }
                     },
                     "409": {
-                        "description": "Contract is already signed",
+                        "description": "Contract is already signed, or its status changed meanwhile",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -3852,7 +3859,7 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid request body, or validation error (required fields, value, expected_close_date, probability, lost_reason, stage/channel/business_unit)",
+                        "description": "Invalid request body",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -3866,7 +3873,7 @@
                         }
                     },
                     "422": {
-                        "description": "assigned_to is not an active sales-role user",
+                        "description": "Validation error (required fields, value, expected_close_date, probability, forecast_category, lost_reason, stage/channel/business_unit, signed contract required for Won), or assigned_to is not an active sales-role user",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -4571,7 +4578,7 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid request body, or validation error (status, price_type, credit_days, wht_rate, discount_total)",
+                        "description": "Invalid request body",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -4599,7 +4606,7 @@
                         }
                     },
                     "422": {
-                        "description": "Invalid field (items[i].qty/price/discount_percent, discount_total, wht_rate, issue_date, validity_date)",
+                        "description": "Invalid field (status, price_type, credit_days, wht_rate, discount_total, items[i].qty/price/discount_percent, issue_date, validity_date)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -4769,7 +4776,7 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid request body, or validation error (required fields, value, expected_close_date, probability, lost_reason, stage/channel/business_unit)",
+                        "description": "Invalid request body",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -4797,7 +4804,7 @@
                         }
                     },
                     "422": {
-                        "description": "assigned_to is not an active sales-role user, or value changed while synced from an Accepted quote (fields.value synced_from_quote)",
+                        "description": "Validation error (as Create), assigned_to is not an active sales-role user, or value changed while synced from an Accepted quote (fields.value synced_from_quote)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -4974,7 +4981,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Dedicated endpoint for the Kanban drag-and-drop quick-move. Sets status to won/lost alongside stage — or open (clearing lost_reason) on a move into any other stage — and re-derives probability in the same transaction; writes a stage_changed audit log entry per §8.5's explicit minimum scope. Moving into a stage resolved as Won is blocked (422-style validation error) if AppSettings.RequireSignedContractBeforeWon is enabled and the deal has no Contract with status Signed. A move into a Lost stage requires lost_reason (422), unless the Deal is already Lost with one stored. Moving a Won Deal with money attached out of Won is 409 WON_DEAL_PROTECTED for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without it), recorded in a won_reversed audit entry. Only the assigned Sales Rep (or Admin/Sales Manager) may move it.",
+                "description": "Dedicated endpoint for the Kanban drag-and-drop quick-move. Sets status to won/lost alongside stage — or open (clearing lost_reason) on a move into any other stage — and re-derives probability in the same transaction; writes a stage_changed audit log entry per §8.5's explicit minimum scope. Moving into a stage resolved as Won is blocked (422) if AppSettings.RequireSignedContractBeforeWon is enabled and the deal has no Contract with status Signed. A move into a Lost stage requires lost_reason (422), unless the Deal is already Lost with one stored. Moving a Won Deal with money attached out of Won is 409 WON_DEAL_PROTECTED for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without it), recorded in a won_reversed audit entry. Only the assigned Sales Rep (or Admin/Sales Manager) may move it.",
                 "consumes": [
                     "application/json"
                 ],
@@ -5023,7 +5030,7 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid request body, stage is required, stage is not a valid active pipeline stage, or a signed contract is required before marking this deal Won",
+                        "description": "Invalid request body",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -5051,7 +5058,7 @@
                         }
                     },
                     "422": {
-                        "description": "position out of range (±1e9), or lost_reason missing/invalid on a move into Lost",
+                        "description": "stage missing or not an active pipeline stage, a signed contract is required before marking this deal Won, position out of range (±1e9), or lost_reason missing/invalid on a move into Lost",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -7602,14 +7609,14 @@
                         }
                     },
                     "409": {
-                        "description": "Status transition not allowed, quote is read-only, or the deal already has an Accepted quote",
+                        "description": "Status transition not allowed, quote is read-only, the deal already has an Accepted quote, or the quote's status changed meanwhile",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
                         }
                     },
                     "422": {
-                        "description": "Invalid field (items[i].qty/price/discount_percent, discount_total, wht_rate, issue_date, validity_date)",
+                        "description": "Invalid field (status, price_type, credit_days, wht_rate, discount_total, items[i].qty/price/discount_percent, issue_date, validity_date)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -10255,7 +10262,7 @@
                     "type": "number"
                 },
                 "value_quote_id": {
-                    "description": "ValueQuoteID is the Accepted Quote whose pre-VAT taxable amount the\nDeal's Value was last synced from (handlers.syncDealValue), nil when\nValue is the rep's own figure. While set, PUT /deals/:id can't change\nValue. FK to quotes(id), ON DELETE SET NULL (database.\nensureDealValueQuoteFK). Create-only for GORM writes (\"\u003c-:create\"): a\nfull-row Save of a stale Deal must never overwrite it, so only the sync\ncode's own UPDATE statements change it.",
+                    "description": "ValueQuoteID is the Accepted Quote whose pre-VAT taxable amount the\nDeal's Value was last synced from (handlers.syncDealValueForQuote), nil when\nValue is the rep's own figure. While set, PUT /deals/:id can't change\nValue. FK to quotes(id), ON DELETE SET NULL (database.\nensureDealValueQuoteFK). Create-only for GORM writes (\"\u003c-:create\"): a\nfull-row Save of a stale Deal must never overwrite it, so only the sync\ncode's own UPDATE statements change it.",
                     "type": "integer"
                 },
                 "won_at": {
@@ -11981,7 +11988,7 @@
                     "type": "number"
                 },
                 "value_quote_id": {
-                    "description": "ValueQuoteID is the Accepted Quote whose pre-VAT taxable amount the\nDeal's Value was last synced from (handlers.syncDealValue), nil when\nValue is the rep's own figure. While set, PUT /deals/:id can't change\nValue. FK to quotes(id), ON DELETE SET NULL (database.\nensureDealValueQuoteFK). Create-only for GORM writes (\"\u003c-:create\"): a\nfull-row Save of a stale Deal must never overwrite it, so only the sync\ncode's own UPDATE statements change it.",
+                    "description": "ValueQuoteID is the Accepted Quote whose pre-VAT taxable amount the\nDeal's Value was last synced from (handlers.syncDealValueForQuote), nil when\nValue is the rep's own figure. While set, PUT /deals/:id can't change\nValue. FK to quotes(id), ON DELETE SET NULL (database.\nensureDealValueQuoteFK). Create-only for GORM writes (\"\u003c-:create\"): a\nfull-row Save of a stale Deal must never overwrite it, so only the sync\ncode's own UPDATE statements change it.",
                     "type": "integer"
                 },
                 "value_quote_number": {

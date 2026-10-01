@@ -288,8 +288,8 @@ const dealValueQuotesBackfill = "deal_value_quotes_backfill"
 // BackfillDealValueQuotes (called from AutoMigrate) links existing Deals to
 // the Accepted quote their value already follows. For each non-deleted Deal
 // with no value_quote_id whose latest Accepted quote (created_at, then id)
-// has priced items: when the Deal's value already equals that quote's
-// taxable amount rounded to satang (to within utils.MoneyEpsilon), set
+// has priced items: when the Deal's value already equals the value that
+// quote syncs (utils.DealValueFromQuote, to within utils.MoneyEpsilon), set
 // value_quote_id to it and value to that exact rounded amount. A Deal whose
 // value differs is left untouched — the boot never rewrites revenue — and
 // only counted in the log: it stays unlinked, so its value stays editable
@@ -313,12 +313,11 @@ func BackfillDealValueQuotes(db *gorm.DB) error {
 		}
 		linked, mismatched := 0, 0
 		for i := range rows {
-			totals := utils.QuoteTotalsOf(&rows[i].Quote)
-			if totals.Subtotal <= 0 {
+			value, ok := utils.DealValueFromQuote(&rows[i].Quote)
+			if !ok {
 				continue
 			}
-			value := utils.RoundSatang(totals.TaxableAmount)
-			if diff := rows[i].DealValue - value; diff > utils.MoneyEpsilon || diff < -utils.MoneyEpsilon {
+			if !utils.SameMoney(rows[i].DealValue, value) {
 				mismatched++
 				continue
 			}

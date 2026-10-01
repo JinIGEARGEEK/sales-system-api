@@ -122,10 +122,8 @@ func validateReferredBy(c *fiber.Ctx, db *gorm.DB, referredByType *models.Activi
 }
 
 // validateLeadCompanyID checks that an explicitly-set (optional) company_id
-// actually exists — unlike Deal/Contact's own company_id, which are
-// presence-checked (required) but never existence-checked against the DB,
-// this is the one real "does this FK exist" precedent in the codebase,
-// mirroring projects.go's own Company lookup.
+// exists (404 "Company not found", like projects.go's Company lookup). Note
+// Contact create/update answer the same case with a 422 on company_id.
 func validateLeadCompanyID(c *fiber.Ctx, db *gorm.DB, companyID *uint) error {
 	if companyID == nil {
 		return nil

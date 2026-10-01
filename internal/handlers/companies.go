@@ -554,8 +554,21 @@ func (h *CompanyHandler) Trash(c *fiber.Ctx) error {
 // @Success 200 {object} models.Company
 // @Failure 403 {object} map[string]interface{} "Not Admin/Sales Manager"
 // @Failure 404 {object} map[string]interface{} "Deleted company not found"
+// @Failure 409 {object} map[string]interface{} "A live company now has this one's website domain"
 // @Router /companies/{id}/restore [post]
 func (h *CompanyHandler) Restore(c *fiber.Ctx) error {
+	// A live Company may have taken this one's website domain since it was
+	// deleted: answer the same 409 Create would, rather than letting the
+	// unique domain index fail the restore with a 500. (Tax ID + branch has
+	// no unique index and isn't checked, so a merged source stays restorable.)
+	var deleted models.Company
+	if err := h.DB.Unscoped().Where("deleted_at IS NOT NULL").First(&deleted, c.Params("id")).Error; err == nil {
+		if dup, err := conflictingCompanyDomain(h.DB, deleted.Domain, deleted.ID); err != nil {
+			return utils.Internal(c, "Failed to check for an existing company")
+		} else if dup != nil {
+			return utils.Conflict(c, companyConflictMessage(websiteConflict, dup, deleted.ID))
+		}
+	}
 	return utils.GenericRestoreWithAudit(c, h.DB, "company", func(m *models.Company) uint { return m.ID },
 		middleware.CurrentUserID(c), "Deleted company not found", "Failed to restore company")
 }

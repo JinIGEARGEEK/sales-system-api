@@ -77,11 +77,9 @@ func parseOptionalCalendarDate(c *fiber.Ctx, field string, v *string) (*time.Tim
 	return &d, true
 }
 
-// validateContractForm checks status enum membership and, if quote_id is
-// set, that the Quote exists AND belongs to this same Deal — neither was
-// checked at all before (status not even for enum membership); mirrors
-// validateReferredBy's shape in leads.go (a shared pre-save gate called from
-// both Create and Update).
+// validateContractForm is the pre-save gate shared by Create and Update:
+// status must be in the enum and, if quote_id is set, the Quote must exist
+// and belong to this same Deal.
 func validateContractForm(c *fiber.Ctx, db *gorm.DB, dealID uint, form contractForm) bool {
 	if !models.IsValidContractStatus(form.Status) {
 		_ = utils.ValidationError(c, "status is invalid", map[string][]string{"status": {"invalid"}})
@@ -161,17 +159,13 @@ func sameDay(a, b *time.Time) bool {
 }
 
 // saveContract persists a contract change inside a transaction that locks
-// the row and checks its stored status is still oldStatus (so a concurrent
-// Upload/Update can't be overwritten by a stale Save), and writes a
+// the row and checks its stored status is still oldStatus
+// (lockStatusUnchanged), and writes a
 // contract status_changed audit entry when the status moved.
 func (h *ContractHandler) saveContract(c *fiber.Ctx, contract *models.Contract, oldStatus models.ContractStatus) error {
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
-		var stored models.Contract
-		if err := lockRow(tx, &stored, contract.ID, "id", "status"); err != nil {
+		if err := lockStatusUnchanged(tx, models.Contract{}.TableName(), contract.ID, oldStatus, "contract"); err != nil {
 			return err
-		}
-		if stored.Status != oldStatus {
-			return &lifecycleConflict{fmt.Sprintf("this contract was changed to %s meanwhile; reload it and try again", stored.Status)}
 		}
 		if err := tx.Save(contract).Error; err != nil {
 			return err
@@ -246,7 +240,7 @@ func (h *ContractHandler) Create(c *fiber.Ctx) error {
 // @Failure 400 {object} map[string]interface{} "Invalid request body"
 // @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
 // @Failure 404 {object} map[string]interface{} "Contract not found, or deal not found"
-// @Failure 409 {object} map[string]interface{} "Contract is signed (locked)"
+// @Failure 409 {object} map[string]interface{} "Contract is signed (locked), or its status changed meanwhile"
 // @Failure 422 {object} map[string]interface{} "Invalid field, or status signed without a signed document"
 // @Router /contracts/{id} [put]
 func (h *ContractHandler) Update(c *fiber.Ctx) error {
@@ -305,7 +299,7 @@ func (h *ContractHandler) Update(c *fiber.Ctx) error {
 // @Failure 400 {object} map[string]interface{} "Missing file, or unsupported file type"
 // @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
 // @Failure 404 {object} map[string]interface{} "Contract not found, or deal not found"
-// @Failure 409 {object} map[string]interface{} "Contract is already signed"
+// @Failure 409 {object} map[string]interface{} "Contract is already signed, or its status changed meanwhile"
 // @Failure 413 {object} map[string]interface{} "File exceeds 10MB limit"
 // @Router /contracts/{id}/upload [post]
 func (h *ContractHandler) Upload(c *fiber.Ctx) error {

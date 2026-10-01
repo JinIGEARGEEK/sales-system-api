@@ -19,8 +19,7 @@ const (
 
 // ValidContractStatuses/IsValidContractStatus mirror Payment's own
 // ValidPaymentMethods/IsValidPaymentMethod (payment.go) — a fixed enum,
-// handler-layer validated. PUT /contracts/:id previously accepted any string
-// with no check at all (not even enum membership); this closes that gap.
+// validated in the handlers. Empty is valid (defaulted or kept).
 var ValidContractStatuses = []ContractStatus{
 	ContractStatusDraft, ContractStatusSent, ContractStatusSigned, ContractStatusExpired,
 }

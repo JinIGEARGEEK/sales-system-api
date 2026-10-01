@@ -185,7 +185,7 @@ type Deal struct {
 	// on every struct write; see database.BackfillDealWonAt for older rows.
 	WonAt *time.Time `gorm:"index" json:"won_at"`
 	// ValueQuoteID is the Accepted Quote whose pre-VAT taxable amount the
-	// Deal's Value was last synced from (handlers.syncDealValue), nil when
+	// Deal's Value was last synced from (handlers.syncDealValueForQuote), nil when
 	// Value is the rep's own figure. While set, PUT /deals/:id can't change
 	// Value. FK to quotes(id), ON DELETE SET NULL (database.
 	// ensureDealValueQuoteFK). Create-only for GORM writes ("<-:create"): a

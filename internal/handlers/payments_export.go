@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"encoding/csv"
-	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -107,36 +106,13 @@ func (h *ExportHandler) Payments(c *fiber.Ctx) error {
 		return nil
 	}
 	filename := "payments-" + time.Now().Format("20060102") + ".csv"
-
-	// Paged by LIMIT/OFFSET over a total order (paid_at, id) rather than
-	// exportStream's FindInBatches, whose id keyset only pages correctly when
-	// the export is ordered by id.
-	page := func(n int) ([]paymentExportRow, error) {
-		var rows []paymentExportRow
-		err := query.Session(&gorm.Session{}).Offset(n * exportBatchSize).Limit(exportBatchSize).Scan(&rows).Error
-		return rows, err
-	}
-	first, err := page(0)
-	if err != nil {
-		log.Printf("export %s: %v", filename, err)
-		return utils.Internal(c, "Failed to export data")
-	}
-	return streamCSV(c, filename, paymentsExportHeader, func(w *csv.Writer) error {
-		rows := first
-		for n := 1; ; n++ {
-			for _, r := range rows {
-				if err := writeCSVRow(w, paymentExportFields(r)); err != nil {
-					return err
-				}
-			}
-			if len(rows) < exportBatchSize {
-				return nil
-			}
-			var err error
-			if rows, err = page(n); err != nil {
+	return exportStream(c, query, filename, paymentsExportHeader, func(w *csv.Writer, batch []paymentExportRow) error {
+		for _, r := range batch {
+			if err := writeCSVRow(w, paymentExportFields(r)); err != nil {
 				return err
 			}
 		}
+		return nil
 	})
 }
 

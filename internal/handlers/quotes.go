@@ -260,11 +260,11 @@ func snapshotQuoteItems(db *gorm.DB, items []models.QuoteItem) []models.QuoteIte
 // @Param dealId path int true "Deal ID"
 // @Param body body quoteForm true "Quote fields"
 // @Success 201 {object} models.Quote
-// @Failure 400 {object} map[string]interface{} "Invalid request body, or validation error (status, price_type, credit_days, wht_rate, discount_total)"
+// @Failure 400 {object} map[string]interface{} "Invalid request body"
 // @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
 // @Failure 404 {object} map[string]interface{} "Deal not found"
 // @Failure 409 {object} map[string]interface{} "Created as accepted while the deal already has an Accepted quote"
-// @Failure 422 {object} map[string]interface{} "Invalid field (items[i].qty/price/discount_percent, discount_total, wht_rate, issue_date, validity_date)"
+// @Failure 422 {object} map[string]interface{} "Invalid field (status, price_type, credit_days, wht_rate, discount_total, items[i].qty/price/discount_percent, issue_date, validity_date)"
 // @Router /deals/{dealId}/quotes [post]
 func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 	deal, err := dealForSubResource(c, h.DB, c.Params("dealId"))
@@ -338,8 +338,8 @@ func (h *QuoteHandler) Create(c *fiber.Ctx) error {
 }
 
 // createQuoteNumbered assigns the next QT number and inserts quote inside
-// tx. utils.CreateKeepingFalse, since VatEnabled is NOT NULL DEFAULT true
-// and a plain Create saved (and totalled) a no-VAT quote with 7% VAT.
+// tx, with utils.CreateKeepingFalse: VatEnabled is NOT NULL DEFAULT true,
+// so a plain Create would store vat_enabled false as true.
 func createQuoteNumbered(tx *gorm.DB, quote *models.Quote, now time.Time) error {
 	number, err := utils.NextDocumentNumber(tx, "QT", now)
 	if err != nil {
@@ -349,15 +349,6 @@ func createQuoteNumbered(tx *gorm.DB, quote *models.Quote, now time.Time) error 
 	return utils.CreateKeepingFalse(tx, quote)
 }
 
-// Upload — POST /deals/:dealId/quotes/upload. Uploads a PDF quote in place of
-// line items — sets file_name/file_url/file_size/uploaded_at. If the PDF
-// looks like a FlowAccount quotation export, best-effort extraction
-// (utils.ExtractFlowAccountQuote) also pre-fills items/scope_of_work/
-// reference_number/issue_date/vat/wht/notes from it — see
-// ExtractionStatus/ExtractionWarnings on the response. Extraction is purely
-// additive and never fatal: a PDF that isn't a FlowAccount export, or one
-// extraction can't make sense of, still uploads exactly as before with
-// Items left empty, ExtractionStatus "failed", and no error surfaced.
 // Upload godoc
 // @Summary Upload a PDF quote (Admin/Sales Rep/Sales Manager)
 // @Description Uploads a PDF quote in place of line items — sets file_name/file_url/file_size/uploaded_at. If the PDF looks like a FlowAccount quotation export, best-effort extraction also pre-fills items/scope_of_work/reference_number/issue_date/vat/wht/notes (see extraction_status/extraction_warnings on the response); extraction is never fatal — a PDF that isn't a FlowAccount export still uploads with extraction_status "failed". Only the Deal's assigned Sales Rep (or Admin/Sales Manager) may upload. api-system-spec.md §7.4.
@@ -459,11 +450,10 @@ func (h *QuoteHandler) Upload(c *fiber.Ctx) error {
 // @Param body body quoteForm true "Quote fields"
 // @Success 200 {object} models.Quote
 // @Failure 400 {object} map[string]interface{} "Invalid request body"
-// @Failure 422 {object} map[string]interface{} "Validation error (status, price_type, credit_days, wht_rate, discount_total)"
 // @Failure 403 {object} map[string]interface{} "Not authorized to modify this deal's records"
 // @Failure 404 {object} map[string]interface{} "Quote not found, or deal not found"
-// @Failure 409 {object} map[string]interface{} "Status transition not allowed, quote is read-only, or the deal already has an Accepted quote"
-// @Failure 422 {object} map[string]interface{} "Invalid field (items[i].qty/price/discount_percent, discount_total, wht_rate, issue_date, validity_date)"
+// @Failure 409 {object} map[string]interface{} "Status transition not allowed, quote is read-only, the deal already has an Accepted quote, or the quote's status changed meanwhile"
+// @Failure 422 {object} map[string]interface{} "Invalid field (status, price_type, credit_days, wht_rate, discount_total, items[i].qty/price/discount_percent, issue_date, validity_date)"
 // @Router /quotes/{id} [put]
 func (h *QuoteHandler) Update(c *fiber.Ctx) error {
 	var quote models.Quote

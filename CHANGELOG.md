@@ -6,13 +6,25 @@ Entries before this file existed are reconstructed from git/PR history — going
 
 ## Unreleased — Refactor and docs pass
 
-**People and records**
+**People and records.**
+- **Fixed:** `POST /companies/:id/restore` returned `500` when a live Company had since taken the deleted one's website domain (unique index). It now returns the same `409` as Create.
 - **Fixed:** `POST /contacts` (and a `PUT /contacts/:id` that changes `company_id`) accepted a `company_id` naming no Company and saved a Contact attached to nothing. It is now `422` with `fields.company_id: ["not_found"]`, as `POST /contacts/import` already answered. Resending a Contact's current `company_id` isn't re-checked, so Contacts of a deleted Company stay editable. Regression-guarded: `TestContact_CompanyIDMustExist`.
 - **Fixed:** `POST /companies/import` wiped a matched Company's `industry`, `size` and `website` (with its derived domain) when those CSV cells were empty. An empty cell now keeps the stored value, as the contacts import does. Regression-guarded: `TestImportCompanies_BlankCellsKeepStoredValues`.
 - **Fixed:** the company import's name fallback matched a Company whose website was on a different domain from the row's, then moved that Company's website. It now applies only when the row or the Company has no website, as the spec says; a same-named row on another domain creates a new Company. Regression-guarded: `TestImportCompanies_SameNameOtherDomainIsNewCompany`.
 - **Fixed:** a contacts-import `company_id` such as `12abc` was read as `12`. It is now an `invalid company_id` skipped row. Regression-guarded: `TestImportContacts_RejectsNonNumericCompanyID`.
 - Refactors with no contract change: one `checkNewAssignee` helper for the task and bulk-reassign assignee checks; shared merge snapshot/field helpers; the import handlers split into parse, lookup and save steps; `managerRoles` names the Admin/Sales Manager gate once in `routes.go` (it was built inline for Deal reassign and `/reports`, and `prospectRoles` was a copy of `salesPipelineRoles`). Comments that told the history of a change now describe current behaviour.
 - Docs: spec §1.7 gains a route-gate table and an accurate Production row; §2 lists the real role enum; Company/Contact `DELETE` are described as soft deletes (not `status: archived`); `is_primary` and FR-CRM-012 are documented as built; §6.2 describes the CSV-only import and its matching rules. `docs/OPEN_API_GUIDE.md` now documents the Contact/Prospect/Lead duplicate `409` with `?allow_duplicate=true` (it said those had no dedupe), the Production-owner `403`s and the `assigned_to` `422`. Swagger: Contact validation failures are listed as `422`, not `400`.
+
+**Money and lifecycle.**
+- `PATCH /deals/:id/stage` and `PATCH /deals/:id/reassign` no longer write `value`, so a quote accepted between the read and the save can't have its synced value overwritten by the stale row.
+- Fix: a quote's `discount_total` cap is now the subtotal the quote prints (`utils.ComputeQuoteTotals`, each line rounded to satang). It used to be the unrounded sum, so a discount equal to the printed subtotal could be refused with a `422` (e.g. three lines of 100 at 33.333% off: 200.01 printed, 200.001 unrounded). Regression-guarded by `TestQuoteLifecycle_DiscountCapUsesRoundedSubtotal`.
+- The quote and contract "changed meanwhile" re-check is one helper (`lockStatusUnchanged`). The moves that take a Deal out of Won share `guardLeavingWon`, and the stage-change company Activity shares `logDealStageActivity`. `dealReceivable` moved to `deal_money.go`.
+- The Deal value an Accepted quote syncs is `utils.DealValueFromQuote`, used by both the quote handlers and the boot backfill (`database.BackfillDealValueQuotes`), along with `utils.SameMoney`.
+- `GET /payments/export` pages through the shared `exportStream` and no longer has its own loop. New test: an export longer than one page holds every payment exactly once, in order.
+- `GET /dashboard/summary` loads open Deals' close dates once for both `forecast_trend` and the coverage/overdue/undated figures, not twice.
+- Swagger: the Deal, Quote and stage-move endpoints now document their validation errors as `422`, which is what they return (several said `400`). The `409` notes include the "changed meanwhile" conflict. Quote `PUT` no longer lists `422` twice. Regenerating also picked up the `/team-members` `role` field from #81. Response bodies are unchanged.
+- Spec: §7.1 Deals, §7.4 quote lifecycle (adds `POST /quotes/:id/duplicate`), §7.5 Payments (adds the full `Payment` shape and the list totals), §8.1 Contracts and the §9 coverage/forecast notes now describe current behaviour, with the history notes removed. New §6.3 covers how CSV exports page and stream.
+- Trimmed history-narrating comments in the quote, contract and dashboard code.
 
 ## Unreleased — Review follow-ups
 
@@ -147,7 +159,7 @@ Regression-guarded: `tests/duplicate_detection_test.go`, new cases in `tests/imp
 - Deleting an installment also unlinks deleted Payments that pointed at it.
 - `utils.ErrBulkSkip` lets a `BulkUpdate` apply leave one row alone without failing the batch.
 
-Regression-guarded: `tests/won_deal_protection_test.go`, `tests/payment_guards_test.go`. Swagger annotations updated; regenerate `docs/` after merging.
+Regression-guarded: `tests/won_deal_protection_test.go`, `tests/payment_guards_test.go`. Swagger regenerated.
 
 ## 2026-10-01 — Quote money fixes: tax-inclusive VAT, satang rounding, Accepted lock, schedule cap
 
