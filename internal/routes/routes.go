@@ -366,6 +366,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	companies.Put("/:id", companyH.Update)
 	companies.Delete("/:id", bulkRoles, companyH.Delete)
 	companies.Post("/:id/restore", bulkRoles, companyH.Restore)
+	companies.Post("/:id/merge", bulkRoles, companyH.Merge)
 	companies.Get("/:companyId/products", productH.ListForCompany)
 	companies.Post("/:companyId/products", productH.AddForCompany)
 	companies.Get("/:companyId/projects", projectH.ListForCompany)
@@ -383,6 +384,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	contacts.Put("/:id", contactH.Update)
 	contacts.Delete("/:id", bulkRoles, contactH.Delete)
 	contacts.Post("/:id/restore", bulkRoles, contactH.Restore)
+	contacts.Post("/:id/merge", bulkRoles, contactH.Merge)
 
 	// Deals — salesPipelineRoles only (Admin/Sales Rep/Sales Manager/Marketing
 	// since 2026-09-23; Production has no access, spec §1.7). Every

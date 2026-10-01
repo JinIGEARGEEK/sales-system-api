@@ -2679,6 +2679,80 @@
                 }
             }
         },
+        "/companies/{id}/merge": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Moves everything that references each source Company (contacts, deals, leads, prospects, projects, customer products, company activities/attachments/tasks, lead referrals, dormant-company notification logs) to the target :id, fills the target's empty fields from the sources (in source_ids order), unions tags, then soft-deletes the sources. A source website/tax_id/branch_code that differs from the target's is not copied and is listed in conflicts. Writes a company/merged audit row on the target and company/merged_into on each source. One transaction.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "companies"
+                ],
+                "summary": "Merge duplicate companies into this one (Admin/Sales Manager only)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Target Company ID (survives)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "1-20 source Company ids",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.mergeForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.mergeResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid body",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Not Admin/Sales Manager",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Target or a source doesn't exist or is deleted (message lists the ids)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "source_ids empty, over 20, contains the target, or has duplicates",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/companies/{id}/restore": {
             "post": {
                 "security": [
@@ -3109,6 +3183,80 @@
                     },
                     "404": {
                         "description": "Contact not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/contacts/{id}/merge": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Moves everything that references each source Contact (deals, contact activities/tasks, lead referrals) to the target :id, fills the target's empty fields from the sources (in source_ids order), unions tags, then soft-deletes the sources. Sources may belong to other Companies; the target keeps its company_id. A source email/phone that differs from the target's is not copied and is listed in conflicts. Writes a contact/merged audit row on the target and contact/merged_into on each source. One transaction.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "contacts"
+                ],
+                "summary": "Merge duplicate contacts into this one (Admin/Sales Manager only)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Target Contact ID (survives)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "1-20 source Contact ids",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.mergeForm"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.mergeResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid body",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Not Admin/Sales Manager",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Target or a source doesn't exist or is deleted (message lists the ids)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "source_ids empty, over 20, contains the target, or has duplicates",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -11859,6 +12007,56 @@
                 "status": {
                     "$ref": "#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadStatus"
                 }
+            }
+        },
+        "internal_handlers.mergeConflict": {
+            "type": "object",
+            "properties": {
+                "field": {
+                    "type": "string"
+                },
+                "source_id": {
+                    "type": "integer"
+                },
+                "value": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.mergeForm": {
+            "type": "object",
+            "properties": {
+                "source_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                }
+            }
+        },
+        "internal_handlers.mergeResponse": {
+            "type": "object",
+            "properties": {
+                "conflicts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_handlers.mergeConflict"
+                    }
+                },
+                "filled": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "moved": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "integer",
+                        "format": "int64"
+                    }
+                },
+                "target": {}
             }
         },
         "internal_handlers.notificationRuleForm": {

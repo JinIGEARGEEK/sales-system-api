@@ -4,6 +4,22 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## Unreleased — Review follow-ups
+
+**Merge duplicate companies and contacts.**
+- New `POST /companies/:id/merge` and `POST /contacts/:id/merge`, body `{ "source_ids": [...] }` (1–20 ids). `:id` is the record that survives. Admin/Sales Manager only (`403` otherwise). `422` on `fields.source_ids` when the list is empty, over 20, contains the target, or repeats an id. `404` when the target or a source doesn't exist or is deleted, with the missing ids in the message.
+- One transaction. Target and sources are locked in id order, so concurrent merges wait for each other instead of deadlocking.
+- Every reference to a source moves to the target, soft-deleted rows included. For a Company: Contacts, Deals, Leads (`company_id` and `referred_by`), Prospects, Projects, Customer Products, company Activities/Attachments/Tasks, and dormant-company notification logs. For a Contact: Deals, contact Activities/Tasks, and Lead `referred_by`. Contacts can be merged across Companies; the target keeps its `company_id` and a moved Deal keeps its own Company.
+- The target keeps its non-empty fields. Empty ones take the first non-empty value from the sources, in `source_ids` order, and tags are unioned (lowercased, deduped). A source value for a field that identifies the record isn't copied if it differs from the target's; it's reported in `conflicts` instead. Those fields are Company `website` (by domain), `tax_id` and `branch_code`, and Contact `email` and `phone`. A Company merge keeps at most one Primary Contact.
+- Sources are soft-deleted, so they're in Trash and no longer count as duplicates for the `409 duplicate_of` check. Restoring one gives back a record with nothing attached. A Company source's derived domain is cleared, so restoring it can't hit the unique domain index.
+- Audit: `merged` on the target (`before` snapshot; `after` has `source_ids`, `moved`, `filled`, `conflicts`) and `merged_into` on each source (`after.target_id`).
+- Response `200 { data: { target, moved: { <table>: n, ..., total }, filled: [field], conflicts: [{ field, source_id, value }] } }`.
+- The dormant-company rule now skips soft-deleted Companies. It read `companies` without the soft-delete filter, so a deleted or merged Company could still raise "Company gone quiet".
+
+**Frontend:** the natural entry point is the `409` duplicate envelope (`error.duplicate_of`) on Contact create, plus a "Merge into…" action on the Company/Contact detail page, shown to Admin/Sales Manager only. Show a confirmation with the list of sources. Afterwards, show `conflicts` (values that were not kept) and `moved.total`, then navigate to the target. Merged sources appear in Trash. Warn that restoring one brings back an empty record.
+
+Regression-guarded: `tests/merge_test.go`, `TestCompanyDormantRule_SkipsDeletedCompany`. Swagger regenerated.
+
 ## Unreleased — Pipeline coverage and forecast
 
 `GET /dashboard/summary` (spec §9) now counts coverage and the forecast trend by when open Deals are expected to close. Days are server-local (`calendar.ParseLocalDay`, `calendar.Today`, new `calendar.QuarterStart`).

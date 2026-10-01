@@ -1899,6 +1899,39 @@ definitions:
       status:
         $ref: '#/definitions/github_com_igeargeek_sales-system-api_internal_models.LeadStatus'
     type: object
+  internal_handlers.mergeConflict:
+    properties:
+      field:
+        type: string
+      source_id:
+        type: integer
+      value:
+        type: string
+    type: object
+  internal_handlers.mergeForm:
+    properties:
+      source_ids:
+        items:
+          type: integer
+        type: array
+    type: object
+  internal_handlers.mergeResponse:
+    properties:
+      conflicts:
+        items:
+          $ref: '#/definitions/internal_handlers.mergeConflict'
+        type: array
+      filled:
+        items:
+          type: string
+        type: array
+      moved:
+        additionalProperties:
+          format: int64
+          type: integer
+        type: object
+      target: {}
+    type: object
   internal_handlers.notificationRuleForm:
     properties:
       create_task:
@@ -4277,6 +4310,62 @@ paths:
       summary: Update a company
       tags:
       - companies
+  /companies/{id}/merge:
+    post:
+      consumes:
+      - application/json
+      description: Moves everything that references each source Company (contacts,
+        deals, leads, prospects, projects, customer products, company activities/attachments/tasks,
+        lead referrals, dormant-company notification logs) to the target :id, fills
+        the target's empty fields from the sources (in source_ids order), unions tags,
+        then soft-deletes the sources. A source website/tax_id/branch_code that differs
+        from the target's is not copied and is listed in conflicts. Writes a company/merged
+        audit row on the target and company/merged_into on each source. One transaction.
+      parameters:
+      - description: Target Company ID (survives)
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 1-20 source Company ids
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.mergeForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.mergeResponse'
+        "400":
+          description: Invalid body
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not Admin/Sales Manager
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Target or a source doesn't exist or is deleted (message lists
+            the ids)
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: source_ids empty, over 20, contains the target, or has duplicates
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Merge duplicate companies into this one (Admin/Sales Manager only)
+      tags:
+      - companies
   /companies/{id}/restore:
     post:
       description: Un-deletes a soft-deleted Company. Writes a company/restored audit
@@ -4571,6 +4660,62 @@ paths:
       security:
       - BearerAuth: []
       summary: Update a contact
+      tags:
+      - contacts
+  /contacts/{id}/merge:
+    post:
+      consumes:
+      - application/json
+      description: Moves everything that references each source Contact (deals, contact
+        activities/tasks, lead referrals) to the target :id, fills the target's empty
+        fields from the sources (in source_ids order), unions tags, then soft-deletes
+        the sources. Sources may belong to other Companies; the target keeps its company_id.
+        A source email/phone that differs from the target's is not copied and is listed
+        in conflicts. Writes a contact/merged audit row on the target and contact/merged_into
+        on each source. One transaction.
+      parameters:
+      - description: Target Contact ID (survives)
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 1-20 source Contact ids
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.mergeForm'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.mergeResponse'
+        "400":
+          description: Invalid body
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Not Admin/Sales Manager
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Target or a source doesn't exist or is deleted (message lists
+            the ids)
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: source_ids empty, over 20, contains the target, or has duplicates
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Merge duplicate contacts into this one (Admin/Sales Manager only)
       tags:
       - contacts
   /contacts/{id}/restore:
