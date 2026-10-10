@@ -341,21 +341,24 @@ func applyProjectFilters(query *gorm.DB, c *fiber.Ctx) *gorm.DB {
 // column name differ between them. Returns the query plus whether a Company
 // join is needed for sort (see utils.ApplyNullableCompanySearch) and the
 // sort field, for applyLeadLikeSort once the caller has counted.
+//
+// Every filter column is qualified with table: status collides with
+// Company's own `status` column once utils.ApplyNullableCompanySearch LEFT
+// JOINs companies (search or a company_name sort), and an unqualified
+// `status = ?` alongside that join is ambiguous to Postgres — a 500 on
+// e.g. `?status=New&search=acme`. The other columns don't collide today,
+// but qualifying them the same way keeps it that way.
 func applyLeadLikeFilters(query *gorm.DB, c *fiber.Ctx, table, excludeConvertedColumn string) (*gorm.DB, bool, string) {
-	// Every filter column here is qualified with table (not just company_id,
-	// which already was) — status in particular collides with Company's own
-	// `status` column: utils.ApplyNullableCompanySearch below LEFT JOINs
-	// companies whenever search or a company_name sort is in play, and an
-	// unqualified `status = ?` alongside that join is ambiguous to Postgres
-	// ("column reference \"status\" is ambiguous") wherever both happen to
-	// be requested on the same call (e.g. `?status=New&search=acme`) —
-	// crashing that request with a 500 rather than a bug isolated to sort.
-	// source/assigned_to don't actually collide with any companies column
-	// today, but qualifying them the same way is free and avoids the same
-	// class of bug if that ever changes.
 	if v := c.Query("status"); v != "" {
 		query = query.Where(table+".status = ?", v)
 	}
+	return applyLeadLikeScopeFilters(query, c, table, excludeConvertedColumn)
+}
+
+// applyLeadLikeScopeFilters is applyLeadLikeFilters without the status
+// filter — every other filter, for a per-status breakdown under the same
+// view (LeadHandler.StatusCounts).
+func applyLeadLikeScopeFilters(query *gorm.DB, c *fiber.Ctx, table, excludeConvertedColumn string) (*gorm.DB, bool, string) {
 	if v := c.Query("source"); v != "" {
 		query = query.Where(table+".source = ?", v)
 	}

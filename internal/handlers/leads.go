@@ -44,7 +44,7 @@ func NewLeadHandler(db *gorm.DB) *LeadHandler {
 // @Produce json
 // @Param status query string false "Filter by lead status"
 // @Param source query string false "Filter by lead source"
-// @Param assigned_to query string false "Filter by assigned Sales Rep user ID, or \"unassigned\""
+// @Param assigned_to query string false "Filter by assigned Sales Rep user ID, or the word unassigned"
 // @Param company_id query int false "Filter by Company ID"
 // @Param search query string false "Search by name, email, or company name"
 // @Param sort query string false "Sort field, prefix with - for descending (e.g. -created_at, name)"
@@ -69,6 +69,33 @@ func (h *LeadHandler) List(c *fiber.Ctx) error {
 		return utils.Internal(c, "Failed to list leads")
 	}
 	return utils.List(c, leads, page, perPage, total)
+}
+
+// StatusCounts godoc
+// @Summary Count leads per status (Sales pipeline roles)
+// @Description Lead counts keyed by status under the same filters as GET /leads, minus status itself — the Leads list's status-pill counts. A status with no Leads is omitted. Admin/Sales Rep/Sales Manager/Marketing only.
+// @Tags leads
+// @Security BearerAuth
+// @Produce json
+// @Param source query string false "Filter by lead source"
+// @Param assigned_to query string false "Filter by assigned user ID, or the word unassigned"
+// @Param company_id query int false "Filter by Company ID"
+// @Param search query string false "Search by name, email, or company name"
+// @Param exclude_converted query bool false "Exclude leads already converted to a Deal"
+// @Param only_converted query bool false "Only leads already converted to a Deal"
+// @Success 200 {object} map[string]int64 "data: count per status, e.g. New: 12, Contacted: 4"
+// @Router /leads/status-counts [get]
+func (h *LeadHandler) StatusCounts(c *fiber.Ctx) error {
+	query, _, _ := applyLeadLikeScopeFilters(h.DB.Model(&models.Lead{}), c, "leads", "converted_deal_id")
+	var rows []leadStatusCount
+	if err := query.Select("leads.status, count(*) as count").Group("leads.status").Scan(&rows).Error; err != nil {
+		return utils.Internal(c, "Failed to count leads by status")
+	}
+	counts := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		counts[row.Status] = row.Count
+	}
+	return utils.OK(c, counts)
 }
 
 type leadForm struct {
@@ -424,7 +451,7 @@ func (h *LeadHandler) ScoreBreakdown(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Update a lead (Sales pipeline roles)
-// @Description Admin/Sales Rep/Sales Manager, and only if the caller owns the lead or has manager-level write access. Reassigning to another rep is likewise restricted. Omitting classification leaves an existing manual "sql" override in place rather than letting it be auto-recomputed away; omitting status keeps the stored one.
+// @Description Admin/Sales Rep/Sales Manager, and only if the caller owns the lead or has manager-level write access. Reassigning to another rep is likewise restricted. Omitting classification leaves an existing manual "sql" override in place rather than letting it be auto-recomputed away; omitting status keeps the stored one. An unchanged source is not re-validated against the active Lead sources (a Prospect-converted Lead may carry a Prospect source).
 // @Tags leads
 // @Security BearerAuth
 // @Accept json
@@ -453,7 +480,10 @@ func (h *LeadHandler) Update(c *fiber.Ctx) error {
 	if !CanWrite(c, form.AssignedTo) {
 		return utils.Forbidden(c, "Cannot assign a lead to another sales rep")
 	}
-	if !utils.IsActiveLeadSource(h.DB, string(form.Source)) {
+	// An unchanged source isn't re-validated, so a Lead converted from a
+	// Prospect (carrying a Prospect-only source like "Marketing Campaign")
+	// or one whose source was since deactivated stays editable.
+	if form.Source != lead.Source && !utils.IsActiveLeadSource(h.DB, string(form.Source)) {
 		return utils.ValidationError(c, "source is not a valid active lead source", map[string][]string{"source": {"invalid"}})
 	}
 	if err := validateLeadStatus(c, form.Status); err != nil {
