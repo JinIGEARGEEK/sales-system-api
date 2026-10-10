@@ -86,14 +86,17 @@ type dealForm struct {
 //
 // Returns utils.ErrHandled rather than ValidationError's own (nil) result so
 // callers' `if err != nil` guard fires — see ErrHandled's doc.
-func validateStageAndChannel(c *fiber.Ctx, db *gorm.DB, form dealForm, to utils.StageFlags) error {
+//
+// checkChannel is false on an Update that leaves the channel unchanged, so a
+// Deal carrying a Prospect-only or since-deactivated source stays editable.
+func validateStageAndChannel(c *fiber.Ctx, db *gorm.DB, form dealForm, to utils.StageFlags, checkChannel bool) error {
 	if form.Stage != "" && !to.Active {
 		_ = utils.ValidationError(c, "stage is not a valid active pipeline stage", map[string][]string{
 			"stage": {"invalid"},
 		})
 		return utils.ErrHandled
 	}
-	if !utils.IsActiveLeadSource(db, string(form.Channel)) {
+	if checkChannel && !utils.IsActiveLeadSource(db, string(form.Channel)) {
 		_ = utils.ValidationError(c, "channel is not a valid active lead source", map[string][]string{
 			"channel": {"invalid"},
 		})
@@ -247,7 +250,7 @@ func validateNewDealForm(c *fiber.Ctx, db *gorm.DB, form dealForm) (utils.StageF
 			return to, err
 		}
 	}
-	return to, validateStageAndChannel(c, db, form, to)
+	return to, validateStageAndChannel(c, db, form, to, true)
 }
 
 // defaultProbabilityFor resolves the win-probability default for a stage
@@ -360,7 +363,7 @@ func (h *DealHandler) Get(c *fiber.Ctx) error {
 
 // Update godoc
 // @Summary Update a deal (Admin/Sales Rep/Sales Manager)
-// @Description Full update of a Deal — same validation as Create. An omitted stage/status keeps the stored value; moving from a Won/Lost stage to an open one sets status open. Moving a Won Deal with money attached (a non-deleted Payment, any installment, or a signed Contract) out of Won is 409 (WON_DEAL_PROTECTED) for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without it), recorded in a won_reversed audit entry. Writes a stage_changed audit log entry when the submitted stage differs from the deal's current one. Only the assigned Sales Rep (or Admin/Sales Manager) may update; a Sales Rep may keep or claim the deal but not reassign it to another rep or unassign it (403). A changed assigned_to must be an active sales-role user (422). value/company_id changes write an updated audit entry and an assigned_to change a reassigned one. While value_quote_id is set (value synced from an Accepted quote), a value different from the stored one is 422 fields.value ["synced_from_quote"]; resending the same value is fine. The response adds value_quote_number. api-system-spec.md §7.1.
+// @Description Full update of a Deal — same validation as Create. An omitted stage/status keeps the stored value; moving from a Won/Lost stage to an open one sets status open. Moving a Won Deal with money attached (a non-deleted Payment, any installment, or a signed Contract) out of Won is 409 (WON_DEAL_PROTECTED) for non-managers; a manager must pass ?reason= (409 REASON_REQUIRED without it), recorded in a won_reversed audit entry. Writes a stage_changed audit log entry when the submitted stage differs from the deal's current one. Only the assigned Sales Rep (or Admin/Sales Manager) may update; a Sales Rep may keep or claim the deal but not reassign it to another rep or unassign it (403). A changed assigned_to must be an active sales-role user (422); likewise a changed channel must be an active Lead source, while an unchanged one (e.g. a Prospect source carried over by conversion) is not re-checked. value/company_id changes write an updated audit entry and an assigned_to change a reassigned one. While value_quote_id is set (value synced from an Accepted quote), a value different from the stored one is 422 fields.value ["synced_from_quote"]; resending the same value is fine. The response adds value_quote_number. api-system-spec.md §7.1.
 // @Tags deals
 // @Security BearerAuth
 // @Accept json
@@ -449,7 +452,7 @@ func (h *DealHandler) Update(c *fiber.Ctx) error {
 			return nil
 		}
 	}
-	if err := validateStageAndChannel(c, h.DB, form, to); err != nil {
+	if err := validateStageAndChannel(c, h.DB, form, to, form.Channel != deal.Channel); err != nil {
 		return nil
 	}
 	unwinReason, forcedUnwin, err := guardLeavingWon(c, h.DB, &deal, status == models.DealStatusWon)

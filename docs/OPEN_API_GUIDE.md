@@ -706,7 +706,7 @@ X-API-Key: sk_live_...
 
 ### `PUT /api/v1/open/leads/:id` — Update
 
-Same body shape and validation as Create — a **full replace**. Omitting `classification` leaves an existing manual `"sql"` override in place rather than letting it auto-recompute away; an explicit `"sql"` always wins.
+Same body shape and validation as Create — a **full replace**. Omitting `classification` leaves an existing manual `"sql"` override in place rather than letting it auto-recompute away; an explicit `"sql"` always wins. Resending the Lead's current `source` is always accepted, even when it isn't an active Lead source (a Lead converted from a Prospect can carry a Prospect source); only a changed `source` must be an active one.
 
 ```
 PUT /api/v1/open/leads/88

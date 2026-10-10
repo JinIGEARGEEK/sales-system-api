@@ -311,6 +311,7 @@ func Setup(app *fiber.App, db *gorm.DB, cfg *config.Config, storage utils.Storag
 	leads.Get("/", salesPipelineRoles, leadH.List)
 	leads.Post("/", salesPipelineRoles, leadH.Create)
 	// Static routes before "/:id" so e.g. "trash" isn't captured as an id.
+	leads.Get("/status-counts", salesPipelineRoles, leadH.StatusCounts)
 	leads.Get("/trash", managerRoles, leadH.Trash)
 	leads.Patch("/bulk-reassign", managerRoles, leadH.BulkReassign)
 	leads.Patch("/bulk-tag", managerRoles, leadH.BulkTag)

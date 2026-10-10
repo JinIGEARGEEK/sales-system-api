@@ -4,6 +4,12 @@ Notable changes to this API, newest first. Dates are merge dates on `main`. See 
 
 Entries before this file existed are reconstructed from git/PR history — going forward, add an entry here in the same PR that ships the change.
 
+## Unreleased — Lead list status handling
+
+- **Fixed:** `PUT /leads/:id` (and `PUT /open/leads/:id`) answered `422` `fields.source: ["invalid"]` on every save of a Lead converted from a Prospect, because the Lead kept its Prospect-only source (e.g. `Marketing Campaign`) and Update re-checked it against the active Lead sources. An unchanged `source` is no longer re-checked; a changed one still must be active. `PUT /deals/:id` does the same for an unchanged `channel`. Regression-guarded: `TestLeadUpdate_KeepsUnchangedInactiveSource`, `TestDealUpdate_KeepsUnchangedInactiveChannel`.
+- **Added:** `GET /leads/status-counts` — Lead counts per status under `GET /leads`' filters (status itself ignored), in one grouped query, for the Leads list's status-pill counts. `salesPipelineRoles`. `applyLeadLikeFilters` is now the status filter plus `applyLeadLikeScopeFilters` (everything else), which the new endpoint uses. Tested by `TestLeadStatusCounts`.
+- Swagger: the `assigned_to` param descriptions no longer cut off at an escaped quote.
+
 ## Unreleased — Refactor and docs pass
 
 **People and records.**
